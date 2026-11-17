@@ -19,6 +19,8 @@ import rootBuildGradleKts from '../../android/build.gradle.kts?raw';
 import libsVersionsToml from '../../android/gradle/libs.versions.toml?raw';
 import gradleProperties from '../../android/gradle.properties?raw';
 import gradleWrapperProperties from '../../android/gradle/wrapper/gradle-wrapper.properties?raw';
+import gradlewScript from '../../android/gradlew?raw';
+import gradlewBatScript from '../../android/gradlew.bat?raw';
 import appBuildGradleKts from '../../android/app/build.gradle.kts?raw';
 import proguardRulesPro from '../../android/app/proguard-rules.pro?raw';
 import manifestXml from '../../android/app/src/main/AndroidManifest.xml?raw';
@@ -193,6 +195,20 @@ export const KOTLIN_SOURCE_FILES: KotlinSourceFile[] = [
     path: 'gradle/wrapper/gradle-wrapper.properties',
     category: 'Tema & Konfigurasi',
     code: gradleWrapperProperties,
+  },
+  {
+    id: 'gradlew_sh',
+    name: 'gradlew',
+    path: 'gradlew',
+    category: 'Tema & Konfigurasi',
+    code: gradlewScript,
+  },
+  {
+    id: 'gradlew_bat',
+    name: 'gradlew.bat',
+    path: 'gradlew.bat',
+    category: 'Tema & Konfigurasi',
+    code: gradlewBatScript,
   },
   {
     id: 'build_gradle',
