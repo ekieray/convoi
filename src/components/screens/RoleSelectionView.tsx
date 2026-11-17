@@ -12,6 +12,7 @@ interface RoleSelectionViewProps {
   latestTripTitle?: string;
   authUserEmail?: string | null;
   authUserName?: string | null;
+  localUserName?: string | null;
   isSigningIn?: boolean;
   onGoogleSignIn: () => void;
   onGoogleSignOut: () => void;
@@ -28,6 +29,7 @@ export function RoleSelectionView({
   latestTripTitle,
   authUserEmail,
   authUserName,
+  localUserName,
   isSigningIn,
   onGoogleSignIn,
   onGoogleSignOut,
@@ -39,6 +41,7 @@ export function RoleSelectionView({
   const activeTourName = activeRoom?.roomTitle || 'Konvoi Puncak Pass Weekend';
   const activeMemberCount = activeRoom?.members.length ?? 4;
   const activeStatus = activeRoom ? 'Sedang Berjalan' : 'Siap Bergabung';
+  const hasAnySession = Boolean(authUserEmail || localUserName);
 
   return (
     <div className="relative flex flex-col min-h-full bg-[#F4F6FA] dark:bg-[#0A0F16] text-[#0F172A] dark:text-[#F1F5F9]">
@@ -97,36 +100,41 @@ export function RoleSelectionView({
                 <p className="text-xs font-bold truncate">
                   {authUserEmail
                     ? authUserName || 'Akun Google Terhubung'
-                    : 'Sinkronisasi Room Real-Time'}
+                    : localUserName || 'Sinkronisasi Room Real-Time'}
                 </p>
                 <p className="text-[11px] text-[#64748B] dark:text-[#94A3B8] truncate">
                   {authUserEmail
                     ? `${authUserEmail} · Cloud Sync Aktif`
-                    : 'Masuk Google untuk konvoi multi-perangkat'}
+                    : localUserName
+                      ? 'Sesi Lokal · Hubungkan Google untuk Cloud Sync'
+                      : 'Masuk Google untuk konvoi multi-perangkat'}
                 </p>
               </div>
             </div>
 
-            {authUserEmail ? (
-              <button
-                type="button"
-                onClick={onGoogleSignOut}
-                aria-label="Keluar Akun Google"
-                className="px-2.5 py-1.5 rounded-lg border border-[#E2E8F0] dark:border-[#334155] text-[11px] font-semibold text-[#475569] dark:text-[#CBD5E1] hover:bg-[#F1F5F9] dark:hover:bg-[#1E293B] flex items-center gap-1 cursor-pointer shrink-0"
-              >
-                <LogOut className="w-3 h-3" />
-                <span>Keluar</span>
-              </button>
-            ) : (
-              <button
-                type="button"
-                disabled={isSigningIn}
-                onClick={onGoogleSignIn}
-                className="px-3 py-1.5 rounded-xl bg-[#1D4ED8] hover:bg-[#1E40AF] disabled:opacity-60 text-white text-[11px] font-semibold cursor-pointer whitespace-nowrap shrink-0"
-              >
-                {isSigningIn ? 'Memuat...' : 'Masuk Google'}
-              </button>
-            )}
+            <div className="flex items-center gap-1.5 shrink-0">
+              {!authUserEmail && (
+                <button
+                  type="button"
+                  disabled={isSigningIn}
+                  onClick={onGoogleSignIn}
+                  className="px-2.5 py-1.5 rounded-xl bg-[#1D4ED8] hover:bg-[#1E40AF] disabled:opacity-60 text-white text-[11px] font-semibold cursor-pointer whitespace-nowrap shrink-0"
+                >
+                  {isSigningIn ? 'Memuat...' : 'Hubungkan Google'}
+                </button>
+              )}
+              {hasAnySession && (
+                <button
+                  type="button"
+                  onClick={onGoogleSignOut}
+                  aria-label="Keluar Aplikasi"
+                  className="px-2.5 py-1.5 rounded-lg border border-[#E2E8F0] dark:border-[#334155] text-[11px] font-semibold text-[#475569] dark:text-[#CBD5E1] hover:bg-[#F1F5F9] dark:hover:bg-[#1E293B] flex items-center gap-1 cursor-pointer shrink-0"
+                >
+                  <LogOut className="w-3 h-3" />
+                  <span>Keluar</span>
+                </button>
+              )}
+            </div>
           </div>
 
           {/* Card Header 1: Mulai Konvoi Baru */}

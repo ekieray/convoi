@@ -16,6 +16,7 @@ import com.konvoiku.touring.model.UserRole
 import com.konvoiku.touring.ui.screens.AboutAppScreen
 import com.konvoiku.touring.ui.screens.JoinTourScreen
 import com.konvoiku.touring.ui.screens.LiveTrackingMapScreen
+import com.konvoiku.touring.ui.screens.LoginScreen
 import com.konvoiku.touring.ui.screens.RoleSelectionScreen
 import com.konvoiku.touring.ui.screens.TourLeaderScreen
 import com.konvoiku.touring.ui.screens.TripDetailScreen
@@ -24,6 +25,7 @@ import com.konvoiku.touring.ui.screens.VehicleProfileScreen
 import com.konvoiku.touring.viewmodel.ConvoyViewModel
 
 sealed class ConvoyRoute(val route: String) {
+    data object Login : ConvoyRoute("login")
     data object RoleSelection : ConvoyRoute("role_selection")
     data object VehicleProfile : ConvoyRoute("vehicle_profile")
     data object TourLeader : ConvoyRoute("tour_leader")
@@ -43,7 +45,7 @@ fun ConvoyNavGraph(
 
     NavHost(
         navController = navController,
-        startDestination = ConvoyRoute.RoleSelection.route,
+        startDestination = ConvoyRoute.Login.route,
         enterTransition = {
             slideIntoContainer(
                 towards = AnimatedContentTransitionScope.SlideDirection.Left,
@@ -69,12 +71,31 @@ fun ConvoyNavGraph(
             ) + fadeOut(animationSpec = tween(180))
         }
     ) {
+        composable(ConvoyRoute.Login.route) {
+            LoginScreen(
+                initialName = uiState.authUserName.ifBlank { uiState.vehicleProfile.fullName },
+                initialEmail = uiState.authUserEmail,
+                onLoginSuccess = { name, email, isGuest ->
+                    viewModel.loginUser(name, email, isGuest)
+                    navController.navigate(ConvoyRoute.RoleSelection.route) {
+                        popUpTo(ConvoyRoute.Login.route) { inclusive = true }
+                    }
+                },
+                onOpenAboutApp = {
+                    navController.navigate(ConvoyRoute.AboutApp.route)
+                }
+            )
+        }
+
         composable(ConvoyRoute.RoleSelection.route) {
             RoleSelectionScreen(
                 activeRoom = uiState.activeRoom,
                 destinationName = uiState.routeConfig.destinationName,
                 tripHistoryCount = uiState.tripHistory.size,
                 latestTripTitle = uiState.tripHistory.firstOrNull()?.tourTitle,
+                authUserName = uiState.authUserName,
+                authUserEmail = uiState.authUserEmail,
+                isGuestMode = uiState.isGuestMode,
                 onRoleSelected = { role ->
                     viewModel.selectRole(role)
                     navController.navigate(ConvoyRoute.VehicleProfile.route)
@@ -91,6 +112,12 @@ fun ConvoyNavGraph(
                 },
                 onOpenAboutApp = {
                     navController.navigate(ConvoyRoute.AboutApp.route)
+                },
+                onLogout = {
+                    viewModel.logoutUser()
+                    navController.navigate(ConvoyRoute.Login.route) {
+                        popUpTo(0) { inclusive = true }
+                    }
                 }
             )
         }
@@ -132,9 +159,11 @@ fun ConvoyNavGraph(
                 activeRoom = uiState.activeRoom,
                 routeConfig = uiState.routeConfig,
                 destinationPresets = viewModel.destinationPresets,
+                userGpsLat = uiState.userGpsLat,
+                userGpsLng = uiState.userGpsLng,
                 onSelectPreset = viewModel::selectDestinationPreset,
-                onPickDestinationFromMap = { x, y, placeName, addressLabel ->
-                    viewModel.setCustomDestinationPoint(x, y, placeName, addressLabel)
+                onPickDestinationLatLng = { lat, lng, placeName, addressLabel ->
+                    viewModel.setCustomDestinationLatLng(lat, lng, placeName, addressLabel)
                 },
                 onUpdateWaypoints = viewModel::updateCustomWaypoints,
                 onResetDefaultWaypoints = viewModel::resetDefaultWaypoints,
@@ -163,7 +192,7 @@ fun ConvoyNavGraph(
                 vehicleProfile = uiState.vehicleProfile,
                 onInputChange = viewModel::updateJoinInput,
                 onJoinSubmit = {
-                    if (viewModel.joinConvoyRoom()) {
+                    viewModel.joinConvoyRoom {
                         navController.navigate(ConvoyRoute.LiveMap.route)
                     }
                 },
@@ -190,17 +219,21 @@ fun ConvoyNavGraph(
                 pendingCheckpointName = uiState.pendingCheckpointName,
                 isOffRouteSimActive = uiState.isOffRouteSimActive,
                 isStragglerSimActive = uiState.isStragglerSimActive,
+                gpsStatus = uiState.gpsStatus,
+                gpsAccuracyMeters = uiState.gpsAccuracyMeters,
                 destinationPresets = viewModel.destinationPresets,
+                onLocationPermissionResult = viewModel::onLocationPermissionResult,
+                onRetryGps = viewModel::startGpsTracking,
                 onSelectMember = viewModel::selectMapMember,
                 onToggleSimulation = viewModel::toggleSimulation,
                 onSelectPreset = viewModel::selectDestinationPreset,
-                onPickCustomDestination = { x, y ->
-                    viewModel.setCustomDestinationPoint(x, y)
+                onPickCustomDestinationLatLng = { lat, lng ->
+                    viewModel.setCustomDestinationLatLng(lat, lng)
                 },
                 onTogglePickMode = viewModel::setPickingDestinationMode,
                 onStartPickCheckpoint = viewModel::startPickingCheckpointOnMap,
                 onCancelPickCheckpoint = viewModel::cancelPickingCheckpoint,
-                onConfirmAddCheckpoint = viewModel::addRestCheckpointAtPoint,
+                onConfirmAddCheckpointLatLng = viewModel::addRestCheckpointAtLatLng,
                 onRemoveCheckpoint = viewModel::removeRestCheckpoint,
                 onUpdateMaxStragglerDistance = viewModel::updateMaxStragglerDistance,
                 onUpdateOffRouteTolerance = viewModel::updateOffRouteTolerance,

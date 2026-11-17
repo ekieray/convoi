@@ -1,3 +1,4 @@
+import loginKt from '../../android/app/src/main/java/com/konvoiku/touring/ui/screens/LoginScreen.kt?raw';
 import roleSelectionKt from '../../android/app/src/main/java/com/konvoiku/touring/ui/screens/RoleSelectionScreen.kt?raw';
 import vehicleProfileKt from '../../android/app/src/main/java/com/konvoiku/touring/ui/screens/VehicleProfileScreen.kt?raw';
 import tourLeaderKt from '../../android/app/src/main/java/com/konvoiku/touring/ui/screens/TourLeaderScreen.kt?raw';
@@ -12,6 +13,9 @@ import navGraphKt from '../../android/app/src/main/java/com/konvoiku/touring/ui/
 import convoyAvatarKt from '../../android/app/src/main/java/com/konvoiku/touring/ui/components/ConvoyAvatar.kt?raw';
 import viewModelKt from '../../android/app/src/main/java/com/konvoiku/touring/viewmodel/ConvoyViewModel.kt?raw';
 import modelsKt from '../../android/app/src/main/java/com/konvoiku/touring/model/ConvoyModels.kt?raw';
+import geoUtilsKt from '../../android/app/src/main/java/com/konvoiku/touring/util/GeoUtils.kt?raw';
+import gpsLocationTrackerKt from '../../android/app/src/main/java/com/konvoiku/touring/location/GpsLocationTracker.kt?raw';
+import firestoreConvoyRepositoryKt from '../../android/app/src/main/java/com/konvoiku/touring/data/FirestoreConvoyRepository.kt?raw';
 import themeKt from '../../android/app/src/main/java/com/konvoiku/touring/ui/theme/Theme.kt?raw';
 import mainActivityKt from '../../android/app/src/main/java/com/konvoiku/touring/MainActivity.kt?raw';
 import settingsGradleKts from '../../android/settings.gradle.kts?raw';
@@ -39,6 +43,14 @@ export interface KotlinSourceFile {
 }
 
 export const KOTLIN_SOURCE_FILES: KotlinSourceFile[] = [
+  {
+    id: 'login',
+    name: 'LoginScreen.kt',
+    path: 'app/src/main/java/com/konvoiku/touring/ui/screens/LoginScreen.kt',
+    category: 'Layar Compose',
+    linkedRoute: 'login',
+    code: loginKt,
+  },
   {
     id: 'role_selection',
     name: 'RoleSelectionScreen.kt',
@@ -146,6 +158,27 @@ export const KOTLIN_SOURCE_FILES: KotlinSourceFile[] = [
     path: 'app/src/main/java/com/konvoiku/touring/model/ConvoyModels.kt',
     category: 'Navigasi & State',
     code: modelsKt,
+  },
+  {
+    id: 'geo_utils',
+    name: 'GeoUtils.kt',
+    path: 'app/src/main/java/com/konvoiku/touring/util/GeoUtils.kt',
+    category: 'Navigasi & State',
+    code: geoUtilsKt,
+  },
+  {
+    id: 'gps_tracker',
+    name: 'GpsLocationTracker.kt',
+    path: 'app/src/main/java/com/konvoiku/touring/location/GpsLocationTracker.kt',
+    category: 'Navigasi & State',
+    code: gpsLocationTrackerKt,
+  },
+  {
+    id: 'firestore_repo',
+    name: 'FirestoreConvoyRepository.kt',
+    path: 'app/src/main/java/com/konvoiku/touring/data/FirestoreConvoyRepository.kt',
+    category: 'Navigasi & State',
+    code: firestoreConvoyRepositoryKt,
   },
   {
     id: 'theme',

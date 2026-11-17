@@ -1,25 +1,22 @@
 package com.konvoiku.touring.ui.screens
 
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -70,8 +67,8 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -79,28 +76,28 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.StrokeJoin
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.google.android.gms.maps.CameraUpdateFactory
+import com.google.android.gms.maps.model.CameraPosition
+import com.google.android.gms.maps.model.LatLng
+import com.google.maps.android.compose.GoogleMap
+import com.google.maps.android.compose.MapProperties
+import com.google.maps.android.compose.MapType
+import com.google.maps.android.compose.MapUiSettings
+import com.google.maps.android.compose.Marker
+import com.google.maps.android.compose.MarkerState
+import com.google.maps.android.compose.Polyline
+import com.google.maps.android.compose.rememberCameraPositionState
 import com.konvoiku.touring.model.ConvoyMember
 import com.konvoiku.touring.model.ConvoyRouteConfig
 import com.konvoiku.touring.model.RoutePoint
@@ -108,6 +105,8 @@ import com.konvoiku.touring.model.TourRoom
 import com.konvoiku.touring.model.UserRole
 import com.konvoiku.touring.model.VehicleType
 import com.konvoiku.touring.ui.components.ConvoyAvatar
+import com.konvoiku.touring.util.GeoUtils
+import com.konvoiku.touring.util.LatLngGeo
 import com.konvoiku.touring.viewmodel.ConvoyViewModel
 import kotlinx.coroutines.launch
 import java.util.Locale
@@ -119,8 +118,10 @@ fun TourLeaderScreen(
     activeRoom: TourRoom?,
     routeConfig: ConvoyRouteConfig,
     destinationPresets: List<ConvoyViewModel.DestinationPreset>,
+    userGpsLat: Double? = null,
+    userGpsLng: Double? = null,
     onSelectPreset: (ConvoyViewModel.DestinationPreset) -> Unit,
-    onPickDestinationFromMap: (xFraction: Float, yFraction: Float, placeName: String, addressLabel: String) -> Unit,
+    onPickDestinationLatLng: (latitude: Double, longitude: Double, placeName: String, addressLabel: String) -> Unit,
     onUpdateWaypoints: (List<RoutePoint>, String?) -> Unit,
     onResetDefaultWaypoints: () -> Unit,
     onAddCheckpointAtPoint: (String, Float, Float) -> Unit,
@@ -445,63 +446,86 @@ fun TourLeaderScreen(
                                     }
 
                                     Text(
-                                        text = "Ketuk kanvas peta di bawah untuk menambah titik belok jalur baru menuju ${routeConfig.destinationName}.",
+                                        text = "Ketuk Google Map di bawah untuk menambah titik belok jalur baru menuju ${routeConfig.destinationName}.",
                                         style = MaterialTheme.typography.bodyMedium,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
 
-                                    BoxWithConstraints(
+                                    val routePreviewCenter = remember(routeConfig.waypoints) {
+                                        val pts = routeConfig.waypoints
+                                        if (pts.isNotEmpty()) {
+                                            val avgLat = pts.map { it.latitude }.average()
+                                            val avgLng = pts.map { it.longitude }.average()
+                                            LatLng(avgLat, avgLng)
+                                        } else {
+                                            LatLng(-6.674, 106.925)
+                                        }
+                                    }
+                                    val routeEditorCameraState = rememberCameraPositionState {
+                                        position = CameraPosition.fromLatLngZoom(routePreviewCenter, 11.5f)
+                                    }
+
+                                    Box(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .height(220.dp)
-                                            .background(Color(0xFFEEF2F6), RoundedCornerShape(16.dp))
-                                            .pointerInput(routeConfig.waypoints) {
-                                                detectTapGestures { offset ->
-                                                    val nx = (offset.x / size.width.toFloat()).coerceIn(0.10f, 0.90f)
-                                                    val ny = (offset.y / size.height.toFloat()).coerceIn(0.10f, 0.90f)
-                                                    val newPt = RoutePoint(
-                                                        xFraction = nx,
-                                                        yFraction = ny,
-                                                        latitude = -6.7100 + (1f - ny) * 0.08,
-                                                        longitude = 106.8500 + nx * 0.16
-                                                    )
-                                                    val current = routeConfig.waypoints
-                                                    val updated = if (current.size >= 2) {
-                                                        current.dropLast(1) + newPt + current.last()
-                                                    } else {
-                                                        current + newPt
-                                                    }
-                                                    onUpdateWaypoints(updated, null)
-                                                }
-                                            }
+                                            .height(230.dp)
+                                            .clip(RoundedCornerShape(16.dp))
+                                            .background(Color(0xFFEEF2F6))
                                     ) {
-                                        Canvas(modifier = Modifier.fillMaxSize()) {
-                                            val pts = routeConfig.waypoints
-                                            if (pts.size >= 2) {
-                                                val path = Path().apply {
-                                                    moveTo(pts.first().xFraction * size.width, pts.first().yFraction * size.height)
-                                                    for (i in 1 until pts.size) {
-                                                        lineTo(pts[i].xFraction * size.width, pts[i].yFraction * size.height)
-                                                    }
+                                        GoogleMap(
+                                            modifier = Modifier.fillMaxSize(),
+                                            cameraPositionState = routeEditorCameraState,
+                                            properties = MapProperties(mapType = MapType.NORMAL),
+                                            uiSettings = MapUiSettings(
+                                                zoomControlsEnabled = true,
+                                                compassEnabled = true
+                                            ),
+                                            onMapClick = { latLng ->
+                                                val newPt = RoutePoint(
+                                                    xFraction = 0.5f,
+                                                    yFraction = 0.5f,
+                                                    latitude = latLng.latitude,
+                                                    longitude = latLng.longitude
+                                                )
+                                                val current = routeConfig.waypoints
+                                                val updated = if (current.size >= 2) {
+                                                    current.dropLast(1) + newPt + current.last()
+                                                } else {
+                                                    current + newPt
                                                 }
-                                                drawPath(path, Color.White, style = Stroke(12.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
-                                                drawPath(path, Color(0xFF1D4ED8), style = Stroke(5.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
+                                                onUpdateWaypoints(updated, null)
                                             }
-                                            pts.forEachIndexed { index, pt ->
-                                                val center = Offset(pt.xFraction * size.width, pt.yFraction * size.height)
-                                                val dotColor = when (index) {
-                                                    0 -> Color(0xFFEA580C)
-                                                    pts.lastIndex -> Color(0xFF16A34A)
-                                                    else -> Color(0xFF1D4ED8)
+                                        ) {
+                                            val polyPoints = routeConfig.waypoints.map {
+                                                LatLng(it.latitude, it.longitude)
+                                            }
+                                            if (polyPoints.size >= 2) {
+                                                Polyline(points = polyPoints, color = Color.White, width = 14f)
+                                                Polyline(points = polyPoints, color = Color(0xFF1D4ED8), width = 8f)
+                                            }
+                                            routeConfig.waypoints.firstOrNull()?.let { startPt ->
+                                                val startState = remember {
+                                                    MarkerState(position = LatLng(startPt.latitude, startPt.longitude))
                                                 }
-                                                drawCircle(Color.White, radius = 8.dp.toPx(), center = center)
-                                                drawCircle(dotColor, radius = 5.5.dp.toPx(), center = center)
+                                                SideEffect {
+                                                    startState.position = LatLng(startPt.latitude, startPt.longitude)
+                                                }
+                                                Marker(state = startState, title = "Start Konvoi")
+                                            }
+                                            routeConfig.waypoints.lastOrNull()?.let { endPt ->
+                                                val endState = remember {
+                                                    MarkerState(position = LatLng(endPt.latitude, endPt.longitude))
+                                                }
+                                                SideEffect {
+                                                    endState.position = LatLng(endPt.latitude, endPt.longitude)
+                                                }
+                                                Marker(state = endState, title = "Tujuan: ${routeConfig.destinationName}")
                                             }
                                         }
                                     }
 
                                     Text(
-                                        text = "${routeConfig.waypoints.size} titik jalur aktif · Titik Oranye = Start, Hijau = Tujuan",
+                                        text = "${routeConfig.waypoints.size} titik jalur aktif di Google Maps · Ketuk peta untuk tambah belokan",
                                         style = MaterialTheme.typography.bodyMedium,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -869,13 +893,16 @@ fun TourLeaderScreen(
 
     if (showDestinationMapPicker) {
         val currentEnd = routeConfig.waypoints.lastOrNull()
-            ?: RoutePoint(0.86f, 0.14f, -6.6450, 106.9900)
+            ?: RoutePoint(0.86f, 0.14f, -6.7003, 106.9960)
         DestinationMapPickerDialog(
-            initialPoint = currentEnd,
+            initialLat = currentEnd.latitude,
+            initialLng = currentEnd.longitude,
             initialName = routeConfig.destinationName,
+            userGpsLat = userGpsLat,
+            userGpsLng = userGpsLng,
             onDismiss = { showDestinationMapPicker = false },
-            onConfirm = { x, y, placeName, addressLabel ->
-                onPickDestinationFromMap(x, y, placeName, addressLabel)
+            onConfirm = { lat, lng, placeName, addressLabel ->
+                onPickDestinationLatLng(lat, lng, placeName, addressLabel)
                 showDestinationMapPicker = false
                 coroutineScope.launch {
                     snackbarHostState.showSnackbar("Lokasi tujuan disimpan: $placeName")
@@ -955,46 +982,65 @@ private fun MemberListCard(
 private data class MapLandmark(
     val name: String,
     val address: String,
-    val xFraction: Float,
-    val yFraction: Float
+    val latitude: Double,
+    val longitude: Double
 )
 
 private val REGIONAL_LANDMARKS = listOf(
-    MapLandmark("Puncak Pass Resort", "Jl. Raya Puncak KM 90, Cisarua", 0.86f, 0.14f),
-    MapLandmark("Taman Safari Cisarua", "Jl. Kapten Harun Kabir No. 724", 0.58f, 0.30f),
-    MapLandmark("Rest Area KM 57", "Tol Jakarta-Cikampek KM 57", 0.82f, 0.46f),
-    MapLandmark("Lembang Highland", "Jl. Raya Lembang No. 12, Bandung", 0.26f, 0.20f),
-    MapLandmark("Simpang Gadog", "Jl. Raya Ciawi - Gadog KM 45", 0.34f, 0.66f),
-    MapLandmark("Sentul Selatan Exit", "Jl. MH Thamrin, Babakan Madang", 0.72f, 0.68f)
+    MapLandmark("Puncak Pass Resort", "Jl. Raya Puncak KM 90, Cisarua", -6.7003, 106.9960),
+    MapLandmark("Taman Safari Cisarua", "Jl. Kapten Harun Kabir No. 724", -6.7124, 106.9502),
+    MapLandmark("Rest Area KM 57", "Tol Jakarta-Cikampek KM 57", -6.3690, 107.3590),
+    MapLandmark("Lembang Highland", "Jl. Raya Lembang No. 12, Bandung", -6.8120, 107.6180),
+    MapLandmark("Simpang Gadog", "Jl. Raya Ciawi - Gadog KM 45", -6.6520, 106.8680),
+    MapLandmark("Ciwidey Kawah Putih", "Sugihmukti, Pasirjambu, Bandung", -7.1660, 107.4020)
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun DestinationMapPickerDialog(
-    initialPoint: RoutePoint,
+    initialLat: Double,
+    initialLng: Double,
     initialName: String,
+    userGpsLat: Double?,
+    userGpsLng: Double?,
     onDismiss: () -> Unit,
-    onConfirm: (xFraction: Float, yFraction: Float, placeName: String, addressLabel: String) -> Unit
+    onConfirm: (latitude: Double, longitude: Double, placeName: String, addressLabel: String) -> Unit
 ) {
-    var scale by remember { mutableFloatStateOf(1.25f) }
-    var offset by remember { mutableStateOf(Offset.Zero) }
-    var pinX by remember { mutableFloatStateOf(initialPoint.xFraction.coerceIn(0.08f, 0.92f)) }
-    var pinY by remember { mutableFloatStateOf(initialPoint.yFraction.coerceIn(0.08f, 0.90f)) }
+    val coroutineScope = rememberCoroutineScope()
+    var pinLatLng by remember { mutableStateOf(LatLng(initialLat, initialLng)) }
     var placeName by remember { mutableStateOf(initialName) }
-    var canvasSize by remember { mutableStateOf(IntSize(1, 1)) }
+    var mapType by remember { mutableStateOf(MapType.NORMAL) }
 
-    val lat = -6.7100 + (1f - pinY) * 0.08
-    val lng = 106.8500 + pinX * 0.16
-    val nearestLandmark = remember(pinX, pinY) {
+    val cameraPositionState = rememberCameraPositionState {
+        position = CameraPosition.fromLatLngZoom(LatLng(initialLat, initialLng), 12.5f)
+    }
+
+    val markerState = remember { MarkerState(position = LatLng(initialLat, initialLng)) }
+    SideEffect {
+        markerState.position = pinLatLng
+    }
+
+    val nearestLandmark = remember(pinLatLng) {
         REGIONAL_LANDMARKS.minByOrNull { lm ->
-            val dx = lm.xFraction - pinX
-            val dy = lm.yFraction - pinY
-            dx * dx + dy * dy
+            GeoUtils.haversineMeters(
+                LatLngGeo(lm.latitude, lm.longitude),
+                LatLngGeo(pinLatLng.latitude, pinLatLng.longitude)
+            )
         }
     }
-    val resolvedAddress = remember(pinX, pinY, nearestLandmark) {
-        val base = nearestLandmark?.address ?: "Jalur Touring Jawa Barat"
-        String.format(Locale.US, "%s · %.4f, %.4f", base, lat, lng)
+    val resolvedAddress = remember(pinLatLng, nearestLandmark) {
+        val distMeters = nearestLandmark?.let {
+            GeoUtils.haversineMeters(
+                LatLngGeo(it.latitude, it.longitude),
+                LatLngGeo(pinLatLng.latitude, pinLatLng.longitude)
+            )
+        } ?: Double.MAX_VALUE
+        val base = if (distMeters < 15_000.0 && nearestLandmark != null) {
+            nearestLandmark.address
+        } else {
+            "Koordinat Google Maps"
+        }
+        String.format(Locale.US, "%s · %.4f, %.4f", base, pinLatLng.latitude, pinLatLng.longitude)
     }
 
     Dialog(
@@ -1010,9 +1056,9 @@ private fun DestinationMapPickerDialog(
                     TopAppBar(
                         title = {
                             Column {
-                                Text("Pilih Tujuan Akhir di Peta", style = MaterialTheme.typography.titleMedium)
+                                Text("Pilih Tujuan Akhir di Google Maps", style = MaterialTheme.typography.titleMedium)
                                 Text(
-                                    text = "Geser, perbesar, lalu ketuk peta untuk menaruh pin",
+                                    text = "Ketuk lokasi di peta atau pilih cepat titik touring",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -1021,6 +1067,15 @@ private fun DestinationMapPickerDialog(
                         navigationIcon = {
                             IconButton(onClick = onDismiss) {
                                 Icon(Icons.Rounded.Close, contentDescription = "Tutup Peta")
+                            }
+                        },
+                        actions = {
+                            TextButton(
+                                onClick = {
+                                    mapType = if (mapType == MapType.NORMAL) MapType.HYBRID else MapType.NORMAL
+                                }
+                            ) {
+                                Text(if (mapType == MapType.NORMAL) "Satelit" else "Peta")
                             }
                         },
                         colors = TopAppBarDefaults.topAppBarColors(
@@ -1034,156 +1089,81 @@ private fun DestinationMapPickerDialog(
                         .fillMaxSize()
                         .padding(innerPadding)
                 ) {
+                    // Quick Jump Landmark Chips
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(REGIONAL_LANDMARKS) { lm ->
+                            FilterChip(
+                                selected = placeName == lm.name,
+                                onClick = {
+                                    val target = LatLng(lm.latitude, lm.longitude)
+                                    pinLatLng = target
+                                    placeName = lm.name
+                                    coroutineScope.launch {
+                                        cameraPositionState.animate(
+                                            CameraUpdateFactory.newLatLngZoom(target, 13.5f)
+                                        )
+                                    }
+                                },
+                                label = { Text(lm.name, fontSize = 11.sp) }
+                            )
+                        }
+                    }
+
                     Box(
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxWidth()
                             .background(Color(0xFFE9EFF5))
-                            .clipToBounds()
-                            .onSizeChanged { canvasSize = it }
-                            .pointerInput(Unit) {
-                                detectTransformGestures { _, pan, zoom, _ ->
-                                    val newScale = (scale * zoom).coerceIn(1f, 3f)
-                                    val maxOffsetX = (size.width * (newScale - 1f)) / 2f
-                                    val maxOffsetY = (size.height * (newScale - 1f)) / 2f
-                                    scale = newScale
-                                    offset = Offset(
-                                        x = (offset.x + pan.x).coerceIn(-maxOffsetX, maxOffsetX),
-                                        y = (offset.y + pan.y).coerceIn(-maxOffsetY, maxOffsetY)
-                                    )
-                                }
-                            }
-                            .pointerInput(scale, offset) {
-                                detectTapGestures { tapOffset ->
-                                    val w = size.width.toFloat().coerceAtLeast(1f)
-                                    val h = size.height.toFloat().coerceAtLeast(1f)
-                                    val cx = w / 2f
-                                    val cy = h / 2f
-                                    val mapX = ((tapOffset.x - cx - offset.x) / scale + cx) / w
-                                    val mapY = ((tapOffset.y - cy - offset.y) / scale + cy) / h
-                                    pinX = mapX.coerceIn(0.08f, 0.92f)
-                                    pinY = mapY.coerceIn(0.08f, 0.90f)
-                                    val closest = REGIONAL_LANDMARKS.minByOrNull { lm ->
-                                        val dx = lm.xFraction - pinX
-                                        val dy = lm.yFraction - pinY
-                                        dx * dx + dy * dy
-                                    }
-                                    if (closest != null) {
-                                        val distSq = (closest.xFraction - pinX) * (closest.xFraction - pinX) +
-                                            (closest.yFraction - pinY) * (closest.yFraction - pinY)
-                                        placeName = if (distSq < 0.025f) {
-                                            closest.name
-                                        } else {
-                                            "Area ${closest.name}"
-                                        }
-                                    }
-                                }
-                            }
                     ) {
-                        // Transformed Interactive Map Layer
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .graphicsLayer {
-                                    scaleX = scale
-                                    scaleY = scale
-                                    translationX = offset.x
-                                    translationY = offset.y
+                        GoogleMap(
+                            modifier = Modifier.fillMaxSize(),
+                            cameraPositionState = cameraPositionState,
+                            properties = MapProperties(
+                                mapType = mapType,
+                                isMyLocationEnabled = userGpsLat != null && userGpsLng != null
+                            ),
+                            uiSettings = MapUiSettings(
+                                zoomControlsEnabled = false,
+                                myLocationButtonEnabled = false,
+                                compassEnabled = true
+                            ),
+                            onMapClick = { tapped ->
+                                pinLatLng = tapped
+                                val closest = REGIONAL_LANDMARKS.minByOrNull { lm ->
+                                    GeoUtils.haversineMeters(
+                                        LatLngGeo(lm.latitude, lm.longitude),
+                                        LatLngGeo(tapped.latitude, tapped.longitude)
+                                    )
                                 }
+                                if (closest != null) {
+                                    val meters = GeoUtils.haversineMeters(
+                                        LatLngGeo(closest.latitude, closest.longitude),
+                                        LatLngGeo(tapped.latitude, tapped.longitude)
+                                    )
+                                    placeName = if (meters < 2500.0) {
+                                        closest.name
+                                    } else {
+                                        String.format(
+                                            Locale.US,
+                                            "Titik Tujuan (%.4f, %.4f)",
+                                            tapped.latitude,
+                                            tapped.longitude
+                                        )
+                                    }
+                                }
+                            }
                         ) {
-                            Canvas(modifier = Modifier.fillMaxSize()) {
-                                val step = 42.dp.toPx()
-                                var gx = 0f
-                                while (gx < size.width) {
-                                    drawLine(Color(0xFFD5DEE8), Offset(gx, 0f), Offset(gx, size.height), 1.dp.toPx())
-                                    gx += step
-                                }
-                                var gy = 0f
-                                while (gy < size.height) {
-                                    drawLine(Color(0xFFD5DEE8), Offset(0f, gy), Offset(size.width, gy), 1.dp.toPx())
-                                    gy += step
-                                }
-                                // Simulated highway corridors
-                                val highwayPath = Path().apply {
-                                    moveTo(size.width * 0.12f, size.height * 0.88f)
-                                    lineTo(size.width * 0.34f, size.height * 0.66f)
-                                    lineTo(size.width * 0.58f, size.height * 0.30f)
-                                    lineTo(size.width * 0.86f, size.height * 0.14f)
-                                }
-                                drawPath(highwayPath, Color.White, style = Stroke(14.dp.toPx(), cap = StrokeCap.Round))
-                                drawPath(highwayPath, Color(0xFF93C5FD), style = Stroke(6.dp.toPx(), cap = StrokeCap.Round))
-
-                                val branchPath = Path().apply {
-                                    moveTo(size.width * 0.34f, size.height * 0.66f)
-                                    lineTo(size.width * 0.72f, size.height * 0.68f)
-                                    lineTo(size.width * 0.82f, size.height * 0.46f)
-                                }
-                                drawPath(branchPath, Color(0xFFCBD5E1), style = Stroke(5.dp.toPx(), cap = StrokeCap.Round))
-                            }
-
-                            // Landmark clickable nodes
-                            val density = LocalDensity.current
-                            REGIONAL_LANDMARKS.forEach { lm ->
-                                val px = (lm.xFraction * canvasSize.width).roundToInt()
-                                val py = (lm.yFraction * canvasSize.height).roundToInt()
-                                Surface(
-                                    onClick = {
-                                        pinX = lm.xFraction
-                                        pinY = lm.yFraction
-                                        placeName = lm.name
-                                    },
-                                    shape = RoundedCornerShape(8.dp),
-                                    color = Color.White.copy(alpha = 0.92f),
-                                    shadowElevation = 2.dp,
-                                    modifier = Modifier.offset {
-                                        IntOffset(
-                                            x = px - with(density) { 46.dp.roundToPx() },
-                                            y = py + with(density) { 8.dp.roundToPx() }
-                                        )
-                                    }
-                                ) {
-                                    Text(
-                                        text = lm.name,
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = Color(0xFF1E293B),
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                    )
-                                }
-                            }
-
-                            // Dropped Destination Pin Marker
-                            val pinPx = (pinX * canvasSize.width).roundToInt()
-                            val pinPy = (pinY * canvasSize.height).roundToInt()
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                modifier = Modifier.offset {
-                                    IntOffset(
-                                        x = pinPx - with(density) { 18.dp.roundToPx() },
-                                        y = pinPy - with(density) { 36.dp.roundToPx() }
-                                    )
-                                }
-                            ) {
-                                Surface(
-                                    shape = CircleShape,
-                                    color = Color(0xFFDC2626),
-                                    border = BorderStroke(2.5.dp, Color.White),
-                                    shadowElevation = 6.dp,
-                                    modifier = Modifier.size(36.dp)
-                                ) {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        Icon(
-                                            imageVector = Icons.Rounded.Flag,
-                                            contentDescription = "Pin Tujuan",
-                                            tint = Color.White,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                    }
-                                }
-                            }
+                            Marker(
+                                state = markerState,
+                                title = placeName.ifBlank { "Titik Tujuan Konvoi" },
+                                snippet = String.format(Locale.US, "%.4f, %.4f", pinLatLng.latitude, pinLatLng.longitude)
+                            )
                         }
 
-                        // Zoom Controls
+                        // Zoom & GPS Controls
                         Column(
                             modifier = Modifier
                                 .align(Alignment.TopEnd)
@@ -1191,7 +1171,11 @@ private fun DestinationMapPickerDialog(
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             SmallFloatingActionButton(
-                                onClick = { scale = (scale + 0.35f).coerceAtMost(3f) },
+                                onClick = {
+                                    coroutineScope.launch {
+                                        cameraPositionState.animate(CameraUpdateFactory.zoomIn())
+                                    }
+                                },
                                 containerColor = MaterialTheme.colorScheme.surface,
                                 elevation = FloatingActionButtonDefaults.elevation(4.dp)
                             ) {
@@ -1199,9 +1183,9 @@ private fun DestinationMapPickerDialog(
                             }
                             SmallFloatingActionButton(
                                 onClick = {
-                                    val next = (scale - 0.35f).coerceAtLeast(1f)
-                                    scale = next
-                                    if (next == 1f) offset = Offset.Zero
+                                    coroutineScope.launch {
+                                        cameraPositionState.animate(CameraUpdateFactory.zoomOut())
+                                    }
                                 },
                                 containerColor = MaterialTheme.colorScheme.surface,
                                 elevation = FloatingActionButtonDefaults.elevation(4.dp)
@@ -1210,17 +1194,24 @@ private fun DestinationMapPickerDialog(
                             }
                             SmallFloatingActionButton(
                                 onClick = {
-                                    scale = 1f
-                                    offset = Offset.Zero
+                                    val target = if (userGpsLat != null && userGpsLng != null) {
+                                        LatLng(userGpsLat, userGpsLng)
+                                    } else {
+                                        pinLatLng
+                                    }
+                                    coroutineScope.launch {
+                                        cameraPositionState.animate(
+                                            CameraUpdateFactory.newLatLngZoom(target, 14f)
+                                        )
+                                    }
                                 },
                                 containerColor = MaterialTheme.colorScheme.surface,
                                 elevation = FloatingActionButtonDefaults.elevation(4.dp)
                             ) {
-                                Icon(Icons.Rounded.MyLocation, contentDescription = "Reset Tampilan Peta")
+                                Icon(Icons.Rounded.MyLocation, contentDescription = "Fokus Lokasi")
                             }
                         }
 
-                        // Zoom Badge
                         Surface(
                             shape = RoundedCornerShape(10.dp),
                             color = Color(0xCC0F172A),
@@ -1229,8 +1220,14 @@ private fun DestinationMapPickerDialog(
                                 .padding(14.dp)
                         ) {
                             Text(
-                                text = String.format(Locale.US, "Zoom %.1fx · Ketuk untuk taruh pin", scale),
+                                text = String.format(
+                                    Locale.US,
+                                    "Pin: %.4f, %.4f · Ketuk peta",
+                                    pinLatLng.latitude,
+                                    pinLatLng.longitude
+                                ),
                                 color = Color.White,
+                                fontFamily = FontFamily.Monospace,
                                 fontSize = 11.sp,
                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
                             )
@@ -1279,9 +1276,9 @@ private fun DestinationMapPickerDialog(
                                 Button(
                                     onClick = {
                                         onConfirm(
-                                            pinX,
-                                            pinY,
-                                            placeName.trim().ifBlank { "Titik Tujuan Peta" },
+                                            pinLatLng.latitude,
+                                            pinLatLng.longitude,
+                                            placeName.trim().ifBlank { "Titik Tujuan Google Maps" },
                                             resolvedAddress
                                         )
                                     },

@@ -481,5 +481,9 @@ data class ConvoyUiState(
     val gpsAccuracyMeters: Int = 20,
     val userGpsLat: Double? = null,
     val userGpsLng: Double? = null,
-    val isCloudSyncConnected: Boolean = false
+    val isCloudSyncConnected: Boolean = false,
+    val isLoggedIn: Boolean = false,
+    val authUserName: String = "",
+    val authUserEmail: String = "",
+    val isGuestMode: Boolean = false
 )

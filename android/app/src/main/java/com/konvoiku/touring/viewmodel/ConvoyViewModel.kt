@@ -295,6 +295,39 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun loginUser(fullName: String, email: String, isGuest: Boolean = false) {
+        val cleanName = fullName.trim().ifBlank { "Pengendara KonvoiKu" }
+        val cleanEmail = email.trim()
+        _uiState.update { state ->
+            state.copy(
+                isLoggedIn = true,
+                authUserName = cleanName,
+                authUserEmail = cleanEmail,
+                isGuestMode = isGuest,
+                vehicleProfile = state.vehicleProfile.copy(
+                    fullName = state.vehicleProfile.fullName.ifBlank { cleanName }
+                )
+            )
+        }
+    }
+
+    fun logoutUser() {
+        roomUnsubscribe?.invoke()
+        roomUnsubscribe = null
+        _uiState.update { state ->
+            state.copy(
+                isLoggedIn = false,
+                authUserName = "",
+                authUserEmail = "",
+                isGuestMode = false,
+                activeRoom = null,
+                selectedRole = null,
+                sosState = SosEmergencyState(),
+                messages = emptyList()
+            )
+        }
+    }
+
     fun selectRole(role: UserRole) {
         _uiState.update { it.copy(selectedRole = role) }
     }

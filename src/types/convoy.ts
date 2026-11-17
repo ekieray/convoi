@@ -9,6 +9,7 @@ export type MemberConditionStatus = 'AMAN' | 'ISTIRAHAT' | 'MOGOK' | 'SOS';
 export type ChatMessageType = 'TEXT' | 'VOICE' | 'SOS_ALERT' | 'SYSTEM';
 
 export type ScreenRoute =
+  | 'login'
   | 'role_selection'
   | 'vehicle_profile'
   | 'tour_leader'

@@ -6,6 +6,7 @@ import { KotlinSourceExplorer } from './components/KotlinSourceExplorer';
 import { AboutAppView } from './components/screens/AboutAppView';
 import { JoinTourView } from './components/screens/JoinTourView';
 import { LiveTrackingMapView } from './components/screens/LiveTrackingMapView';
+import { LoginView } from './components/screens/LoginView';
 import { RoleSelectionView } from './components/screens/RoleSelectionView';
 import { TourLeaderView } from './components/screens/TourLeaderView';
 import { TripDetailView } from './components/screens/TripDetailView';
@@ -548,6 +549,7 @@ const DEFAULT_TRIP_HISTORY: TripHistoryRecord[] = [
 ];
 
 const ROUTE_STEPS: Array<{ route: ScreenRoute; label: string }> = [
+  { route: 'login', label: '0. Masuk' },
   { route: 'role_selection', label: '1. Beranda' },
   { route: 'vehicle_profile', label: '2. Profil' },
   { route: 'tour_leader', label: '3A. Setup Leader' },
@@ -559,15 +561,17 @@ const ROUTE_STEPS: Array<{ route: ScreenRoute; label: string }> = [
 export default function App() {
   const [darkMode, setDarkMode] = useState(false);
   const [mapsQuotaExceeded, setMapsQuotaExceeded] = useState(false);
-  const [currentRoute, setCurrentRoute] = useState<ScreenRoute>('role_selection');
+  const [currentRoute, setCurrentRoute] = useState<ScreenRoute>('login');
   const [aboutReturnRoute, setAboutReturnRoute] =
-    useState<ScreenRoute>('role_selection');
+    useState<ScreenRoute>('login');
   const [navDirection, setNavDirection] = useState<1 | -1>(1);
   const [selectedRole, setSelectedRole] = useState<UserRole>('TOUR_LEADER');
   const [vehicleProfile, setVehicleProfile] = useState<VehicleProfile>(INITIAL_PROFILE);
 
   // Auth & Cloud Room Sync state
   const [authUser, setAuthUser] = useState<User | null>(null);
+  const [localUserName, setLocalUserName] = useState<string | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [isCreatingRoom, setIsCreatingRoom] = useState(false);
   const [isJoiningRoom, setIsJoiningRoom] = useState(false);
@@ -649,6 +653,8 @@ export default function App() {
     const unsubAuth = subscribeToAuthState(async (user) => {
       setAuthUser(user);
       if (user) {
+        setAuthError(null);
+        setCurrentRoute((prev) => (prev === 'login' ? 'role_selection' : prev));
         try {
           const savedProfile = await loadUserPrivateProfile(user.uid);
           if (savedProfile) {
@@ -910,7 +916,19 @@ export default function App() {
     gps.status,
   ]);
 
+  const isSessionAuthenticated = Boolean(authUser || localUserName);
+
   const navigateTo = (next: ScreenRoute, direction: 1 | -1 = 1) => {
+    if (
+      !isSessionAuthenticated &&
+      next !== 'login' &&
+      next !== 'about_app'
+    ) {
+      setAuthError('Silakan masuk terlebih dahulu sebelum menggunakan aplikasi.');
+      setNavDirection(-1);
+      setCurrentRoute('login');
+      return;
+    }
     setNavDirection(direction);
     setCurrentRoute(next);
   };
@@ -918,21 +936,47 @@ export default function App() {
   const handleGoogleSignIn = async () => {
     if (isSigningIn) return;
     setIsSigningIn(true);
+    setAuthError(null);
     try {
       await signInWithGoogle();
+      setLocalUserName(null);
+      setNavDirection(1);
+      setCurrentRoute('role_selection');
     } catch (err) {
       console.error('Login Google gagal:', err);
+      const message =
+        err instanceof Error && err.message.includes('popup')
+          ? 'Popup login Google diblokir atau ditutup. Izinkan popup browser atau gunakan Masuk Akun Pengendara di bawah.'
+          : 'Gagal masuk dengan Google. Coba lagi atau gunakan Masuk Akun Pengendara di bawah.';
+      setAuthError(message);
     } finally {
       setIsSigningIn(false);
     }
   };
 
+  const handleLocalLogin = (fullName: string) => {
+    const cleanName = fullName.trim();
+    if (!cleanName) return;
+    setAuthError(null);
+    setLocalUserName(cleanName);
+    setVehicleProfile((prev) => ({
+      ...prev,
+      fullName: prev.fullName.trim() || cleanName,
+    }));
+    setNavDirection(1);
+    setCurrentRoute('role_selection');
+  };
+
   const handleGoogleSignOut = async () => {
     try {
-      await signOutFirebase();
-      if (activeRoom?.isSyncedRoom) {
-        setActiveRoom(null);
+      if (authUser) {
+        await signOutFirebase();
       }
+      setLocalUserName(null);
+      setAuthError(null);
+      setActiveRoom(null);
+      setNavDirection(-1);
+      setCurrentRoute('login');
     } catch (err) {
       console.error('Logout gagal:', err);
     }
@@ -2227,7 +2271,9 @@ export default function App() {
     setIsStragglerSimActive(false);
     setTripHistory(DEFAULT_TRIP_HISTORY);
     setSelectedTripId(DEFAULT_TRIP_HISTORY[0]?.id ?? null);
-    navigateTo('role_selection', -1);
+    setAuthError(null);
+    setNavDirection(-1);
+    setCurrentRoute(authUser || localUserName ? 'role_selection' : 'login');
   };
 
   return (
@@ -2474,6 +2520,24 @@ export default function App() {
                     transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
                     className="min-h-full flex flex-col"
                   >
+                    {currentRoute === 'login' && (
+                      <LoginView
+                        authUserEmail={authUser?.email ?? null}
+                        authUserName={authUser?.displayName ?? null}
+                        localUserName={localUserName}
+                        isSigningIn={isSigningIn}
+                        authError={authError}
+                        initialName={vehicleProfile.fullName}
+                        onGoogleSignIn={handleGoogleSignIn}
+                        onLocalLogin={handleLocalLogin}
+                        onContinueSession={() => navigateTo('role_selection', 1)}
+                        onOpenAboutApp={() => {
+                          setAboutReturnRoute('login');
+                          navigateTo('about_app', 1);
+                        }}
+                      />
+                    )}
+
                     {currentRoute === 'role_selection' && (
                       <RoleSelectionView
                         activeRoom={activeRoom}
@@ -2482,6 +2546,7 @@ export default function App() {
                         latestTripTitle={tripHistory[0]?.tourTitle}
                         authUserEmail={authUser?.email ?? null}
                         authUserName={authUser?.displayName ?? null}
+                        localUserName={localUserName}
                         isSigningIn={isSigningIn}
                         onGoogleSignIn={handleGoogleSignIn}
                         onGoogleSignOut={handleGoogleSignOut}

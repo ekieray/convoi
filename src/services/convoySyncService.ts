@@ -236,7 +236,7 @@ export async function joinSyncedRoom(params: {
       };
     }
     roomData = snap.data();
-    if (roomData.status === 'FINISHED') {
+    if (roomData?.status === 'FINISHED') {
       return {
         ok: false,
         error: `Konvoi pada Room ${roomId} sudah berakhir.`,
