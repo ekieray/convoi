@@ -1,0 +1,8 @@
+{
+  "name": "KonvoiKu — Touring Convoy (Kotlin & Jetpack Compose)",
+  "description": "Aplikasi konvoi touring mobil dan motor berbasis Android native (Kotlin & Jetpack Compose Material Design 3) — Tahap 1: Fondasi & Manajemen Room.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
