@@ -1,0 +1,7 @@
+nama-proyek-anda/
+├── .github/
+│   └── workflows/
+│       └── android-build.yml
+├── app/
+├── build.gradle.kts (atau build.gradle)
+└── settings.gradle.kts
