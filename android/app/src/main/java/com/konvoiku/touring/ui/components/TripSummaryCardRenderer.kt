@@ -329,7 +329,7 @@ fun StravaStyleTripShareCard(
                             }
                             ConvoyAvatar(
                                 preset = leader.avatarPreset,
-                                photoUri = leader.avatarPhotoUrl,
+                                photoUri = leader.avatarPhotoUri,
                                 displayName = leader.fullName,
                                 size = 34.dp,
                                 borderColor = Color(0xFFEA580C),

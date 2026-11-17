@@ -104,7 +104,8 @@ val KonvoiTypography = Typography(
         lineHeight = 26.sp
     ),
     titleMedium = TextStyle(
-        fontFamily = FontWeight.SemiBold,
+        fontFamily = FontFamily.SansSerif,
+        fontWeight = FontWeight.SemiBold,
         fontSize = 16.sp,
         lineHeight = 22.sp
     ),
