@@ -1,12 +1,17 @@
 package com.konvoiku.touring.viewmodel
 
-import androidx.lifecycle.ViewModel
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.konvoiku.touring.data.FirestoreConvoyRepository
+import com.konvoiku.touring.location.GpsLocationTracker
 import com.konvoiku.touring.model.AvatarPreset
 import com.konvoiku.touring.model.ChatMessageType
 import com.konvoiku.touring.model.ConnectionStatus
 import com.konvoiku.touring.model.ConvoyMember
+import com.konvoiku.touring.model.ConvoyRouteConfig
 import com.konvoiku.touring.model.ConvoyUiState
+import com.konvoiku.touring.model.GpsTrackingStatus
 import com.konvoiku.touring.model.MapPosition
 import com.konvoiku.touring.model.MemberConditionStatus
 import com.konvoiku.touring.model.OffRouteAlertState
@@ -21,6 +26,8 @@ import com.konvoiku.touring.model.TripParticipantSummary
 import com.konvoiku.touring.model.UserRole
 import com.konvoiku.touring.model.VehicleType
 import com.konvoiku.touring.model.VisitedCheckpointLog
+import com.konvoiku.touring.util.GeoUtils
+import com.konvoiku.touring.util.LatLngGeo
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -33,16 +40,23 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.roundToInt
 import kotlin.random.Random
 
-class ConvoyViewModel : ViewModel() {
+class ConvoyViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _uiState = MutableStateFlow(ConvoyUiState())
     val uiState: StateFlow<ConvoyUiState> = _uiState.asStateFlow()
 
+    private val gpsTracker = GpsLocationTracker(application.applicationContext)
+    private val syncRepo = FirestoreConvoyRepository()
+
     private var voiceTimerJob: Job? = null
+    private var gpsJob: Job? = null
+    private var roomUnsubscribe: (() -> Unit)? = null
+    private var lastTelemetrySentMs = 0L
 
     private data class SimTemplate(
         val name: String,
@@ -65,7 +79,7 @@ class ConvoyViewModel : ViewModel() {
     )
 
     val destinationPresets = listOf(
-        DestinationPreset("Puncak Pass Resort", RoutePoint(0.86f, 0.14f, -6.6450, 106.9900), 12000),
+        DestinationPreset("Puncak Pass Resort", RoutePoint(0.86f, 0.14f, -6.7003, 106.9960), 16500),
         DestinationPreset("Lembang Highland", RoutePoint(0.78f, 0.22f, -6.8120, 107.6180), 15000),
         DestinationPreset("Ciwidey Kawah Putih", RoutePoint(0.24f, 0.18f, -7.1660, 107.4020), 18000),
         DestinationPreset("Rest Area KM 57", RoutePoint(0.88f, 0.44f, -6.3690, 107.3590), 9500)
@@ -133,10 +147,99 @@ class ConvoyViewModel : ViewModel() {
             val seeded = defaultTripHistory()
             state.copy(
                 tripHistory = seeded,
-                selectedTripId = seeded.firstOrNull()?.id
+                selectedTripId = seeded.firstOrNull()?.id,
+                isCloudSyncConnected = syncRepo.isAvailable()
             )
         }
         startLiveMapTicker()
+        if (gpsTracker.hasLocationPermission()) {
+            startGpsTracking()
+        }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        roomUnsubscribe?.invoke()
+        gpsJob?.cancel()
+    }
+
+    fun onLocationPermissionResult(granted: Boolean) {
+        if (granted) {
+            startGpsTracking()
+        } else {
+            _uiState.update { it.copy(gpsStatus = GpsTrackingStatus.DENIED) }
+        }
+    }
+
+    fun startGpsTracking() {
+        if (!gpsTracker.hasLocationPermission()) {
+            _uiState.update { it.copy(gpsStatus = GpsTrackingStatus.DENIED) }
+            return
+        }
+        if (gpsJob?.isActive == true) return
+
+        _uiState.update { it.copy(gpsStatus = GpsTrackingStatus.REQUESTING) }
+        gpsJob = viewModelScope.launch {
+            gpsTracker.locationUpdates(intervalMs = 2000L).collect { sample ->
+                val state = _uiState.value
+                val eval = GeoUtils.evaluatePositionAlongRoute(
+                    pos = LatLngGeo(sample.latitude, sample.longitude),
+                    waypoints = state.routeConfig.waypoints,
+                    totalRouteMetersFallback = state.routeConfig.totalRouteMeters
+                )
+                _uiState.update { cur ->
+                    cur.copy(
+                        gpsStatus = GpsTrackingStatus.ACTIVE,
+                        gpsAccuracyMeters = sample.accuracyMeters,
+                        userGpsLat = sample.latitude,
+                        userGpsLng = sample.longitude
+                    )
+                }
+
+                val room = state.activeRoom ?: return@collect
+                val updatedMembers = room.members.map { m ->
+                    if (m.isCurrentUser) {
+                        m.copy(
+                            connectionStatus = ConnectionStatus.CONNECTED,
+                            lastLocationText = String.format(
+                                Locale.US,
+                                "GPS (%.4f, %.4f)",
+                                sample.latitude,
+                                sample.longitude
+                            ),
+                            lastUpdatedLabel = "GPS Live",
+                            mapPosition = m.mapPosition.copy(
+                                routeProgress = eval.routeProgress,
+                                latitude = sample.latitude,
+                                longitude = sample.longitude,
+                                speedKmh = sample.speedKmh,
+                                heading = sample.headingDegrees,
+                                accuracyMeters = sample.accuracyMeters
+                            )
+                        )
+                    } else m
+                }
+                recomputeAndCommitRoom(updatedMembers)
+
+                if (room.isSyncedRoom) {
+                    val uid = syncRepo.currentUid()
+                    val now = System.currentTimeMillis()
+                    if (uid != null && now - lastTelemetrySentMs >= 2000L) {
+                        lastTelemetrySentMs = now
+                        syncRepo.publishTelemetry(
+                            roomId = room.roomId,
+                            uid = uid,
+                            latitude = sample.latitude,
+                            longitude = sample.longitude,
+                            speedKmh = sample.speedKmh,
+                            heading = sample.headingDegrees,
+                            accuracyMeters = sample.accuracyMeters,
+                            routeProgress = eval.routeProgress
+                        )
+                    }
+                }
+            }
+        }
     }
 
     private fun startLiveMapTicker() {
@@ -145,11 +248,15 @@ class ConvoyViewModel : ViewModel() {
                 delay(2000L)
                 val state = _uiState.value
                 val room = state.activeRoom
-                if (state.isSimulationRunning && room != null) {
+                if (state.isSimulationRunning && room != null && !room.isSyncedRoom) {
                     val orderedByProgress = room.members.sortedByDescending { it.mapPosition.routeProgress }
                     val lastMemberId = orderedByProgress.lastOrNull()?.id
+                    val useRealSelfGps = state.gpsStatus == GpsTrackingStatus.ACTIVE && !state.isOffRouteSimActive
 
                     val movedMembers = room.members.mapIndexed { idx, member ->
+                        if (member.isCurrentUser && useRealSelfGps) {
+                            return@mapIndexed member
+                        }
                         val isStopped = member.conditionStatus == MemberConditionStatus.MOGOK ||
                             member.conditionStatus == MemberConditionStatus.SOS
                         val isTail = member.id == lastMemberId && state.isStragglerSimActive
@@ -219,11 +326,65 @@ class ConvoyViewModel : ViewModel() {
     }
 
     fun createNewTourRoom(customTitle: String = "Konvoi Touring Akhir Pekan") {
-        val profile = _uiState.value.vehicleProfile
-        val routeConfig = _uiState.value.routeConfig
+        val state = _uiState.value
+        val profile = state.vehicleProfile
+        val routeConfig = state.routeConfig
         val roomCode = generateUniqueRoomId()
         val mockLink = "https://konvoiku.id/join/$roomCode"
+        val startLat = state.userGpsLat ?: routeConfig.waypoints.firstOrNull()?.latitude ?: -6.648
+        val startLng = state.userGpsLng ?: routeConfig.waypoints.firstOrNull()?.longitude ?: 106.845
 
+        if (syncRepo.isAvailable()) {
+            viewModelScope.launch {
+                val uid = syncRepo.ensureSignedInUid()
+                if (uid != null) {
+                    val syncedOk = syncRepo.createSyncedRoom(
+                        roomId = roomCode,
+                        roomTitle = customTitle,
+                        leaderUid = uid,
+                        profile = profile,
+                        routeConfig = routeConfig,
+                        initialLat = startLat,
+                        initialLng = startLng
+                    )
+                    if (syncedOk) {
+                        val syncedRoom = TourRoom(
+                            roomId = roomCode,
+                            roomTitle = customTitle,
+                            inviteLink = mockLink,
+                            createdAtLabel = "Sinkronisasi Cloud",
+                            members = emptyList(),
+                            isSyncedRoom = true,
+                            leaderUid = uid
+                        )
+                        _uiState.update {
+                            it.copy(
+                                activeRoom = syncedRoom,
+                                selectedMemberId = uid,
+                                isCloudSyncConnected = true
+                            )
+                        }
+                        attachRoomSubscription(roomCode, uid)
+                        return@launch
+                    }
+                }
+                createLocalDemoRoom(roomCode, customTitle, mockLink, startLat, startLng)
+            }
+        } else {
+            createLocalDemoRoom(roomCode, customTitle, mockLink, startLat, startLng)
+        }
+    }
+
+    private fun createLocalDemoRoom(
+        roomCode: String,
+        customTitle: String,
+        mockLink: String,
+        startLat: Double,
+        startLng: Double
+    ) {
+        val profile = _uiState.value.vehicleProfile
+        val routeConfig = _uiState.value.routeConfig
+        val hasGps = _uiState.value.gpsStatus == GpsTrackingStatus.ACTIVE
         val leaderMember = ConvoyMember(
             id = "self-${UUID.randomUUID()}",
             fullName = profile.fullName.trim().ifBlank { "Anda (Leader)" },
@@ -239,9 +400,13 @@ class ConvoyViewModel : ViewModel() {
             avatarPhotoUri = profile.avatarPhotoUri,
             conditionStatus = MemberConditionStatus.AMAN,
             connectionStatus = ConnectionStatus.CONNECTED,
-            lastLocationText = "Puncak Pass KM 49",
+            lastLocationText = if (hasGps) "GPS Live" else "Puncak Pass KM 49",
             lastUpdatedLabel = "Baru saja",
-            mapPosition = interpolateAlongPolyline(0.74f, routeConfig.waypoints, 0f, 60)
+            mapPosition = if (hasGps) {
+                MapPosition(0.2f, 0.25f, 0.75f, startLat, startLng, 0)
+            } else {
+                interpolateAlongPolyline(0.74f, routeConfig.waypoints, 0f, 60)
+            }
         )
 
         val simulatedMembers = defaultConvoyTemplates.take(3).mapIndexed { index, tpl ->
@@ -274,7 +439,8 @@ class ConvoyViewModel : ViewModel() {
                     roomTitle = customTitle,
                     inviteLink = mockLink,
                     createdAtLabel = "Aktif sekarang",
-                    members = allMembers
+                    members = allMembers,
+                    isSyncedRoom = false
                 ),
                 selectedMemberId = leaderMember.id,
                 sosState = SosEmergencyState(),
@@ -286,8 +452,51 @@ class ConvoyViewModel : ViewModel() {
         recomputeAndCommitRoom(allMembers)
     }
 
+    private fun attachRoomSubscription(roomId: String, uid: String) {
+        roomUnsubscribe?.invoke()
+        roomUnsubscribe = syncRepo.subscribeToRoom(
+            roomId = roomId,
+            currentUid = uid,
+            onRoomHeader = { header ->
+                _uiState.update { state ->
+                    val mergedConfig = header.routeConfig.copy(checkpoints = state.routeConfig.checkpoints)
+                    val curRoom = state.activeRoom
+                    state.copy(
+                        routeConfig = mergedConfig,
+                        sosState = header.sosState,
+                        activeRoom = curRoom?.copy(
+                            roomTitle = header.roomTitle,
+                            leaderUid = header.leaderUid,
+                            isSyncedRoom = true
+                        ) ?: TourRoom(
+                            roomId = header.roomId,
+                            roomTitle = header.roomTitle,
+                            inviteLink = "https://konvoiku.id/join/${header.roomId}",
+                            createdAtLabel = "Cloud Live",
+                            members = emptyList(),
+                            isSyncedRoom = true,
+                            leaderUid = header.leaderUid
+                        )
+                    )
+                }
+            },
+            onMembers = { members ->
+                recomputeAndCommitRoom(members)
+            },
+            onCheckpoints = { cps ->
+                _uiState.update { state ->
+                    state.copy(routeConfig = state.routeConfig.copy(checkpoints = cps))
+                }
+            },
+            onMessages = { msgs ->
+                _uiState.update { it.copy(messages = msgs) }
+            }
+        )
+    }
+
     fun simulateMemberJoin() {
         val room = _uiState.value.activeRoom ?: return
+        if (room.isSyncedRoom) return
         val waypoints = _uiState.value.routeConfig.waypoints
         val tpl = defaultConvoyTemplates[extraMemberCounter % defaultConvoyTemplates.size]
         extraMemberCounter++
@@ -331,7 +540,7 @@ class ConvoyViewModel : ViewModel() {
             .uppercase()
     }
 
-    fun joinConvoyRoom(): Boolean {
+    fun joinConvoyRoom(onSuccess: () -> Unit = {}): Boolean {
         val extractedId = extractRoomId(_uiState.value.joinInput)
         if (extractedId.length < 4) {
             _uiState.update {
@@ -340,11 +549,65 @@ class ConvoyViewModel : ViewModel() {
             return false
         }
 
+        if (syncRepo.isAvailable()) {
+            val state = _uiState.value
+            val startLat = state.userGpsLat ?: -6.65
+            val startLng = state.userGpsLng ?: 106.85
+            viewModelScope.launch {
+                val uid = syncRepo.ensureSignedInUid()
+                if (uid != null) {
+                    val result = syncRepo.joinSyncedRoom(
+                        roomId = extractedId,
+                        uid = uid,
+                        profile = state.vehicleProfile,
+                        initialLat = startLat,
+                        initialLng = startLng
+                    )
+                    if (result.isSuccess) {
+                        val role = result.getOrDefault(UserRole.MEMBER)
+                        _uiState.update {
+                            it.copy(
+                                selectedRole = role,
+                                joinError = null,
+                                selectedMemberId = uid,
+                                activeRoom = TourRoom(
+                                    roomId = extractedId,
+                                    roomTitle = "Room $extractedId",
+                                    inviteLink = "https://konvoiku.id/join/$extractedId",
+                                    createdAtLabel = "Terhubung Cloud",
+                                    members = emptyList(),
+                                    isSyncedRoom = true
+                                )
+                            )
+                        }
+                        attachRoomSubscription(extractedId, uid)
+                        onSuccess()
+                        return@launch
+                    } else {
+                        _uiState.update {
+                            it.copy(joinError = result.exceptionOrNull()?.message ?: "Room tidak ditemukan")
+                        }
+                        return@launch
+                    }
+                }
+                joinLocalDemoRoom(extractedId)
+                onSuccess()
+            }
+            return true
+        }
+
+        joinLocalDemoRoom(extractedId)
+        onSuccess()
+        return true
+    }
+
+    private fun joinLocalDemoRoom(extractedId: String) {
         val profile = _uiState.value.vehicleProfile
         val waypoints = _uiState.value.routeConfig.waypoints
         val leaderTpl = defaultConvoyTemplates[0]
         val peerTpl1 = defaultConvoyTemplates[1]
         val peerTpl2 = defaultConvoyTemplates[2]
+        val hasGps = _uiState.value.gpsStatus == GpsTrackingStatus.ACTIVE
 
         val leaderMember = ConvoyMember(
             id = "leader-host",
@@ -378,9 +641,20 @@ class ConvoyViewModel : ViewModel() {
             avatarPhotoUri = profile.avatarPhotoUri,
             conditionStatus = MemberConditionStatus.AMAN,
             connectionStatus = ConnectionStatus.CONNECTED,
-            lastLocationText = "Jalur Puncak KM 45",
+            lastLocationText = if (hasGps) "GPS Live" else "Jalur Puncak KM 45",
             lastUpdatedLabel = "Baru saja",
-            mapPosition = interpolateAlongPolyline(0.58f, waypoints, 0f, 54)
+            mapPosition = if (hasGps) {
+                MapPosition(
+                    0.45f,
+                    0.45f,
+                    0.55f,
+                    _uiState.value.userGpsLat ?: -6.66,
+                    _uiState.value.userGpsLng ?: 106.89,
+                    0
+                )
+            } else {
+                interpolateAlongPolyline(0.58f, waypoints, 0f, 54)
+            }
         )
 
         val peer1 = ConvoyMember(
@@ -426,7 +700,8 @@ class ConvoyViewModel : ViewModel() {
             roomTitle = "Konvoi Bersama $extractedId",
             inviteLink = "https://konvoiku.id/join/$extractedId",
             createdAtLabel = "Terhubung",
-            members = members
+            members = members,
+            isSyncedRoom = false
         )
 
         _uiState.update {
@@ -441,7 +716,6 @@ class ConvoyViewModel : ViewModel() {
             )
         }
         recomputeAndCommitRoom(members)
-        return true
     }
 
     fun selectMapMember(memberId: String) {
@@ -452,7 +726,7 @@ class ConvoyViewModel : ViewModel() {
         _uiState.update { it.copy(isSimulationRunning = !it.isSimulationRunning) }
     }
 
-    // --- Checkpoints / Titik Istirahat (Broadcast to all room members) ---
+    // --- Checkpoints / Titik Istirahat ---
 
     fun startPickingCheckpointOnMap(checkpointName: String) {
         _uiState.update {
@@ -473,20 +747,15 @@ class ConvoyViewModel : ViewModel() {
         }
     }
 
-    fun addRestCheckpointAtPoint(name: String, xFraction: Float, yFraction: Float) {
+    fun addRestCheckpointAtLatLng(name: String, latitude: Double, longitude: Double) {
         val cleanName = name.trim().ifBlank { "Titik Istirahat" }
-        val clampedX = xFraction.coerceIn(0.10f, 0.90f)
-        val clampedY = yFraction.coerceIn(0.10f, 0.88f)
-        val lat = -6.7100 + (1f - clampedY) * 0.08
-        val lng = 106.8500 + clampedX * 0.16
-
         val checkpoint = RestCheckpoint(
             id = "cp-${UUID.randomUUID()}",
             name = cleanName,
-            xFraction = clampedX,
-            yFraction = clampedY,
-            latitude = lat,
-            longitude = lng
+            xFraction = 0.5f,
+            yFraction = 0.5f,
+            latitude = latitude,
+            longitude = longitude
         )
 
         val broadcastMsg = RoomMessage(
@@ -498,6 +767,17 @@ class ConvoyViewModel : ViewModel() {
             textContent = "Titik istirahat baru dibagikan ke seluruh rombongan: $cleanName",
             timestampLabel = currentClockLabel()
         )
+
+        val room = _uiState.value.activeRoom
+        val uid = syncRepo.currentUid()
+        if (room != null && room.isSyncedRoom && uid != null) {
+            syncRepo.addCheckpoint(room.roomId, uid, checkpoint)
+            syncRepo.sendMessage(room.roomId, uid, broadcastMsg)
+            _uiState.update {
+                it.copy(isPickingCheckpointOnMap = false, pendingCheckpointName = "")
+            }
+            return
+        }
 
         _uiState.update { state ->
             state.copy(
@@ -511,7 +791,29 @@ class ConvoyViewModel : ViewModel() {
         }
     }
 
+    fun addRestCheckpointAtPoint(name: String, xFraction: Float, yFraction: Float) {
+        val wps = _uiState.value.routeConfig.waypoints
+        val start = wps.firstOrNull()
+        val end = wps.lastOrNull()
+        val factor = xFraction.coerceIn(0.1f, 0.9f).toDouble()
+        val lat = if (start != null && end != null) {
+            start.latitude + (end.latitude - start.latitude) * factor
+        } else {
+            -6.7100 + (1f - yFraction) * 0.08
+        }
+        val lng = if (start != null && end != null) {
+            start.longitude + (end.longitude - start.longitude) * factor
+        } else {
+            106.8500 + xFraction * 0.16
+        }
+        addRestCheckpointAtLatLng(name, lat, lng)
+    }
+
     fun removeRestCheckpoint(checkpointId: String) {
+        val room = _uiState.value.activeRoom
+        if (room != null && room.isSyncedRoom) {
+            syncRepo.removeCheckpoint(room.roomId, checkpointId)
+        }
         _uiState.update { state ->
             state.copy(
                 routeConfig = state.routeConfig.copy(
@@ -521,28 +823,22 @@ class ConvoyViewModel : ViewModel() {
         }
     }
 
-    // --- Stage 4: SOS Emergency, Walkie-Talkie Voice, Text Chat, Condition & Sweeper ---
+    // --- Stage 4: SOS Emergency, Walkie-Talkie Voice, Chat, Condition & Sweeper ---
 
     fun triggerSosEmergency() {
         val room = _uiState.value.activeRoom ?: return
         val self = room.members.find { it.isCurrentUser } ?: room.members.firstOrNull() ?: return
         val now = currentClockLabel()
-
-        val updatedMembers = room.members.map { member ->
-            if (member.id == self.id) {
-                member.copy(conditionStatus = MemberConditionStatus.SOS)
-            } else {
-                member
-            }
-        }
+        val lat = _uiState.value.userGpsLat ?: self.mapPosition.latitude
+        val lng = _uiState.value.userGpsLng ?: self.mapPosition.longitude
 
         val sos = SosEmergencyState(
             isActive = true,
             senderId = self.id,
             senderName = self.fullName,
             senderVehicle = self.vehicleDetail,
-            latitude = self.mapPosition.latitude,
-            longitude = self.mapPosition.longitude,
+            latitude = lat,
+            longitude = lng,
             locationText = self.lastLocationText,
             triggeredAtLabel = now
         )
@@ -553,11 +849,21 @@ class ConvoyViewModel : ViewModel() {
             senderName = self.fullName,
             senderVehicle = self.vehicleDetail,
             type = ChatMessageType.SOS_ALERT,
-            textContent = "SINYAL DARURAT SOS di ${self.lastLocationText} (${String.format(Locale.US, "%.4f, %.4f", self.mapPosition.latitude, self.mapPosition.longitude)}). Butuh bantuan segera!",
+            textContent = "SINYAL DARURAT SOS di ${self.lastLocationText} (${String.format(Locale.US, "%.4f, %.4f", lat, lng)}). Butuh bantuan segera!",
             timestampLabel = now,
             isFromCurrentUser = self.isCurrentUser
         )
 
+        val uid = syncRepo.currentUid()
+        if (room.isSyncedRoom && uid != null) {
+            syncRepo.triggerSos(room.roomId, sos, uid)
+            syncRepo.sendMessage(room.roomId, uid, sosMessage)
+            return
+        }
+
+        val updatedMembers = room.members.map { member ->
+            if (member.id == self.id) member.copy(conditionStatus = MemberConditionStatus.SOS) else member
+        }
         _uiState.update {
             it.copy(
                 sosState = sos,
@@ -571,13 +877,6 @@ class ConvoyViewModel : ViewModel() {
     fun resolveSosEmergency() {
         val room = _uiState.value.activeRoom ?: return
         val sosSenderId = _uiState.value.sosState.senderId
-        val updatedMembers = room.members.map { member ->
-            if (member.id == sosSenderId && member.conditionStatus == MemberConditionStatus.SOS) {
-                member.copy(conditionStatus = MemberConditionStatus.AMAN)
-            } else {
-                member
-            }
-        }
         val sysMsg = RoomMessage(
             id = "msg-${UUID.randomUUID()}",
             senderId = "system",
@@ -587,6 +886,18 @@ class ConvoyViewModel : ViewModel() {
             textContent = "Sinyal darurat SOS telah diselesaikan.",
             timestampLabel = currentClockLabel()
         )
+        val uid = syncRepo.currentUid()
+        if (room.isSyncedRoom && uid != null) {
+            syncRepo.resolveSos(room.roomId, uid)
+            syncRepo.sendMessage(room.roomId, uid, sysMsg)
+            return
+        }
+
+        val updatedMembers = room.members.map { member ->
+            if (member.id == sosSenderId && member.conditionStatus == MemberConditionStatus.SOS) {
+                member.copy(conditionStatus = MemberConditionStatus.AMAN)
+            } else member
+        }
         _uiState.update {
             it.copy(
                 sosState = SosEmergencyState(),
@@ -614,6 +925,11 @@ class ConvoyViewModel : ViewModel() {
             senderAvatarPreset = self?.avatarPreset ?: profile.avatarPreset,
             senderAvatarPhotoUri = self?.avatarPhotoUri ?: profile.avatarPhotoUri
         )
+        val uid = syncRepo.currentUid()
+        if (room.isSyncedRoom && uid != null) {
+            syncRepo.sendMessage(room.roomId, uid, message)
+            return
+        }
         _uiState.update { it.copy(messages = it.messages + message) }
     }
 
@@ -643,7 +959,7 @@ class ConvoyViewModel : ViewModel() {
             senderName = self?.fullName ?: "Anda",
             senderVehicle = self?.vehicleDetail ?: "Kendaraan",
             type = ChatMessageType.VOICE,
-            textContent = "Pesan Suara Walkie-Talkie",
+            textContent = "Pesan Suara Walkie-Talkie (${duration} dtk)",
             timestampLabel = currentClockLabel(),
             voiceDurationSec = duration,
             voiceFilePath = filePath,
@@ -651,6 +967,13 @@ class ConvoyViewModel : ViewModel() {
             senderAvatarPreset = self?.avatarPreset ?: profile.avatarPreset,
             senderAvatarPhotoUri = self?.avatarPhotoUri ?: profile.avatarPhotoUri
         )
+
+        val uid = syncRepo.currentUid()
+        if (room != null && room.isSyncedRoom && uid != null) {
+            syncRepo.sendMessage(room.roomId, uid, voiceMsg)
+            _uiState.update { it.copy(isRecordingVoice = false, recordingSeconds = 0) }
+            return
+        }
 
         _uiState.update {
             it.copy(
@@ -672,9 +995,6 @@ class ConvoyViewModel : ViewModel() {
     fun updateOwnConditionStatus(newStatus: MemberConditionStatus) {
         val room = _uiState.value.activeRoom ?: return
         val self = room.members.find { it.isCurrentUser } ?: return
-        val updatedMembers = room.members.map { member ->
-            if (member.isCurrentUser) member.copy(conditionStatus = newStatus) else member
-        }
         val statusMsg = RoomMessage(
             id = "status-${UUID.randomUUID()}",
             senderId = self.id,
@@ -684,6 +1004,16 @@ class ConvoyViewModel : ViewModel() {
             textContent = "${self.fullName} memperbarui status: ${newStatus.label}",
             timestampLabel = currentClockLabel()
         )
+        val uid = syncRepo.currentUid()
+        if (room.isSyncedRoom && uid != null) {
+            syncRepo.updateMemberCondition(room.roomId, uid, newStatus)
+            syncRepo.sendMessage(room.roomId, uid, statusMsg)
+            return
+        }
+
+        val updatedMembers = room.members.map { member ->
+            if (member.isCurrentUser) member.copy(conditionStatus = newStatus) else member
+        }
         _uiState.update { it.copy(messages = it.messages + statusMsg) }
         recomputeAndCommitRoom(updatedMembers)
     }
@@ -691,9 +1021,6 @@ class ConvoyViewModel : ViewModel() {
     fun assignSweeper(memberId: String) {
         val room = _uiState.value.activeRoom ?: return
         val target = room.members.find { it.id == memberId } ?: return
-        val updatedMembers = room.members.map { member ->
-            member.copy(isSweeper = member.id == memberId)
-        }
         val sysMsg = RoomMessage(
             id = "sweeper-${UUID.randomUUID()}",
             senderId = "system",
@@ -703,6 +1030,15 @@ class ConvoyViewModel : ViewModel() {
             textContent = "${target.fullName} (${target.vehicleDetail}) ditetapkan sebagai Sweeper penutup barisan.",
             timestampLabel = currentClockLabel()
         )
+        val uid = syncRepo.currentUid()
+        if (room.isSyncedRoom && uid != null) {
+            syncRepo.assignSweeper(room.roomId, memberId, room.members.map { it.id })
+            syncRepo.sendMessage(room.roomId, uid, sysMsg)
+            return
+        }
+        val updatedMembers = room.members.map { member ->
+            member.copy(isSweeper = member.id == memberId)
+        }
         _uiState.update { it.copy(messages = it.messages + sysMsg) }
         recomputeAndCommitRoom(updatedMembers)
     }
@@ -710,23 +1046,69 @@ class ConvoyViewModel : ViewModel() {
     // --- Stage 3: Leader Route, Destination, Off-Route & Straggler Config ---
 
     fun selectDestinationPreset(preset: DestinationPreset) {
-        val waypoints = buildPolylineToDestination(preset.endPoint)
+        val state = _uiState.value
+        val start = state.userGpsLat?.let { lat ->
+            state.userGpsLng?.let { lng -> RoutePoint(0.14f, 0.86f, lat, lng) }
+        } ?: state.routeConfig.waypoints.firstOrNull()
+            ?: RoutePoint(0.14f, 0.86f, -6.648, 106.845)
+
+        val waypoints = buildPolylineToDestination(start, preset.endPoint)
         val coordText = String.format(
             Locale.US,
             "%.4f, %.4f",
             preset.endPoint.latitude,
             preset.endPoint.longitude
         )
-        _uiState.update { state ->
-            state.copy(
-                routeConfig = state.routeConfig.copy(
-                    destinationName = preset.name,
-                    destinationAddress = "${preset.name} · $coordText",
-                    waypoints = waypoints,
-                    totalRouteMeters = preset.totalMeters
-                ),
-                isPickingDestinationOnMap = false
-            )
+        val nextConfig = state.routeConfig.copy(
+            destinationName = preset.name,
+            destinationAddress = "${preset.name} · $coordText",
+            waypoints = waypoints,
+            totalRouteMeters = preset.totalMeters
+        )
+        _uiState.update {
+            it.copy(routeConfig = nextConfig, isPickingDestinationOnMap = false)
+        }
+        if (state.activeRoom?.isSyncedRoom == true) {
+            syncRepo.updateRouteConfig(state.activeRoom.roomId, nextConfig)
+        }
+        syncMembersToUpdatedRoute()
+    }
+
+    fun setCustomDestinationLatLng(
+        latitude: Double,
+        longitude: Double,
+        placeName: String? = null,
+        addressLabel: String? = null
+    ) {
+        val state = _uiState.value
+        val start = state.userGpsLat?.let { lat ->
+            state.userGpsLng?.let { lng -> RoutePoint(0.14f, 0.86f, lat, lng) }
+        } ?: state.routeConfig.waypoints.firstOrNull()
+            ?: RoutePoint(0.14f, 0.86f, -6.648, 106.845)
+
+        val endPoint = RoutePoint(0.86f, 0.14f, latitude, longitude)
+        val waypoints = buildPolylineToDestination(start, endPoint)
+        val estimatedMeters = (GeoUtils.haversineMeters(
+            LatLngGeo(start.latitude, start.longitude),
+            LatLngGeo(latitude, longitude)
+        ) * 1.25).roundToInt().coerceAtLeast(500)
+
+        val resolvedName = placeName?.trim()?.takeIf { it.isNotEmpty() }
+            ?: String.format(Locale.US, "Titik Tujuan (%.4f, %.4f)", latitude, longitude)
+        val resolvedAddress = addressLabel?.trim()?.takeIf { it.isNotEmpty() }
+            ?: String.format(Locale.US, "%s · %.4f, %.4f", resolvedName, latitude, longitude)
+
+        val nextConfig = state.routeConfig.copy(
+            destinationName = resolvedName,
+            destinationAddress = resolvedAddress,
+            waypoints = waypoints,
+            totalRouteMeters = estimatedMeters
+        )
+        _uiState.update {
+            it.copy(routeConfig = nextConfig, isPickingDestinationOnMap = false)
+        }
+        if (state.activeRoom?.isSyncedRoom == true) {
+            syncRepo.updateRouteConfig(state.activeRoom.roomId, nextConfig)
         }
         syncMembersToUpdatedRoute()
     }
@@ -741,45 +1123,7 @@ class ConvoyViewModel : ViewModel() {
         val clampedY = yFraction.coerceIn(0.08f, 0.90f)
         val lat = -6.7100 + (1f - clampedY) * 0.08
         val lng = 106.8500 + clampedX * 0.16
-        val endPoint = RoutePoint(
-            xFraction = clampedX,
-            yFraction = clampedY,
-            latitude = lat,
-            longitude = lng
-        )
-        val waypoints = buildPolylineToDestination(endPoint)
-        val start = waypoints.first()
-        val normDist = hypot(clampedX - start.xFraction, clampedY - start.yFraction)
-        val estimatedMeters = (normDist * 16500f).roundToInt().coerceIn(3000, 32000)
-        val resolvedName = placeName?.trim()?.takeIf { it.isNotEmpty() }
-            ?: resolvePlaceNameForCoords(clampedX, clampedY)
-        val coordStr = String.format(Locale.US, "%.4f, %.4f", lat, lng)
-        val resolvedAddress = addressLabel?.trim()?.takeIf { it.isNotEmpty() }
-            ?: "$resolvedName · $coordStr"
-
-        _uiState.update { state ->
-            state.copy(
-                routeConfig = state.routeConfig.copy(
-                    destinationName = resolvedName,
-                    destinationAddress = resolvedAddress,
-                    waypoints = waypoints,
-                    totalRouteMeters = estimatedMeters
-                ),
-                isPickingDestinationOnMap = false
-            )
-        }
-        syncMembersToUpdatedRoute()
-    }
-
-    private fun resolvePlaceNameForCoords(xFraction: Float, yFraction: Float): String {
-        return when {
-            xFraction > 0.72f && yFraction < 0.28f -> "Kawasan Puncak Pass"
-            xFraction in 0.45f..0.72f && yFraction < 0.38f -> "Rest Area Taman Safari"
-            xFraction < 0.40f && yFraction < 0.35f -> "Lembang Highland Point"
-            xFraction > 0.65f && yFraction > 0.45f -> "Sentul Selatan Exit"
-            xFraction < 0.45f && yFraction > 0.55f -> "Simpang Gadog Ciawi"
-            else -> "Titik Tujuan Peta"
-        }
+        setCustomDestinationLatLng(lat, lng, placeName, addressLabel)
     }
 
     fun setPickingDestinationMode(enabled: Boolean) {
@@ -793,63 +1137,66 @@ class ConvoyViewModel : ViewModel() {
 
     fun updateCustomWaypoints(waypoints: List<RoutePoint>, destinationName: String? = null) {
         if (waypoints.size < 2) return
-        _uiState.update { state ->
-            state.copy(
-                routeConfig = state.routeConfig.copy(
-                    destinationName = destinationName?.takeIf { it.isNotBlank() }
-                        ?: state.routeConfig.destinationName,
-                    waypoints = waypoints
-                )
-            )
+        val state = _uiState.value
+        val nextConfig = state.routeConfig.copy(
+            destinationName = destinationName?.takeIf { it.isNotBlank() }
+                ?: state.routeConfig.destinationName,
+            waypoints = waypoints
+        )
+        _uiState.update { it.copy(routeConfig = nextConfig) }
+        if (state.activeRoom?.isSyncedRoom == true) {
+            syncRepo.updateRouteConfig(state.activeRoom.roomId, nextConfig)
         }
         syncMembersToUpdatedRoute()
     }
 
     fun resetDefaultWaypoints() {
-        val defaultWaypoints = com.konvoiku.touring.model.ConvoyRouteConfig.defaultWaypoints()
-        _uiState.update { state ->
-            state.copy(
-                routeConfig = state.routeConfig.copy(
-                    waypoints = defaultWaypoints
-                )
-            )
+        val defaultWaypoints = ConvoyRouteConfig.defaultWaypoints()
+        val state = _uiState.value
+        val nextConfig = state.routeConfig.copy(waypoints = defaultWaypoints)
+        _uiState.update { it.copy(routeConfig = nextConfig) }
+        if (state.activeRoom?.isSyncedRoom == true) {
+            syncRepo.updateRouteConfig(state.activeRoom.roomId, nextConfig)
         }
         syncMembersToUpdatedRoute()
     }
 
     fun updateMaxStragglerDistance(meters: Int) {
-        _uiState.update { state ->
-            state.copy(
-                routeConfig = state.routeConfig.copy(maxStragglerDistanceMeters = meters)
-            )
+        val state = _uiState.value
+        val nextConfig = state.routeConfig.copy(maxStragglerDistanceMeters = meters)
+        _uiState.update { it.copy(routeConfig = nextConfig) }
+        if (state.activeRoom?.isSyncedRoom == true) {
+            syncRepo.updateRouteConfig(state.activeRoom.roomId, nextConfig)
         }
         _uiState.value.activeRoom?.members?.let { recomputeAndCommitRoom(it) }
     }
 
     fun updateOffRouteTolerance(meters: Int) {
-        _uiState.update { state ->
-            state.copy(
-                routeConfig = state.routeConfig.copy(offRouteToleranceMeters = meters)
-            )
+        val state = _uiState.value
+        val nextConfig = state.routeConfig.copy(offRouteToleranceMeters = meters)
+        _uiState.update { it.copy(routeConfig = nextConfig) }
+        if (state.activeRoom?.isSyncedRoom == true) {
+            syncRepo.updateRouteConfig(state.activeRoom.roomId, nextConfig)
         }
         _uiState.value.activeRoom?.members?.let { recomputeAndCommitRoom(it) }
     }
 
     fun toggleSoundAlert() {
-        _uiState.update { state ->
-            state.copy(
-                routeConfig = state.routeConfig.copy(
-                    soundAlertEnabled = !state.routeConfig.soundAlertEnabled
-                )
-            )
+        val state = _uiState.value
+        val nextConfig = state.routeConfig.copy(soundAlertEnabled = !state.routeConfig.soundAlertEnabled)
+        _uiState.update { it.copy(routeConfig = nextConfig) }
+        if (state.activeRoom?.isSyncedRoom == true) {
+            syncRepo.updateRouteConfig(state.activeRoom.roomId, nextConfig)
         }
     }
 
     fun toggleOffRouteSimulation() {
-        val nextActive = !_uiState.value.isOffRouteSimActive
+        val state = _uiState.value
+        val room = state.activeRoom ?: return
+        if (room.isSyncedRoom) return
+        val nextActive = !state.isOffRouteSimActive
         _uiState.update { it.copy(isOffRouteSimActive = nextActive) }
-        val room = _uiState.value.activeRoom ?: return
-        val waypoints = _uiState.value.routeConfig.waypoints
+        val waypoints = state.routeConfig.waypoints
         val updated = room.members.map { member ->
             if (member.isCurrentUser) {
                 val nextPos = interpolateAlongPolyline(
@@ -859,18 +1206,18 @@ class ConvoyViewModel : ViewModel() {
                     speedKmh = member.mapPosition.speedKmh
                 )
                 member.copy(mapPosition = nextPos)
-            } else {
-                member
-            }
+            } else member
         }
         recomputeAndCommitRoom(updated)
     }
 
     fun toggleStragglerSimulation() {
-        val nextActive = !_uiState.value.isStragglerSimActive
+        val state = _uiState.value
+        val room = state.activeRoom ?: return
+        if (room.isSyncedRoom) return
+        val nextActive = !state.isStragglerSimActive
         _uiState.update { it.copy(isStragglerSimActive = nextActive) }
-        val room = _uiState.value.activeRoom ?: return
-        val waypoints = _uiState.value.routeConfig.waypoints
+        val waypoints = state.routeConfig.waypoints
         val ordered = room.members.sortedByDescending { it.mapPosition.routeProgress }
         val tailId = ordered.lastOrNull()?.id ?: return
 
@@ -887,17 +1234,22 @@ class ConvoyViewModel : ViewModel() {
                     mapPosition = nextPos,
                     lastLocationText = landmarkForProgress(targetProgress)
                 )
-            } else {
-                member
-            }
+            } else member
         }
         recomputeAndCommitRoom(updated)
     }
 
     private fun syncMembersToUpdatedRoute() {
-        val room = _uiState.value.activeRoom ?: return
         val state = _uiState.value
+        val room = state.activeRoom ?: return
+        if (room.isSyncedRoom) {
+            recomputeAndCommitRoom(room.members)
+            return
+        }
         val synced = room.members.map { member ->
+            if (member.isCurrentUser && state.gpsStatus == GpsTrackingStatus.ACTIVE) {
+                return@map member
+            }
             val offset = if (member.isCurrentUser && state.isOffRouteSimActive) 0.12f else 0f
             member.copy(
                 mapPosition = interpolateAlongPolyline(
@@ -917,17 +1269,23 @@ class ConvoyViewModel : ViewModel() {
         val room = state.activeRoom ?: return
 
         val enriched = rawMembers.map { member ->
-            val routeMeters = (member.mapPosition.routeProgress * route.totalRouteMeters).roundToInt()
-            val deviationMeters = computeOffRouteMeters(
-                x = member.mapPosition.xFraction,
-                y = member.mapPosition.yFraction,
-                waypoints = route.waypoints,
-                totalRouteMeters = route.totalRouteMeters
-            )
-            member.copy(
-                routeDistanceMeters = routeMeters,
-                offRouteMeters = deviationMeters
-            )
+            val hasValidGeo = abs(member.mapPosition.latitude) > 0.001 ||
+                abs(member.mapPosition.longitude) > 0.001
+            if (hasValidGeo && route.waypoints.size >= 2) {
+                val eval = GeoUtils.evaluatePositionAlongRoute(
+                    pos = LatLngGeo(member.mapPosition.latitude, member.mapPosition.longitude),
+                    waypoints = route.waypoints,
+                    totalRouteMetersFallback = route.totalRouteMeters
+                )
+                member.copy(
+                    routeDistanceMeters = eval.distanceTraveledMeters,
+                    offRouteMeters = eval.offRouteMeters,
+                    mapPosition = member.mapPosition.copy(routeProgress = eval.routeProgress)
+                )
+            } else {
+                val routeMeters = (member.mapPosition.routeProgress * route.totalRouteMeters).roundToInt()
+                member.copy(routeDistanceMeters = routeMeters, offRouteMeters = 0)
+            }
         }
 
         val sortedByRoute = enriched.sortedByDescending { it.routeDistanceMeters }
@@ -976,7 +1334,7 @@ class ConvoyViewModel : ViewModel() {
             senderVehicle = "",
             type = ChatMessageType.SYSTEM,
             textContent = "Room $roomCode aktif. Jaga jarak aman dan pantau titik istirahat di peta.",
-            timestampLabel = "09:35"
+            timestampLabel = currentClockLabel()
         ),
         RoomMessage(
             id = "init-1",
@@ -984,20 +1342,9 @@ class ConvoyViewModel : ViewModel() {
             senderName = "Budi",
             senderVehicle = "Avanza Hitam",
             type = ChatMessageType.TEXT,
-            textContent = "Rombongan siap, titik istirahat pertama di Rest Area KM 57.",
-            timestampLabel = "09:37",
+            textContent = "Rombongan siap, jalur Google Maps telah ditetapkan.",
+            timestampLabel = currentClockLabel(),
             senderAvatarPreset = AvatarPreset.RIDER_CAPTAIN
-        ),
-        RoomMessage(
-            id = "init-voice",
-            senderId = "sweeper",
-            senderName = "Siti",
-            senderVehicle = "Nmax Putih",
-            type = ChatMessageType.VOICE,
-            textContent = "Pesan Suara Walkie-Talkie",
-            timestampLabel = "09:39",
-            voiceDurationSec = 4,
-            senderAvatarPreset = AvatarPreset.HELMET_TOURING
         )
     )
 
@@ -1005,19 +1352,18 @@ class ConvoyViewModel : ViewModel() {
         return SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
     }
 
-    private fun buildPolylineToDestination(end: RoutePoint): List<RoutePoint> {
-        val start = RoutePoint(0.14f, 0.86f, -6.7100, 106.8500)
+    private fun buildPolylineToDestination(start: RoutePoint, end: RoutePoint): List<RoutePoint> {
         val mid1 = RoutePoint(
-            xFraction = start.xFraction + (end.xFraction - start.xFraction) * 0.30f + 0.04f,
-            yFraction = start.yFraction + (end.yFraction - start.yFraction) * 0.28f,
-            latitude = start.latitude + (end.latitude - start.latitude) * 0.30,
-            longitude = start.longitude + (end.longitude - start.longitude) * 0.30
+            xFraction = start.xFraction + (end.xFraction - start.xFraction) * 0.33f,
+            yFraction = start.yFraction + (end.yFraction - start.yFraction) * 0.33f,
+            latitude = start.latitude + (end.latitude - start.latitude) * 0.33,
+            longitude = start.longitude + (end.longitude - start.longitude) * 0.33
         )
         val mid2 = RoutePoint(
-            xFraction = start.xFraction + (end.xFraction - start.xFraction) * 0.65f - 0.03f,
-            yFraction = start.yFraction + (end.yFraction - start.yFraction) * 0.62f,
-            latitude = start.latitude + (end.latitude - start.latitude) * 0.65,
-            longitude = start.longitude + (end.longitude - start.longitude) * 0.65
+            xFraction = start.xFraction + (end.xFraction - start.xFraction) * 0.66f,
+            yFraction = start.yFraction + (end.yFraction - start.yFraction) * 0.66f,
+            latitude = start.latitude + (end.latitude - start.latitude) * 0.66,
+            longitude = start.longitude + (end.longitude - start.longitude) * 0.66
         )
         return listOf(start, mid1, mid2, end)
     }
@@ -1045,39 +1391,18 @@ class ConvoyViewModel : ViewModel() {
         val perpX = -dy / len
         val perpY = dx / len
 
+        val dLat = b.latitude - a.latitude
+        val dLng = b.longitude - a.longitude
+        val geoLen = hypot(dLat, dLng).coerceAtLeast(0.0001)
+        val latShift = (-dLng / geoLen) * lateralOffset * 0.03
+        val lngShift = (dLat / geoLen) * lateralOffset * 0.03
+
         val x = (a.xFraction + dx * localT + perpX * lateralOffset).coerceIn(0.06f, 0.94f)
         val y = (a.yFraction + dy * localT + perpY * lateralOffset).coerceIn(0.06f, 0.94f)
-        val lat = a.latitude + (b.latitude - a.latitude) * localT
-        val lng = a.longitude + (b.longitude - a.longitude) * localT
+        val lat = a.latitude + dLat * localT + latShift
+        val lng = a.longitude + dLng * localT + lngShift
 
         return MapPosition(p, x, y, lat, lng, speedKmh)
-    }
-
-    private fun computeOffRouteMeters(
-        x: Float,
-        y: Float,
-        waypoints: List<RoutePoint>,
-        totalRouteMeters: Int
-    ): Int {
-        if (waypoints.size < 2) return 0
-        var minNormalizedDist = Float.MAX_VALUE
-        for (i in 0 until waypoints.size - 1) {
-            val a = waypoints[i]
-            val b = waypoints[i + 1]
-            val abx = b.xFraction - a.xFraction
-            val aby = b.yFraction - a.yFraction
-            val abLenSq = abx * abx + aby * aby
-            val t = if (abLenSq > 0f) {
-                (((x - a.xFraction) * abx + (y - a.yFraction) * aby) / abLenSq).coerceIn(0f, 1f)
-            } else 0f
-            val projX = a.xFraction + t * abx
-            val projY = a.yFraction + t * aby
-            val dist = hypot(x - projX, y - projY)
-            if (dist < minNormalizedDist) {
-                minNormalizedDist = dist
-            }
-        }
-        return (minNormalizedDist * (totalRouteMeters * 0.066f)).roundToInt()
     }
 
     private fun landmarkForProgress(progress: Float): String {
@@ -1094,6 +1419,8 @@ class ConvoyViewModel : ViewModel() {
     }
 
     fun finishAndSaveCurrentTrip(): TripHistoryRecord? {
+        roomUnsubscribe?.invoke()
+        roomUnsubscribe = null
         val state = _uiState.value
         val room = state.activeRoom ?: return null
         val route = state.routeConfig
@@ -1184,17 +1511,17 @@ class ConvoyViewModel : ViewModel() {
             maxSpeedKmh = 82,
             userRole = UserRole.TOUR_LEADER,
             destinationName = "Puncak Pass Resort",
-            destinationAddress = "Jl. Raya Puncak KM 90, Cisarua · -6.6450, 106.9900",
+            destinationAddress = "Jl. Raya Puncak KM 90, Cisarua · -6.7003, 106.9960",
             waypoints = listOf(
-                RoutePoint(0.14f, 0.86f, -6.7100, 106.8500),
-                RoutePoint(0.32f, 0.65f, -6.6920, 106.8850),
-                RoutePoint(0.55f, 0.48f, -6.6740, 106.9250),
-                RoutePoint(0.72f, 0.30f, -6.6580, 106.9600),
-                RoutePoint(0.86f, 0.14f, -6.6450, 106.9900)
+                RoutePoint(0.14f, 0.86f, -6.6480, 106.8450),
+                RoutePoint(0.32f, 0.65f, -6.6620, 106.8820),
+                RoutePoint(0.55f, 0.48f, -6.6780, 106.9250),
+                RoutePoint(0.72f, 0.30f, -6.6900, 106.9620),
+                RoutePoint(0.86f, 0.14f, -6.7003, 106.9960)
             ),
             visitedCheckpoints = listOf(
-                VisitedCheckpointLog("cp-s1", "Rest Area KM 57", "06:20", 0.36f, 0.62f, -6.6900, 106.8900),
-                VisitedCheckpointLog("cp-s2", "Warung Kopi Cisarua", "07:15", 0.66f, 0.36f, -6.6640, 106.9480)
+                VisitedCheckpointLog("cp-s1", "Rest Area KM 57", "06:20", 0.36f, 0.62f, -6.6680, 106.8950),
+                VisitedCheckpointLog("cp-s2", "Warung Kopi Cisarua", "07:15", 0.66f, 0.36f, -6.6850, 106.9480)
             ),
             participants = listOf(
                 TripParticipantSummary("p1", "Anda (Leader)", VehicleType.MOBIL, "Avanza Hitam", "B 1001 LDR", UserRole.TOUR_LEADER, avatarPreset = AvatarPreset.RIDER_CAPTAIN),
@@ -1231,35 +1558,6 @@ class ConvoyViewModel : ViewModel() {
                 TripParticipantSummary("p5", "Budi", VehicleType.MOBIL, "Pajero Sport", "B 1402 KNV", UserRole.TOUR_LEADER, avatarPreset = AvatarPreset.RALLY_PRO),
                 TripParticipantSummary("p6", "Anda", VehicleType.MOTOR, "PCX 160 Hitam", "B 2026 AGT", UserRole.MEMBER, avatarPreset = AvatarPreset.HELMET_TOURING),
                 TripParticipantSummary("p7", "Siti", VehicleType.MOTOR, "Nmax Putih", "D 4821 XZT", UserRole.MEMBER, isSweeper = true, avatarPreset = AvatarPreset.HELMET_SPORT)
-            )
-        ),
-        TripHistoryRecord(
-            id = "trip-seed-3",
-            roomId = "KNV-5583",
-            tourTitle = "Eksplorasi Kawah Putih Ciwidey",
-            dateLabel = "18 Okt 2026",
-            timeRangeLabel = "06:15 - 10:35",
-            durationLabel = "4j 20m",
-            durationMinutes = 260,
-            distanceKm = 118.5,
-            avgSpeedKmh = 46,
-            maxSpeedKmh = 74,
-            userRole = UserRole.MEMBER,
-            destinationName = "Ciwidey Kawah Putih",
-            destinationAddress = "Kawasan Wisata Kawah Putih, Ciwidey · -7.1660, 107.4020",
-            waypoints = listOf(
-                RoutePoint(0.84f, 0.85f, -6.9400, 107.6100),
-                RoutePoint(0.64f, 0.66f, -7.0150, 107.5400),
-                RoutePoint(0.45f, 0.42f, -7.0950, 107.4700),
-                RoutePoint(0.24f, 0.18f, -7.1660, 107.4020)
-            ),
-            visitedCheckpoints = listOf(
-                VisitedCheckpointLog("cp-s5", "Rest Area Soreang KM 14", "07:40", 0.64f, 0.66f, -7.0150, 107.5400)
-            ),
-            participants = listOf(
-                TripParticipantSummary("p8", "Dimas", VehicleType.MOBIL, "Innova Zenix", "D 1180 KNV", UserRole.TOUR_LEADER, avatarPreset = AvatarPreset.RIDER_CAPTAIN),
-                TripParticipantSummary("p9", "Anda", VehicleType.MOBIL, "Brio RS Kuning", "B 1945 KNV", UserRole.MEMBER, avatarPreset = AvatarPreset.STANDARD_USER),
-                TripParticipantSummary("p10", "Nadia", VehicleType.MOBIL, "HR-V Abu-abu", "B 2048 KNV", UserRole.MEMBER, isSweeper = true, avatarPreset = AvatarPreset.PILOT_CLASSIC)
             )
         )
     )

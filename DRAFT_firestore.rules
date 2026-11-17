@@ -1,0 +1,389 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Reusable Hardened Primitives ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isRoomLeader(roomId) {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/rooms/$(roomId)) &&
+        get(/databases/$(database)/documents/rooms/$(roomId)).data.leaderUid == request.auth.uid;
+    }
+
+    function isRoomMember(roomId) {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid));
+    }
+
+    // --- Validation Blueprints ---
+    function isValidUserProfile(data) {
+      return data.keys().hasAll([
+          'uid', 'fullName', 'vehicleType', 'vehicleDetail',
+          'licensePlate', 'emergencyContact', 'avatarPreset',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'uid', 'fullName', 'vehicleType', 'vehicleDetail',
+          'licensePlate', 'emergencyContact', 'avatarPreset',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 &&
+        data.uid == request.auth.uid &&
+        data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 80 &&
+        data.vehicleType in ['MOBIL', 'MOTOR'] &&
+        data.vehicleDetail is string && data.vehicleDetail.size() <= 80 &&
+        data.licensePlate is string && data.licensePlate.size() <= 24 &&
+        data.emergencyContact is string && data.emergencyContact.size() <= 40 &&
+        data.avatarPreset is string && data.avatarPreset.size() >= 1 && data.avatarPreset.size() <= 40 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidConvoyRoom(data) {
+      return data.keys().hasAll([
+          'roomId', 'roomTitle', 'leaderUid', 'destinationName', 'destinationAddress',
+          'destLat', 'destLng', 'originLat', 'originLng', 'encodedPolyline',
+          'totalRouteMeters', 'offRouteToleranceMeters', 'maxStragglerDistanceMeters',
+          'soundAlertEnabled', 'status', 'sosActive', 'sosSenderUid', 'sosSenderName',
+          'sosSenderVehicle', 'sosLat', 'sosLng', 'sosLocationText',
+          'sosTriggeredAtLabel', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'roomId', 'roomTitle', 'leaderUid', 'destinationName', 'destinationAddress',
+          'destLat', 'destLng', 'originLat', 'originLng', 'encodedPolyline',
+          'totalRouteMeters', 'offRouteToleranceMeters', 'maxStragglerDistanceMeters',
+          'soundAlertEnabled', 'status', 'sosActive', 'sosSenderUid', 'sosSenderName',
+          'sosSenderVehicle', 'sosLat', 'sosLng', 'sosLocationText',
+          'sosTriggeredAtLabel', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.roomId) &&
+        data.roomTitle is string && data.roomTitle.size() >= 1 && data.roomTitle.size() <= 100 &&
+        data.leaderUid is string && data.leaderUid.size() >= 1 && data.leaderUid.size() <= 128 &&
+        data.destinationName is string && data.destinationName.size() >= 1 && data.destinationName.size() <= 120 &&
+        data.destinationAddress is string && data.destinationAddress.size() >= 1 && data.destinationAddress.size() <= 240 &&
+        data.destLat is number && data.destLat >= -90 && data.destLat <= 90 &&
+        data.destLng is number && data.destLng >= -180 && data.destLng <= 180 &&
+        data.originLat is number && data.originLat >= -90 && data.originLat <= 90 &&
+        data.originLng is number && data.originLng >= -180 && data.originLng <= 180 &&
+        data.encodedPolyline is string && data.encodedPolyline.size() <= 16384 &&
+        data.totalRouteMeters is number && data.totalRouteMeters >= 100 && data.totalRouteMeters <= 5000000 &&
+        data.offRouteToleranceMeters is number && data.offRouteToleranceMeters >= 10 && data.offRouteToleranceMeters <= 5000 &&
+        data.maxStragglerDistanceMeters is number && data.maxStragglerDistanceMeters >= 100 && data.maxStragglerDistanceMeters <= 50000 &&
+        data.soundAlertEnabled is bool &&
+        data.status in ['ACTIVE', 'FINISHED'] &&
+        data.sosActive is bool &&
+        data.sosSenderUid is string && data.sosSenderUid.size() <= 128 &&
+        data.sosSenderName is string && data.sosSenderName.size() <= 80 &&
+        data.sosSenderVehicle is string && data.sosSenderVehicle.size() <= 80 &&
+        data.sosLat is number && data.sosLat >= -90 && data.sosLat <= 90 &&
+        data.sosLng is number && data.sosLng >= -180 && data.sosLng <= 180 &&
+        data.sosLocationText is string && data.sosLocationText.size() <= 160 &&
+        data.sosTriggeredAtLabel is string && data.sosTriggeredAtLabel.size() <= 32 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidRoomMember(data) {
+      return data.keys().hasAll([
+          'uid', 'roomId', 'fullName', 'vehicleType', 'vehicleDetail', 'licensePlate',
+          'role', 'isSweeper', 'avatarPreset', 'conditionStatus', 'connectionStatus',
+          'lastLocationText', 'latitude', 'longitude', 'speedKmh', 'heading',
+          'accuracyMeters', 'routeProgress', 'xFraction', 'yFraction',
+          'joinedAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'uid', 'roomId', 'fullName', 'vehicleType', 'vehicleDetail', 'licensePlate',
+          'role', 'isSweeper', 'avatarPreset', 'conditionStatus', 'connectionStatus',
+          'lastLocationText', 'latitude', 'longitude', 'speedKmh', 'heading',
+          'accuracyMeters', 'routeProgress', 'xFraction', 'yFraction',
+          'joinedAt', 'updatedAt'
+        ]) &&
+        data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 &&
+        isValidId(data.roomId) &&
+        data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 80 &&
+        data.vehicleType in ['MOBIL', 'MOTOR'] &&
+        data.vehicleDetail is string && data.vehicleDetail.size() <= 80 &&
+        data.licensePlate is string && data.licensePlate.size() <= 24 &&
+        data.role in ['TOUR_LEADER', 'MEMBER'] &&
+        data.isSweeper is bool &&
+        data.avatarPreset is string && data.avatarPreset.size() >= 1 && data.avatarPreset.size() <= 40 &&
+        data.conditionStatus in ['AMAN', 'ISTIRAHAT', 'MOGOK', 'SOS'] &&
+        data.connectionStatus in ['CONNECTED', 'WEAK_SIGNAL', 'OFFLINE'] &&
+        data.lastLocationText is string && data.lastLocationText.size() <= 160 &&
+        data.latitude is number && data.latitude >= -90 && data.latitude <= 90 &&
+        data.longitude is number && data.longitude >= -180 && data.longitude <= 180 &&
+        data.speedKmh is number && data.speedKmh >= 0 && data.speedKmh <= 350 &&
+        data.heading is number && data.heading >= 0 && data.heading <= 360 &&
+        data.accuracyMeters is number && data.accuracyMeters >= 0 && data.accuracyMeters <= 500000 &&
+        data.routeProgress is number && data.routeProgress >= 0 && data.routeProgress <= 1 &&
+        data.xFraction is number && data.xFraction >= 0 && data.xFraction <= 1 &&
+        data.yFraction is number && data.yFraction >= 0 && data.yFraction <= 1 &&
+        data.joinedAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidRoomCheckpoint(data) {
+      return data.keys().hasAll([
+          'id', 'roomId', 'createdByUid', 'name',
+          'latitude', 'longitude', 'xFraction', 'yFraction', 'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'roomId', 'createdByUid', 'name',
+          'latitude', 'longitude', 'xFraction', 'yFraction', 'createdAt'
+        ]) &&
+        isValidId(data.id) &&
+        isValidId(data.roomId) &&
+        data.createdByUid is string && data.createdByUid.size() >= 1 && data.createdByUid.size() <= 128 &&
+        data.createdByUid == request.auth.uid &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+        data.latitude is number && data.latitude >= -90 && data.latitude <= 90 &&
+        data.longitude is number && data.longitude >= -180 && data.longitude <= 180 &&
+        data.xFraction is number && data.xFraction >= 0 && data.xFraction <= 1 &&
+        data.yFraction is number && data.yFraction >= 0 && data.yFraction <= 1 &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidRoomMessage(data) {
+      return data.keys().hasAll([
+          'id', 'roomId', 'senderUid', 'senderName', 'senderVehicle',
+          'senderAvatarPreset', 'type', 'textContent', 'voiceDurationSec',
+          'timestampLabel', 'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'roomId', 'senderUid', 'senderName', 'senderVehicle',
+          'senderAvatarPreset', 'type', 'textContent', 'voiceDurationSec',
+          'timestampLabel', 'createdAt'
+        ]) &&
+        isValidId(data.id) &&
+        isValidId(data.roomId) &&
+        data.senderUid is string && data.senderUid.size() >= 1 && data.senderUid.size() <= 128 &&
+        data.senderUid == request.auth.uid &&
+        data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 80 &&
+        data.senderVehicle is string && data.senderVehicle.size() <= 80 &&
+        data.senderAvatarPreset is string && data.senderAvatarPreset.size() >= 1 && data.senderAvatarPreset.size() <= 40 &&
+        data.type in ['TEXT', 'VOICE', 'SOS_ALERT', 'SYSTEM'] &&
+        data.textContent is string && data.textContent.size() >= 1 && data.textContent.size() <= 500 &&
+        data.voiceDurationSec is number && data.voiceDurationSec >= 0 && data.voiceDurationSec <= 600 &&
+        data.timestampLabel is string && data.timestampLabel.size() >= 1 && data.timestampLabel.size() <= 16 &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidTripHistory(data) {
+      return data.keys().hasAll([
+          'id', 'ownerUid', 'roomId', 'tourTitle', 'dateLabel', 'timeRangeLabel',
+          'durationLabel', 'durationMinutes', 'distanceKm', 'avgSpeedKmh',
+          'maxSpeedKmh', 'userRole', 'destinationName', 'destinationAddress', 'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'ownerUid', 'roomId', 'tourTitle', 'dateLabel', 'timeRangeLabel',
+          'durationLabel', 'durationMinutes', 'distanceKm', 'avgSpeedKmh',
+          'maxSpeedKmh', 'userRole', 'destinationName', 'destinationAddress', 'createdAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.ownerUid is string && data.ownerUid == request.auth.uid && data.ownerUid.size() <= 128 &&
+        isValidId(data.roomId) &&
+        data.tourTitle is string && data.tourTitle.size() >= 1 && data.tourTitle.size() <= 100 &&
+        data.dateLabel is string && data.dateLabel.size() <= 32 &&
+        data.timeRangeLabel is string && data.timeRangeLabel.size() <= 32 &&
+        data.durationLabel is string && data.durationLabel.size() <= 32 &&
+        data.durationMinutes is number && data.durationMinutes >= 0 && data.durationMinutes <= 10080 &&
+        data.distanceKm is number && data.distanceKm >= 0 && data.distanceKm <= 20000 &&
+        data.avgSpeedKmh is number && data.avgSpeedKmh >= 0 && data.avgSpeedKmh <= 350 &&
+        data.maxSpeedKmh is number && data.maxSpeedKmh >= 0 && data.maxSpeedKmh <= 350 &&
+        data.userRole in ['TOUR_LEADER', 'MEMBER'] &&
+        data.destinationName is string && data.destinationName.size() <= 120 &&
+        data.destinationAddress is string && data.destinationAddress.size() <= 240 &&
+        data.createdAt is timestamp;
+    }
+
+    // --- Collection Rules ---
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && isOwner(userId);
+      allow list: if false;
+      allow create: if isVerifiedUser() &&
+        isValidId(userId) &&
+        isOwner(userId) &&
+        isValidUserProfile(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() &&
+        isValidId(userId) &&
+        isOwner(userId) &&
+        isValidUserProfile(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'fullName', 'vehicleType', 'vehicleDetail',
+          'licensePlate', 'emergencyContact', 'avatarPreset', 'updatedAt'
+        ]);
+      allow delete: if false;
+
+      match /trips/{tripId} {
+        allow get: if isSignedIn() && isValidId(userId) && isValidId(tripId) && isOwner(userId);
+        allow list: if isSignedIn() && isOwner(userId) && resource.data.ownerUid == request.auth.uid;
+        allow create: if isVerifiedUser() &&
+          isValidId(userId) &&
+          isValidId(tripId) &&
+          isOwner(userId) &&
+          isValidTripHistory(incoming()) &&
+          incoming().createdAt == request.time;
+        allow update, delete: if false;
+      }
+    }
+
+    match /rooms/{roomId} {
+      allow get: if isSignedIn() && isValidId(roomId);
+      allow list: if isSignedIn() && resource.data.leaderUid == request.auth.uid;
+      allow create: if isVerifiedUser() &&
+        isValidId(roomId) &&
+        isValidConvoyRoom(incoming()) &&
+        incoming().roomId == roomId &&
+        incoming().leaderUid == request.auth.uid &&
+        incoming().status == 'ACTIVE' &&
+        incoming().sosActive == false &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() &&
+        isValidId(roomId) &&
+        isValidConvoyRoom(incoming()) &&
+        existing().status != 'FINISHED' &&
+        incoming().roomId == existing().roomId &&
+        incoming().leaderUid == existing().leaderUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          // Action: Leader updates route configuration, tolerances, or room status
+          (existing().leaderUid == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'roomTitle', 'destinationName', 'destinationAddress',
+              'destLat', 'destLng', 'originLat', 'originLng', 'encodedPolyline',
+              'totalRouteMeters', 'offRouteToleranceMeters', 'maxStragglerDistanceMeters',
+              'soundAlertEnabled', 'status',
+              'sosActive', 'sosSenderUid', 'sosSenderName', 'sosSenderVehicle',
+              'sosLat', 'sosLng', 'sosLocationText', 'sosTriggeredAtLabel',
+              'updatedAt'
+            ])) ||
+          // Action: Verified convoy member triggers or resolves SOS beacon
+          (isRoomMember(roomId) &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'sosActive', 'sosSenderUid', 'sosSenderName', 'sosSenderVehicle',
+              'sosLat', 'sosLng', 'sosLocationText', 'sosTriggeredAtLabel',
+              'updatedAt'
+            ]))
+        );
+      allow delete: if isVerifiedUser() && isValidId(roomId) && existing().leaderUid == request.auth.uid;
+
+      match /members/{memberId} {
+        allow get: if isSignedIn() && isValidId(roomId) && isValidId(memberId) &&
+          (memberId == request.auth.uid || isRoomMember(roomId) || isRoomLeader(roomId));
+        allow list: if isSignedIn() && resource.data.roomId == roomId &&
+          isRoomMember(roomId);
+        allow create: if isVerifiedUser() &&
+          isValidId(roomId) &&
+          isValidId(memberId) &&
+          memberId == request.auth.uid &&
+          isValidRoomMember(incoming()) &&
+          incoming().uid == request.auth.uid &&
+          incoming().roomId == roomId &&
+          incoming().joinedAt == request.time &&
+          incoming().updatedAt == request.time &&
+          exists(/databases/$(database)/documents/rooms/$(roomId)) &&
+          get(/databases/$(database)/documents/rooms/$(roomId)).data.status == 'ACTIVE' && (
+            (incoming().role == 'TOUR_LEADER' && isRoomLeader(roomId)) ||
+            (incoming().role == 'MEMBER' && incoming().isSweeper == false)
+          );
+        allow update: if isVerifiedUser() &&
+          isValidId(roomId) &&
+          isValidId(memberId) &&
+          isValidRoomMember(incoming()) &&
+          incoming().uid == existing().uid &&
+          incoming().roomId == existing().roomId &&
+          incoming().role == existing().role &&
+          incoming().joinedAt == existing().joinedAt &&
+          incoming().updatedAt == request.time &&
+          get(/databases/$(database)/documents/rooms/$(roomId)).data.status == 'ACTIVE' && (
+            // Action: Rider updates own GPS position & vehicle condition
+            (memberId == request.auth.uid &&
+              incoming().isSweeper == existing().isSweeper &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'fullName', 'vehicleType', 'vehicleDetail', 'licensePlate',
+                'avatarPreset', 'conditionStatus', 'connectionStatus',
+                'lastLocationText', 'latitude', 'longitude', 'speedKmh',
+                'heading', 'accuracyMeters', 'routeProgress', 'xFraction', 'yFraction',
+                'updatedAt'
+              ])) ||
+            // Action: Leader assigns/unassigns Sweeper
+            (isRoomLeader(roomId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['isSweeper', 'updatedAt']))
+          );
+        allow delete: if isVerifiedUser() &&
+          isValidId(roomId) &&
+          isValidId(memberId) &&
+          (memberId == request.auth.uid || (isRoomLeader(roomId) && existing().role != 'TOUR_LEADER'));
+      }
+
+      match /checkpoints/{checkpointId} {
+        allow get: if isSignedIn() && isValidId(roomId) && isValidId(checkpointId) &&
+          (isRoomMember(roomId) || isRoomLeader(roomId));
+        allow list: if isSignedIn() && resource.data.roomId == roomId &&
+          isRoomMember(roomId);
+        allow create: if isVerifiedUser() &&
+          isValidId(roomId) &&
+          isValidId(checkpointId) &&
+          isValidRoomCheckpoint(incoming()) &&
+          incoming().id == checkpointId &&
+          incoming().roomId == roomId &&
+          incoming().createdAt == request.time &&
+          isRoomLeader(roomId);
+        allow update: if false;
+        allow delete: if isVerifiedUser() &&
+          isValidId(roomId) &&
+          isValidId(checkpointId) &&
+          isRoomLeader(roomId);
+      }
+
+      match /messages/{messageId} {
+        allow get: if isSignedIn() && isValidId(roomId) && isValidId(messageId) &&
+          (isRoomMember(roomId) || isRoomLeader(roomId));
+        allow list: if isSignedIn() && resource.data.roomId == roomId &&
+          isRoomMember(roomId);
+        allow create: if isVerifiedUser() &&
+          isValidId(roomId) &&
+          isValidId(messageId) &&
+          isValidRoomMessage(incoming()) &&
+          incoming().id == messageId &&
+          incoming().roomId == roomId &&
+          incoming().createdAt == request.time &&
+          isRoomMember(roomId);
+        allow update, delete: if false;
+      }
+    }
+  }
+}

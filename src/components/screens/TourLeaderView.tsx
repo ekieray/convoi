@@ -5,20 +5,18 @@ import {
   Bike,
   Car,
   Check,
+  Cloud,
   Coffee,
   Copy,
   Flag,
   Gauge,
-  LocateFixed,
   Map as MapIcon,
   MapPin,
-  Minus,
   Plus,
   RotateCcw,
   Route,
   Trash2,
   UserPlus,
-  X,
 } from 'lucide-react';
 import {
   ConvoyRouteConfig,
@@ -27,15 +25,22 @@ import {
   TourRoom,
 } from '../../types/convoy';
 import { ConvoyAvatar } from '../ConvoyAvatar';
+import { GoogleMapRoutePickerModal } from '../map/GoogleMapRoutePicker';
+import { LatLngPoint } from '../../utils/geo';
 
 interface TourLeaderViewProps {
   activeRoom: TourRoom | null;
   routeConfig: ConvoyRouteConfig;
   destinationPresets: DestinationPreset[];
+  isAuthenticated?: boolean;
+  isCreatingRoom?: boolean;
+  userGpsLocation?: LatLngPoint | null;
+  darkMode?: boolean;
+  onGoogleSignIn?: () => void;
   onSelectPreset: (preset: DestinationPreset) => void;
-  onPickDestinationFromMap: (
-    xFraction: number,
-    yFraction: number,
+  onPickDestinationLatLng: (
+    lat: number,
+    lng: number,
     placeName: string,
     addressLabel: string
   ) => void;
@@ -59,58 +64,17 @@ const STEP_LABELS = [
   { num: 4, label: 'Jarak' },
 ];
 
-interface MapLandmark {
-  name: string;
-  address: string;
-  xFraction: number;
-  yFraction: number;
-}
-
-const REGIONAL_LANDMARKS: MapLandmark[] = [
-  {
-    name: 'Puncak Pass Resort',
-    address: 'Jl. Raya Puncak KM 90, Cisarua',
-    xFraction: 0.86,
-    yFraction: 0.14,
-  },
-  {
-    name: 'Taman Safari Cisarua',
-    address: 'Jl. Kapten Harun Kabir No. 724',
-    xFraction: 0.58,
-    yFraction: 0.3,
-  },
-  {
-    name: 'Rest Area KM 57',
-    address: 'Tol Jakarta-Cikampek KM 57',
-    xFraction: 0.82,
-    yFraction: 0.46,
-  },
-  {
-    name: 'Lembang Highland',
-    address: 'Jl. Raya Lembang No. 12, Bandung',
-    xFraction: 0.26,
-    yFraction: 0.2,
-  },
-  {
-    name: 'Simpang Gadog',
-    address: 'Jl. Raya Ciawi - Gadog KM 45',
-    xFraction: 0.34,
-    yFraction: 0.66,
-  },
-  {
-    name: 'Sentul Selatan Exit',
-    address: 'Jl. MH Thamrin, Babakan Madang',
-    xFraction: 0.72,
-    yFraction: 0.68,
-  },
-];
-
 export function TourLeaderView({
   activeRoom,
   routeConfig,
   destinationPresets,
+  isAuthenticated,
+  isCreatingRoom,
+  userGpsLocation,
+  darkMode,
+  onGoogleSignIn,
   onSelectPreset,
-  onPickDestinationFromMap,
+  onPickDestinationLatLng,
   onUpdateWaypoints,
   onResetDefaultWaypoints,
   onAddCheckpoint,
@@ -244,6 +208,24 @@ export function TourLeaderView({
             <div className="rounded-[22px] bg-white dark:bg-[#141C24] border border-[#E2E8F0] dark:border-[#334155] p-4 space-y-4">
               {currentStep === 0 && (
                 <>
+                  {!isAuthenticated && onGoogleSignIn && (
+                    <div className="rounded-xl bg-[#EFF6FF] dark:bg-[#1E3A8A]/40 border border-[#BFDBFE] dark:border-[#1E40AF] p-2.5 flex items-center justify-between gap-2">
+                      <p className="text-[11px] text-[#1E3A8A] dark:text-[#DBEAFE] flex items-center gap-1.5 min-w-0">
+                        <Cloud className="w-3.5 h-3.5 shrink-0" />
+                        <span className="truncate">
+                          Masuk Google agar Room bisa diikuti peserta lain live
+                        </span>
+                      </p>
+                      <button
+                        type="button"
+                        onClick={onGoogleSignIn}
+                        className="px-2.5 py-1 rounded-lg bg-[#1D4ED8] text-white text-[10px] font-semibold cursor-pointer shrink-0"
+                      >
+                        Masuk
+                      </button>
+                    </div>
+                  )}
+
                   <div className="flex items-center gap-2">
                     <Flag className="w-5 h-5 text-[#1D4ED8] dark:text-[#60A5FA]" />
                     <h3 className="text-base font-bold">
@@ -636,15 +618,22 @@ export function TourLeaderView({
                 ) : (
                   <button
                     type="button"
+                    disabled={isCreatingRoom}
                     onClick={() =>
                       onCreateRoom(
                         tourNameDraft.trim() || 'Konvoi Touring Akhir Pekan'
                       )
                     }
-                    className="flex-1 min-h-[46px] rounded-[14px] bg-[#EA580C] hover:bg-[#C2410C] text-white text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
+                    className="flex-1 min-h-[46px] rounded-[14px] bg-[#EA580C] hover:bg-[#C2410C] disabled:opacity-60 text-white text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
                   >
                     <Check className="w-4 h-4" />
-                    <span>Buat Room & Mulai</span>
+                    <span>
+                      {isCreatingRoom
+                        ? 'Membuat Room...'
+                        : isAuthenticated
+                          ? 'Buat Room Cloud & Mulai'
+                          : 'Buat Room & Mulai'}
+                    </span>
                   </button>
                 )}
               </div>
@@ -710,14 +699,22 @@ export function TourLeaderView({
                   >
                     Buat ID Baru
                   </button>
-                  <button
-                    type="button"
-                    onClick={onSimulateJoin}
-                    className="min-h-[44px] px-3 py-2 rounded-xl bg-[#1D4ED8] text-white text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
-                  >
-                    <UserPlus className="w-3.5 h-3.5 shrink-0" />
-                    <span>Simulasi Anggota</span>
-                  </button>
+                  {!activeRoom.isSyncedRoom && (
+                    <button
+                      type="button"
+                      onClick={onSimulateJoin}
+                      className="min-h-[44px] px-3 py-2 rounded-xl bg-[#1D4ED8] text-white text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                    >
+                      <UserPlus className="w-3.5 h-3.5 shrink-0" />
+                      <span>Simulasi Anggota</span>
+                    </button>
+                  )}
+                  {activeRoom.isSyncedRoom && (
+                    <div className="min-h-[44px] px-3 py-2 rounded-xl bg-[#DCFCE7] dark:bg-[#064E3B] text-[#15803D] dark:text-[#4ADE80] text-xs font-semibold flex items-center justify-center gap-1.5">
+                      <Cloud className="w-3.5 h-3.5 shrink-0" />
+                      <span>Sync Cloud Aktif</span>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -805,7 +802,7 @@ export function TourLeaderView({
       )}
 
       {showDestinationPicker && (
-        <DestinationMapPickerModal
+        <GoogleMapRoutePickerModal
           initialPoint={
             routeConfig.waypoints[routeConfig.waypoints.length - 1] || {
               xFraction: 0.86,
@@ -815,366 +812,15 @@ export function TourLeaderView({
             }
           }
           initialName={routeConfig.destinationName}
+          userGpsLocation={userGpsLocation}
+          darkMode={darkMode}
           onDismiss={() => setShowDestinationPicker(false)}
-          onConfirm={(x, y, placeName, addressLabel) => {
-            onPickDestinationFromMap(x, y, placeName, addressLabel);
+          onConfirm={(lat, lng, placeName, addressLabel) => {
+            onPickDestinationLatLng(lat, lng, placeName, addressLabel);
             setShowDestinationPicker(false);
           }}
         />
       )}
-    </div>
-  );
-}
-
-interface DestinationMapPickerModalProps {
-  initialPoint: RoutePoint;
-  initialName: string;
-  onDismiss: () => void;
-  onConfirm: (
-    xFraction: number,
-    yFraction: number,
-    placeName: string,
-    addressLabel: string
-  ) => void;
-}
-
-function DestinationMapPickerModal({
-  initialPoint,
-  initialName,
-  onDismiss,
-  onConfirm,
-}: DestinationMapPickerModalProps) {
-  const [scale, setScale] = useState(1.25);
-  const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [pin, setPin] = useState({
-    xFraction: Math.max(0.08, Math.min(0.92, initialPoint.xFraction)),
-    yFraction: Math.max(0.08, Math.min(0.9, initialPoint.yFraction)),
-  });
-  const [placeName, setPlaceName] = useState(initialName);
-
-  const viewportRef = useRef<HTMLDivElement | null>(null);
-  const dragRef = useRef<{
-    active: boolean;
-    startX: number;
-    startY: number;
-    basePanX: number;
-    basePanY: number;
-    movedDist: number;
-  }>({
-    active: false,
-    startX: 0,
-    startY: 0,
-    basePanX: 0,
-    basePanY: 0,
-    movedDist: 0,
-  });
-
-  const lat = -6.71 + (1 - pin.yFraction) * 0.08;
-  const lng = 106.85 + pin.xFraction * 0.16;
-
-  const findNearestLandmark = (x: number, y: number) => {
-    let best = REGIONAL_LANDMARKS[0];
-    let bestDist = Infinity;
-    for (const lm of REGIONAL_LANDMARKS) {
-      const dx = lm.xFraction - x;
-      const dy = lm.yFraction - y;
-      const d = dx * dx + dy * dy;
-      if (d < bestDist) {
-        bestDist = d;
-        best = lm;
-      }
-    }
-    return { landmark: best, distSq: bestDist };
-  };
-
-  const { landmark: nearest } = findNearestLandmark(pin.xFraction, pin.yFraction);
-  const resolvedAddress = `${nearest.address} · ${lat.toFixed(4)}, ${lng.toFixed(4)}`;
-
-  const clampPan = (nx: number, ny: number, currentScale: number) => {
-    const el = viewportRef.current;
-    if (!el) return { x: 0, y: 0 };
-    const maxX = (el.clientWidth * (currentScale - 1)) / 2 + 40;
-    const maxY = (el.clientHeight * (currentScale - 1)) / 2 + 40;
-    return {
-      x: Math.max(-maxX, Math.min(maxX, nx)),
-      y: Math.max(-maxY, Math.min(maxY, ny)),
-    };
-  };
-
-  const updatePinFromClientXY = (clientX: number, clientY: number) => {
-    const el = viewportRef.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    const cx = rect.width / 2;
-    const cy = rect.height / 2;
-    const relX = clientX - rect.left;
-    const relY = clientY - rect.top;
-    const mapX = ((relX - cx - pan.x) / scale + cx) / rect.width;
-    const mapY = ((relY - cy - pan.y) / scale + cy) / rect.height;
-    const clampedX = Math.max(0.08, Math.min(0.92, mapX));
-    const clampedY = Math.max(0.08, Math.min(0.9, mapY));
-    setPin({ xFraction: clampedX, yFraction: clampedY });
-
-    const { landmark, distSq } = findNearestLandmark(clampedX, clampedY);
-    setPlaceName(distSq < 0.025 ? landmark.name : `Area ${landmark.name}`);
-  };
-
-  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if ((e.target as HTMLElement).closest('button')) return;
-    dragRef.current = {
-      active: true,
-      startX: e.clientX,
-      startY: e.clientY,
-      basePanX: pan.x,
-      basePanY: pan.y,
-      movedDist: 0,
-    };
-    e.currentTarget.setPointerCapture(e.pointerId);
-  };
-
-  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!dragRef.current.active) return;
-    const dx = e.clientX - dragRef.current.startX;
-    const dy = e.clientY - dragRef.current.startY;
-    dragRef.current.movedDist = Math.max(
-      dragRef.current.movedDist,
-      Math.hypot(dx, dy)
-    );
-    setPan(clampPan(dragRef.current.basePanX + dx, dragRef.current.basePanY + dy, scale));
-  };
-
-  const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!dragRef.current.active) return;
-    const moved = dragRef.current.movedDist;
-    dragRef.current.active = false;
-    if (moved < 6) {
-      updatePinFromClientXY(e.clientX, e.clientY);
-    }
-  };
-
-  const adjustZoom = (delta: number) => {
-    setScale((prev) => {
-      const next = Math.max(1, Math.min(3, Number((prev + delta).toFixed(2))));
-      setPan((p) => (next === 1 ? { x: 0, y: 0 } : clampPan(p.x, p.y, next)));
-      return next;
-    });
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 bg-black/55 backdrop-blur-[2px] flex items-center justify-center p-2 sm:p-4">
-      <div className="w-full max-w-[390px] h-[640px] max-h-[92vh] rounded-[24px] bg-white dark:bg-[#141C24] border border-[#E2E8F0] dark:border-[#334155] shadow-2xl overflow-hidden flex flex-col">
-        {/* Top Modal Header */}
-        <div className="px-3.5 py-2.5 bg-white dark:bg-[#141C24] border-b border-[#E2E8F0] dark:border-[#334155] flex items-center justify-between gap-2">
-          <div className="min-w-0">
-            <h3 className="text-sm font-bold truncate">
-              Pilih Tujuan Akhir di Peta
-            </h3>
-            <p className="text-[11px] text-[#64748B] dark:text-[#94A3B8] truncate">
-              Geser, perbesar, lalu ketuk peta untuk menaruh pin
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onDismiss}
-            aria-label="Tutup Peta"
-            className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-[#F1F5F9] dark:hover:bg-[#1E293B] cursor-pointer shrink-0"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        {/* Interactive Pan & Zoom Map Canvas */}
-        <div
-          ref={viewportRef}
-          onPointerDown={handlePointerDown}
-          onPointerMove={handlePointerMove}
-          onPointerUp={handlePointerUp}
-          onWheel={(e) => {
-            e.preventDefault();
-            adjustZoom(e.deltaY < 0 ? 0.25 : -0.25);
-          }}
-          className="relative flex-1 bg-[#E9EFF5] dark:bg-[#0F172A] overflow-hidden cursor-grab active:cursor-grabbing select-none touch-none"
-        >
-          {/* Zoom Indicator */}
-          <div className="absolute top-3 left-3 z-20 px-2.5 py-1 rounded-lg bg-[#0F172A]/80 text-white text-[10px] font-medium pointer-events-none">
-            Zoom {scale.toFixed(1)}x · Ketuk untuk taruh pin
-          </div>
-
-          {/* Zoom & Reset Controls */}
-          <div className="absolute top-3 right-3 z-20 flex flex-col gap-1.5">
-            <button
-              type="button"
-              onClick={() => adjustZoom(0.35)}
-              aria-label="Perbesar peta"
-              className="w-9 h-9 rounded-xl bg-white dark:bg-[#1E293B] border border-[#CBD5E1] dark:border-[#334155] shadow-md flex items-center justify-center hover:bg-[#F8FAFC] cursor-pointer"
-            >
-              <Plus className="w-4 h-4" />
-            </button>
-            <button
-              type="button"
-              onClick={() => adjustZoom(-0.35)}
-              aria-label="Perkecil peta"
-              className="w-9 h-9 rounded-xl bg-white dark:bg-[#1E293B] border border-[#CBD5E1] dark:border-[#334155] shadow-md flex items-center justify-center hover:bg-[#F8FAFC] cursor-pointer"
-            >
-              <Minus className="w-4 h-4" />
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setScale(1);
-                setPan({ x: 0, y: 0 });
-              }}
-              aria-label="Reset tampilan peta"
-              className="w-9 h-9 rounded-xl bg-white dark:bg-[#1E293B] border border-[#CBD5E1] dark:border-[#334155] shadow-md flex items-center justify-center hover:bg-[#F8FAFC] cursor-pointer"
-            >
-              <LocateFixed className="w-4 h-4 text-[#1D4ED8] dark:text-[#60A5FA]" />
-            </button>
-          </div>
-
-          {/* Transformed Map Surface */}
-          <div
-            className="absolute inset-0 origin-center transition-transform duration-75"
-            style={{
-              transform: `translate(${pan.x}px, ${pan.y}px) scale(${scale})`,
-            }}
-          >
-            <svg
-              className="w-full h-full"
-              viewBox="0 0 360 380"
-              preserveAspectRatio="none"
-            >
-              <defs>
-                <pattern
-                  id="pickerGrid"
-                  width="32"
-                  height="32"
-                  patternUnits="userSpaceOnUse"
-                >
-                  <path
-                    d="M 32 0 L 0 0 0 32"
-                    fill="none"
-                    stroke="currentColor"
-                    className="text-[#D4DFEA] dark:text-[#1E293B]"
-                    strokeWidth="1"
-                  />
-                </pattern>
-              </defs>
-              <rect width="360" height="380" fill="url(#pickerGrid)" />
-
-              {/* Major Corridor */}
-              <polyline
-                points="43,334 122,250 208,114 310,53"
-                fill="none"
-                stroke="#FFFFFF"
-                strokeWidth="13"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-              <polyline
-                points="43,334 122,250 208,114 310,53"
-                fill="none"
-                stroke="#93C5FD"
-                strokeWidth="5.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-
-              {/* Secondary Corridor */}
-              <polyline
-                points="122,250 259,258 295,175"
-                fill="none"
-                stroke="#CBD5E1"
-                strokeWidth="4.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-
-            {/* Regional Landmarks */}
-            {REGIONAL_LANDMARKS.map((lm) => (
-              <button
-                key={lm.name}
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setPin({ xFraction: lm.xFraction, yFraction: lm.yFraction });
-                  setPlaceName(lm.name);
-                }}
-                style={{
-                  left: `${lm.xFraction * 100}%`,
-                  top: `${lm.yFraction * 100}%`,
-                }}
-                className="absolute -translate-x-1/2 translate-y-2 px-1.5 py-0.5 rounded-md bg-white/95 dark:bg-[#1E293B]/95 border border-[#CBD5E1] dark:border-[#475569] shadow-xs text-[9px] font-semibold text-[#1E293B] dark:text-[#F1F5F9] whitespace-nowrap cursor-pointer hover:border-[#1D4ED8]"
-              >
-                {lm.name}
-              </button>
-            ))}
-
-            {/* Dropped Destination Pin Marker */}
-            <div
-              style={{
-                left: `${pin.xFraction * 100}%`,
-                top: `${pin.yFraction * 100}%`,
-              }}
-              className="absolute -translate-x-1/2 -translate-y-full pointer-events-none flex flex-col items-center"
-            >
-              <div className="w-8 h-8 rounded-full bg-[#DC2626] border-2 border-white shadow-lg flex items-center justify-center">
-                <Flag className="w-4 h-4 text-white" />
-              </div>
-              <div className="w-1.5 h-1.5 rounded-full bg-[#DC2626] -mt-0.5 border border-white" />
-            </div>
-          </div>
-        </div>
-
-        {/* Bottom Confirmation Sheet */}
-        <div className="p-3.5 bg-white dark:bg-[#141C24] border-t border-[#E2E8F0] dark:border-[#334155] space-y-2.5">
-          <div>
-            <label
-              htmlFor="pickerPlaceName"
-              className="block text-[11px] font-semibold text-[#475569] dark:text-[#CBD5E1] mb-1"
-            >
-              Nama Lokasi Tujuan
-            </label>
-            <input
-              id="pickerPlaceName"
-              type="text"
-              value={placeName}
-              onChange={(e) => setPlaceName(e.target.value)}
-              placeholder="Contoh: Puncak Pass Resort"
-              className="w-full min-h-[40px] px-3 rounded-xl bg-[#F8FAFC] dark:bg-[#0B1117] border border-[#CBD5E1] dark:border-[#334155] focus:border-[#1D4ED8] text-xs outline-none"
-            />
-          </div>
-
-          <p className="text-[10px] font-mono text-[#1D4ED8] dark:text-[#60A5FA] truncate">
-            {resolvedAddress}
-          </p>
-
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={onDismiss}
-              className="flex-1 min-h-[44px] rounded-xl border border-[#CBD5E1] dark:border-[#334155] text-xs font-semibold cursor-pointer"
-            >
-              Batal
-            </button>
-            <button
-              type="button"
-              onClick={() =>
-                onConfirm(
-                  pin.xFraction,
-                  pin.yFraction,
-                  placeName.trim() || 'Titik Tujuan Peta',
-                  resolvedAddress
-                )
-              }
-              className="flex-[1.6] min-h-[44px] rounded-xl bg-[#EA580C] hover:bg-[#C2410C] text-white text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
-            >
-              <Check className="w-4 h-4" />
-              <span>Gunakan Lokasi Ini</span>
-            </button>
-          </div>
-        </div>
-      </div>
     </div>
   );
 }

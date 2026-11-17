@@ -144,8 +144,18 @@ data class MapPosition(
     val yFraction: Float,
     val latitude: Double,
     val longitude: Double,
-    val speedKmh: Int
+    val speedKmh: Int,
+    val heading: Int = 0,
+    val accuracyMeters: Int = 20
 )
+
+enum class GpsTrackingStatus(val label: String) {
+    IDLE("GPS Siaga"),
+    REQUESTING("Mencari GPS..."),
+    ACTIVE("GPS Aktif"),
+    DENIED("Izin GPS Ditolak"),
+    UNAVAILABLE("GPS Tidak Tersedia")
+}
 
 data class VehicleProfile(
     val fullName: String = "",
@@ -439,7 +449,9 @@ data class TourRoom(
     val roomTitle: String,
     val inviteLink: String,
     val createdAtLabel: String,
-    val members: List<ConvoyMember>
+    val members: List<ConvoyMember>,
+    val isSyncedRoom: Boolean = false,
+    val leaderUid: String = ""
 )
 
 data class ConvoyUiState(
@@ -464,5 +476,10 @@ data class ConvoyUiState(
     val isOffRouteSimActive: Boolean = false,
     val isStragglerSimActive: Boolean = false,
     val tripHistory: List<TripHistoryRecord> = emptyList(),
-    val selectedTripId: String? = null
+    val selectedTripId: String? = null,
+    val gpsStatus: GpsTrackingStatus = GpsTrackingStatus.IDLE,
+    val gpsAccuracyMeters: Int = 20,
+    val userGpsLat: Double? = null,
+    val userGpsLng: Double? = null,
+    val isCloudSyncConnected: Boolean = false
 )

@@ -1,4 +1,4 @@
-import { ArrowLeft, ClipboardPaste, Link2, LogIn } from 'lucide-react';
+import { ArrowLeft, ClipboardPaste, Cloud, Link2, LogIn } from 'lucide-react';
 import { VehicleProfile } from '../../types/convoy';
 import { ConvoyAvatar } from '../ConvoyAvatar';
 
@@ -7,6 +7,9 @@ interface JoinTourViewProps {
   joinError: string | null;
   extractedRoomId: string;
   vehicleProfile: VehicleProfile;
+  isAuthenticated?: boolean;
+  isJoining?: boolean;
+  onGoogleSignIn?: () => void;
   onInputChange: (val: string) => void;
   onJoinSubmit: () => void;
   onBack: () => void;
@@ -17,6 +20,9 @@ export function JoinTourView({
   joinError,
   extractedRoomId,
   vehicleProfile,
+  isAuthenticated,
+  isJoining,
+  onGoogleSignIn,
   onInputChange,
   onJoinSubmit,
   onBack,
@@ -58,6 +64,27 @@ export function JoinTourView({
           <p className="text-sm text-[#475569] dark:text-[#CBD5E1] leading-relaxed">
             Masukkan Room ID atau tempel link undangan yang dibagikan oleh Tour Leader.
           </p>
+
+          {!isAuthenticated && onGoogleSignIn && (
+            <div className="rounded-2xl bg-[#EFF6FF] dark:bg-[#1E3A8A]/40 border border-[#BFDBFE] dark:border-[#1E40AF] p-3.5 flex items-center justify-between gap-2.5">
+              <div className="min-w-0">
+                <p className="text-xs font-bold text-[#1E3A8A] dark:text-[#DBEAFE] flex items-center gap-1.5">
+                  <Cloud className="w-3.5 h-3.5 shrink-0" />
+                  <span>Gabung Room Multi-Perangkat</span>
+                </p>
+                <p className="text-[11px] text-[#475569] dark:text-[#CBD5E1]">
+                  Masuk Google untuk sinkronisasi GPS nyata ke room Leader.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={onGoogleSignIn}
+                className="px-3 py-1.5 rounded-xl bg-[#1D4ED8] text-white text-[11px] font-semibold cursor-pointer shrink-0"
+              >
+                Masuk Google
+              </button>
+            </div>
+          )}
 
           {/* Input Room ID / Link */}
           <div>
@@ -102,7 +129,7 @@ export function JoinTourView({
 
           {/* Quick Demo Sample */}
           <div className="flex items-center gap-2 text-xs text-[#64748B] dark:text-[#94A3B8]">
-            <span>Contoh cepat:</span>
+            <span>Contoh offline:</span>
             <button
               type="button"
               onClick={() => onInputChange('https://konvoiku.id/join/KNV-8492')}
@@ -145,12 +172,16 @@ export function JoinTourView({
         {/* Submit CTA */}
         <button
           type="submit"
-          className="w-full min-h-[48px] px-4 py-3 rounded-[14px] bg-[#EA580C] hover:bg-[#C2410C] active:scale-[0.98] text-white text-sm font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer"
+          disabled={isJoining}
+          className="w-full min-h-[48px] px-4 py-3 rounded-[14px] bg-[#EA580C] hover:bg-[#C2410C] disabled:opacity-60 active:scale-[0.98] text-white text-sm font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer"
         >
           <LogIn className="w-4 h-4 shrink-0" />
-          <span className="whitespace-nowrap">Masuk Konvoi</span>
+          <span className="whitespace-nowrap">
+            {isJoining ? 'Menghubungkan Room...' : 'Masuk Konvoi'}
+          </span>
         </button>
       </div>
     </form>
   );
 }
+

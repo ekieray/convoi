@@ -106,6 +106,8 @@ export interface MapPosition {
   latitude: number;
   longitude: number;
   speedKmh: number;
+  heading?: number;
+  accuracyMeters?: number;
 }
 
 export interface VehicleProfile {
@@ -146,6 +148,8 @@ export interface TourRoom {
   roomTitle: string;
   inviteLink: string;
   createdAtLabel: string;
+  isSyncedRoom?: boolean;
+  leaderUid?: string;
   members: ConvoyMember[];
 }
 

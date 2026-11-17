@@ -9,6 +9,7 @@ import {
   ChevronDown,
   ChevronUp,
   Clock,
+  Cloud,
   Coffee,
   Flag,
   Gauge,
@@ -16,10 +17,8 @@ import {
   MapPin,
   MessageCircle,
   Mic,
-  Minus,
   Pause,
   Play,
-  Plus,
   Route,
   Send,
   Settings,
@@ -44,6 +43,9 @@ import {
   UserRole,
 } from '../../types/convoy';
 import { ConvoyAvatar } from '../ConvoyAvatar';
+import { LiveGoogleConvoyMap } from '../map/LiveGoogleConvoyMap';
+import { GpsPermissionStatus } from '../../hooks/useDeviceGps';
+import { LatLngPoint } from '../../utils/geo';
 
 interface LiveTrackingMapViewProps {
   activeRoom: TourRoom | null;
@@ -64,17 +66,26 @@ interface LiveTrackingMapViewProps {
   isOffRouteSimActive: boolean;
   isStragglerSimActive: boolean;
   destinationPresets: DestinationPreset[];
+  darkMode?: boolean;
+  gpsStatus: GpsPermissionStatus;
+  gpsAccuracyMeters?: number;
+  onRetryGps: () => void;
+  onRouteComputed?: (
+    distanceMeters: number,
+    durationMillis: number,
+    path: LatLngPoint[]
+  ) => void;
   onSelectMember: (memberId: string) => void;
   onToggleSimulation: () => void;
   onSelectPreset: (preset: DestinationPreset) => void;
-  onPickCustomDestination: (xFraction: number, yFraction: number) => void;
+  onPickDestinationLatLng: (lat: number, lng: number) => void;
   onTogglePickMode: (enabled: boolean) => void;
   onStartPickCheckpoint: (name: string) => void;
   onCancelPickCheckpoint: () => void;
-  onConfirmAddCheckpoint: (
+  onConfirmAddCheckpointLatLng: (
     name: string,
-    xFraction: number,
-    yFraction: number
+    lat: number,
+    lng: number
   ) => void;
   onRemoveCheckpoint: (checkpointId: string) => void;
   onUpdateMaxStragglerDistance: (meters: number) => void;
@@ -243,14 +254,19 @@ export function LiveTrackingMapView({
   isOffRouteSimActive,
   isStragglerSimActive,
   destinationPresets,
+  darkMode,
+  gpsStatus,
+  gpsAccuracyMeters,
+  onRetryGps,
+  onRouteComputed,
   onSelectMember,
   onToggleSimulation,
   onSelectPreset,
-  onPickCustomDestination,
+  onPickDestinationLatLng,
   onTogglePickMode,
   onStartPickCheckpoint,
   onCancelPickCheckpoint,
-  onConfirmAddCheckpoint,
+  onConfirmAddCheckpointLatLng,
   onRemoveCheckpoint,
   onUpdateMaxStragglerDistance,
   onUpdateOffRouteTolerance,
@@ -269,8 +285,6 @@ export function LiveTrackingMapView({
   onFinishAndSaveTrip,
   onExitRoom,
 }: LiveTrackingMapViewProps) {
-  const [mapScale, setMapScale] = useState(1);
-  const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
   const [participantsExpanded, setParticipantsExpanded] = useState(false);
   const [showChatSheet, setShowChatSheet] = useState(false);
   const [showLeaderSettings, setShowLeaderSettings] = useState(false);
@@ -278,20 +292,13 @@ export function LiveTrackingMapView({
   const [showFinishTripConfirm, setShowFinishTripConfirm] = useState(false);
   const [chatText, setChatText] = useState('');
   const [checkpointNameInput, setCheckpointNameInput] = useState('');
-  const [pendingTapCoord, setPendingTapCoord] = useState<{
-    xFraction: number;
-    yFraction: number;
+  const [pendingTapLatLng, setPendingTapLatLng] = useState<{
+    lat: number;
+    lng: number;
   } | null>(null);
   const [tapCheckpointNameInput, setTapCheckpointNameInput] = useState('');
 
-  const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
-  const dragOriginRef = useRef<{
-    x: number;
-    y: number;
-    startX: number;
-    startY: number;
-  } | null>(null);
   const prevAlertKeyRef = useRef('');
 
   const members = [...(activeRoom?.members ?? [])].sort(
@@ -326,66 +333,17 @@ export function LiveTrackingMapView({
     }
   }, [messages.length, showChatSheet]);
 
-  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if ((e.target as HTMLElement).closest('button')) return;
-    dragOriginRef.current = {
-      x: e.clientX,
-      y: e.clientY,
-      startX: panOffset.x,
-      startY: panOffset.y,
-    };
-  };
-
-  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (
-      !dragOriginRef.current ||
-      isPickingDestinationOnMap ||
-      isPickingCheckpointOnMap
-    ) {
-      return;
-    }
-    const dx = e.clientX - dragOriginRef.current.x;
-    const dy = e.clientY - dragOriginRef.current.y;
-    setPanOffset({
-      x: Math.max(-130, Math.min(130, dragOriginRef.current.startX + dx)),
-      y: Math.max(-130, Math.min(130, dragOriginRef.current.startY + dy)),
-    });
-  };
-
-  const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (
-      (isPickingDestinationOnMap || isPickingCheckpointOnMap) &&
-      mapContainerRef.current &&
-      !(e.target as HTMLElement).closest('button')
-    ) {
-      const rect = mapContainerRef.current.getBoundingClientRect();
-      const xFrac =
-        0.5 +
-        (e.clientX - rect.left - rect.width / 2 - panOffset.x) /
-          (rect.width * mapScale);
-      const yFrac =
-        0.5 +
-        (e.clientY - rect.top - rect.height / 2 - panOffset.y) /
-          (rect.height * mapScale);
-      const clampedX = Math.max(0.08, Math.min(0.92, xFrac));
-      const clampedY = Math.max(0.08, Math.min(0.9, yFrac));
-
-      if (isPickingCheckpointOnMap) {
-        if (pendingCheckpointName.trim()) {
-          onConfirmAddCheckpoint(
-            pendingCheckpointName.trim(),
-            clampedX,
-            clampedY
-          );
-        } else {
-          setPendingTapCoord({ xFraction: clampedX, yFraction: clampedY });
-          setTapCheckpointNameInput('');
-        }
-      } else if (isPickingDestinationOnMap) {
-        onPickCustomDestination(clampedX, clampedY);
+  const handlePickCoordinateOnMap = (lat: number, lng: number) => {
+    if (isPickingCheckpointOnMap) {
+      if (pendingCheckpointName.trim()) {
+        onConfirmAddCheckpointLatLng(pendingCheckpointName.trim(), lat, lng);
+      } else {
+        setPendingTapLatLng({ lat, lng });
+        setTapCheckpointNameInput('');
       }
+    } else if (isPickingDestinationOnMap) {
+      onPickDestinationLatLng(lat, lng);
     }
-    dragOriginRef.current = null;
   };
 
   const handleSendChat = (e: React.FormEvent) => {
@@ -395,11 +353,6 @@ export function LiveTrackingMapView({
     setChatText('');
   };
 
-  const waypoints = routeConfig.waypoints;
-  const destPoint = waypoints[waypoints.length - 1];
-  const polylinePoints = waypoints
-    .map((pt) => `${pt.xFraction * 380},${pt.yFraction * 440}`)
-    .join(' ');
   const sliderKm = Math.max(
     0.5,
     Math.min(5.0, routeConfig.maxStragglerDistanceMeters / 1000)
@@ -485,10 +438,7 @@ export function LiveTrackingMapView({
                 <button
                   key={member.id}
                   type="button"
-                  onClick={() => {
-                    onSelectMember(member.id);
-                    setPanOffset({ x: 0, y: 0 });
-                  }}
+                  onClick={() => onSelectMember(member.id)}
                   className={`shrink-0 px-2.5 py-1.5 rounded-[14px] border flex items-center gap-2 text-left transition-colors cursor-pointer ${
                     selected
                       ? 'bg-[#EFF6FF] dark:bg-[#1E3A8A]/60 border-[#1D4ED8]'
@@ -573,7 +523,6 @@ export function LiveTrackingMapView({
                     key={member.id}
                     onClick={() => {
                       onSelectMember(member.id);
-                      setPanOffset({ x: 0, y: 0 });
                       setParticipantsExpanded(false);
                     }}
                     className={`rounded-xl border px-3 py-2 flex items-center gap-2.5 cursor-pointer ${
@@ -727,296 +676,105 @@ export function LiveTrackingMapView({
           </div>
         )}
 
-      {/* Full Live Map Viewport */}
-      <div
-        ref={mapContainerRef}
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerUp}
-        onPointerLeave={() => {
-          dragOriginRef.current = null;
-        }}
-        className={`relative flex-1 overflow-hidden select-none touch-none bg-[#EEF2F6] dark:bg-[#141B22] ${
-          isPickingDestinationOnMap || isPickingCheckpointOnMap
-            ? 'cursor-crosshair'
-            : 'cursor-grab active:cursor-grabbing'
-        }`}
-      >
-        <div
-          className="absolute inset-0 transition-transform duration-150 ease-out"
-          style={{
-            transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${mapScale})`,
-            transformOrigin: 'center center',
-          }}
-        >
-          <svg
-            aria-hidden="true"
-            className="w-full h-full"
-            viewBox="0 0 380 440"
-            preserveAspectRatio="none"
-          >
-            <defs>
-              <pattern
-                id="m3Grid"
-                width="42"
-                height="42"
-                patternUnits="userSpaceOnUse"
-              >
-                <path
-                  d="M 42 0 L 0 0 0 42"
-                  fill="none"
-                  stroke="currentColor"
-                  className="text-[#DCE3EC] dark:text-[#212B36]"
-                  strokeWidth="1"
-                />
-              </pattern>
-            </defs>
-            <rect width="380" height="440" fill="url(#m3Grid)" />
+      {/* Full Live Google Map Viewport */}
+      <div className="relative flex-1 overflow-hidden bg-[#EEF2F6] dark:bg-[#141B22]">
+        <LiveGoogleConvoyMap
+          members={members}
+          focusedMember={focusedMember}
+          routeConfig={routeConfig}
+          stragglerAlert={stragglerAlert}
+          sosState={sosState}
+          etaInfo={etaInfo}
+          darkMode={darkMode}
+          isPickingDestination={isPickingDestinationOnMap}
+          isPickingCheckpoint={isPickingCheckpointOnMap}
+          onSelectMember={onSelectMember}
+          onPickCoordinateOnMap={handlePickCoordinateOnMap}
+          onRouteComputed={onRouteComputed}
+        />
 
-            <path
-              d="M 15 160 L 365 265"
-              fill="none"
-              stroke="currentColor"
-              className="text-white dark:text-[#273240]"
-              strokeWidth="7"
-              strokeLinecap="round"
-            />
-            <path
-              d="M 90 410 L 145 45"
-              fill="none"
-              stroke="currentColor"
-              className="text-white dark:text-[#273240]"
-              strokeWidth="6"
-              strokeLinecap="round"
-            />
+        {/* Top-Left Live GPS, Sync Badge & Optional Offline Controls */}
+        <div className="absolute top-3 left-3 z-20 flex flex-col gap-1.5 max-w-[65%]">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <button
+              type="button"
+              onClick={onRetryGps}
+              className={`px-2.5 py-1 rounded-xl text-[10px] font-semibold border shadow-sm flex items-center gap-1.5 cursor-pointer ${
+                gpsStatus === 'active'
+                  ? 'bg-[#ECFDF5]/95 dark:bg-[#064E3B]/95 text-[#15803D] dark:text-[#4ADE80] border-[#86EFAC] dark:border-[#166534]'
+                  : gpsStatus === 'denied' || gpsStatus === 'unavailable'
+                    ? 'bg-[#FEF2F2]/95 dark:bg-[#450A0A]/95 text-[#DC2626] dark:text-[#FCA5A5] border-[#FCA5A5] dark:border-[#991B1B]'
+                    : 'bg-white/95 dark:bg-[#141C24]/95 text-[#1D4ED8] dark:text-[#60A5FA] border-[#E2E8F0] dark:border-[#334155]'
+              }`}
+            >
+              <LocateFixed className="w-3 h-3 shrink-0" />
+              <span>
+                {gpsStatus === 'active'
+                  ? `GPS Aktif ±${gpsAccuracyMeters ?? 15}m`
+                  : gpsStatus === 'requesting'
+                    ? 'Mencari Sinyal GPS...'
+                    : gpsStatus === 'denied'
+                      ? 'Izin GPS Ditolak (Coba Lagi)'
+                      : gpsStatus === 'unavailable'
+                        ? 'GPS Tidak Tersedia'
+                        : 'GPS Siap'}
+              </span>
+            </button>
 
-            {waypoints.length >= 2 && (
-              <>
-                <polyline
-                  points={polylinePoints}
-                  fill="none"
-                  stroke="currentColor"
-                  className="text-white dark:text-[#2F3D4D]"
-                  strokeWidth="14"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-                <polyline
-                  points={polylinePoints}
-                  fill="none"
-                  stroke="#1D4ED8"
-                  strokeWidth="5"
-                  strokeDasharray="11 6"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </>
+            {activeRoom?.isSyncedRoom && (
+              <span className="px-2 py-1 rounded-xl text-[10px] font-semibold bg-[#1D4ED8]/95 text-white shadow-sm flex items-center gap-1">
+                <Cloud className="w-3 h-3 shrink-0" />
+                <span>Room Sync</span>
+              </span>
             )}
-          </svg>
+          </div>
 
-          {/* Rest Area Checkpoints */}
-          {routeConfig.checkpoints.map((cp) => (
-            <div
-              key={cp.id}
-              style={{
-                left: `${cp.xFraction * 100}%`,
-                top: `${cp.yFraction * 100}%`,
-              }}
-              className="absolute -translate-x-1/2 -translate-y-[85%] flex flex-col items-center pointer-events-none z-10"
-            >
-              <span className="px-2 py-0.5 rounded-lg bg-[#0F766E] text-white text-[10px] font-semibold whitespace-nowrap max-w-[165px] truncate shadow-sm">
-                {cp.name}
-              </span>
-              <span className="mt-1 w-7 h-7 rounded-full bg-[#0F766E] border-2 border-white shadow-md flex items-center justify-center text-white">
-                <Coffee className="w-3.5 h-3.5" />
-              </span>
-            </div>
-          ))}
+          {!activeRoom?.isSyncedRoom && (
+            <div className="flex flex-wrap gap-1.5">
+              <button
+                type="button"
+                onClick={onToggleOffRouteSim}
+                className={`px-2 py-1 rounded-xl text-[10px] font-semibold border shadow-sm transition-colors cursor-pointer whitespace-nowrap ${
+                  isOffRouteSimActive
+                    ? 'bg-[#DC2626] text-white border-[#991B1B]'
+                    : 'bg-white/95 dark:bg-[#141C24]/95 text-[#334155] dark:text-[#CBD5E1] border-[#E2E8F0] dark:border-[#334155]'
+                }`}
+              >
+                {isOffRouteSimActive ? 'Keluar Jalur: Aktif' : 'Uji Keluar Jalur'}
+              </button>
 
-          {/* Final Destination Flag with Live ETA */}
-          {destPoint && (
-            <div
-              style={{
-                left: `${destPoint.xFraction * 100}%`,
-                top: `${destPoint.yFraction * 100}%`,
-              }}
-              className="absolute -translate-x-1/2 -translate-y-[85%] flex flex-col items-center pointer-events-none z-10"
-            >
-              <div className="px-2.5 py-1 rounded-xl bg-[#0F172A] text-white shadow-md text-center max-w-[185px]">
-                <p className="text-[10px] font-semibold truncate">
-                  Tujuan: {routeConfig.destinationName}
-                </p>
-                <p className="text-[9px] font-mono text-[#86EFAC] whitespace-nowrap">
-                  {etaInfo.isStopped
-                    ? `ETA --:-- · ${etaInfo.distanceLabel}`
-                    : `ETA ${etaInfo.arrivalClockLabel} · ${etaInfo.durationLabel} · ${etaInfo.distanceLabel}`}
-                </p>
-              </div>
-              <span className="mt-1 w-7 h-7 rounded-full bg-[#16A34A] border-2 border-white shadow-md flex items-center justify-center text-white">
-                <Flag className="w-3.5 h-3.5" />
-              </span>
+              <button
+                type="button"
+                onClick={onToggleStragglerSim}
+                className={`px-2 py-1 rounded-xl text-[10px] font-semibold border shadow-sm transition-colors cursor-pointer whitespace-nowrap ${
+                  isStragglerSimActive
+                    ? 'bg-[#B45309] text-white border-[#92400E]'
+                    : 'bg-white/95 dark:bg-[#141C24]/95 text-[#334155] dark:text-[#CBD5E1] border-[#E2E8F0] dark:border-[#334155]'
+                }`}
+              >
+                {isStragglerSimActive ? 'Tertinggal: Aktif' : 'Uji Tertinggal'}
+              </button>
+
+              <button
+                type="button"
+                onClick={onToggleSimulation}
+                aria-label={isSimulationRunning ? 'Jeda Simulasi' : 'Lanjut Simulasi'}
+                className="px-2 py-1 rounded-xl bg-white/95 dark:bg-[#141C24]/95 border border-[#E2E8F0] dark:border-[#334155] shadow-sm text-[10px] font-semibold text-[#1D4ED8] dark:text-[#60A5FA] flex items-center gap-1 cursor-pointer"
+              >
+                {isSimulationRunning ? (
+                  <>
+                    <Pause className="w-3 h-3" />
+                    <span>Jeda</span>
+                  </>
+                ) : (
+                  <>
+                    <Play className="w-3 h-3" />
+                    <span>Simulasi</span>
+                  </>
+                )}
+              </button>
             </div>
           )}
-
-          {/* Convoy Member Markers */}
-          {members.map((member) => {
-            const isSelected = member.id === focusedMember?.id;
-            const isSosBeacon =
-              member.conditionStatus === 'SOS' ||
-              (sosState.isActive && sosState.senderId === member.id);
-            const isOffRoute =
-              member.offRouteMeters > routeConfig.offRouteToleranceMeters;
-            const isStraggler =
-              stragglerAlert.isTriggered &&
-              stragglerAlert.trailingMember?.id === member.id;
-            const title = getMarkerTitle(member);
-            const prefix = isSosBeacon
-              ? 'SOS · '
-              : member.isSweeper
-                ? 'Sweeper · '
-                : '';
-            const displayLabel =
-              prefix + (member.isCurrentUser ? `${title} (Anda)` : title);
-
-            return (
-              <button
-                key={member.id}
-                type="button"
-                onClick={() => onSelectMember(member.id)}
-                style={{
-                  left: `${member.mapPosition.xFraction * 100}%`,
-                  top: `${member.mapPosition.yFraction * 100}%`,
-                }}
-                className="absolute -translate-x-1/2 -translate-y-[82%] flex flex-col items-center group cursor-pointer focus:outline-none z-20 transition-all duration-700 ease-linear"
-              >
-                <span
-                  className={`px-2 py-1 rounded-lg text-[11px] font-semibold whitespace-nowrap max-w-[180px] truncate shadow-sm border transition-colors ${
-                    isSosBeacon
-                      ? 'bg-[#991B1B] text-white border-[#7F1D1D]'
-                      : isOffRoute
-                        ? 'bg-[#DC2626] text-white border-[#991B1B]'
-                        : isStraggler
-                          ? 'bg-[#B45309] text-white border-[#92400E]'
-                          : isSelected
-                            ? 'bg-[#1D4ED8] text-white border-[#1E40AF]'
-                            : 'bg-white dark:bg-[#141C24] text-[#0F172A] dark:text-[#F1F5F9] border-[#CBD5E1] dark:border-[#334155]'
-                  }`}
-                >
-                  {displayLabel}
-                </span>
-
-                {/* Circular Avatar perched right above the Vehicle Icon */}
-                <div className="mt-1 -mb-1.5 z-10">
-                  <ConvoyAvatar
-                    preset={member.avatarPreset}
-                    photoUrl={member.avatarPhotoUrl}
-                    name={member.fullName}
-                    sizeClass="w-7 h-7"
-                    ringClass={
-                      isSosBeacon || isOffRoute
-                        ? 'ring-2 ring-[#DC2626]'
-                        : 'ring-2 ring-white dark:ring-[#0B1117]'
-                    }
-                  />
-                </div>
-
-                <span className="relative flex items-center justify-center">
-                  {isSosBeacon && (
-                    <span className="absolute w-11 h-11 rounded-full bg-[#DC2626]/45 animate-ping" />
-                  )}
-                  <span
-                    className={`relative w-8 h-8 rounded-full border-2 border-white dark:border-[#0B1117] shadow-md flex items-center justify-center transition-transform group-hover:scale-110 ${
-                      isSosBeacon || isOffRoute
-                        ? 'bg-[#DC2626] text-white'
-                        : member.isCurrentUser
-                          ? 'bg-[#EA580C] text-white'
-                          : member.role === 'TOUR_LEADER'
-                            ? 'bg-[#1D4ED8] text-white'
-                            : 'bg-white dark:bg-[#1E293B] text-[#0F172A] dark:text-[#F1F5F9]'
-                    }`}
-                  >
-                    {isSosBeacon ? (
-                      <AlertTriangle className="w-4 h-4" />
-                    ) : member.vehicleType === 'MOBIL' ? (
-                      <Car className="w-4 h-4" />
-                    ) : (
-                      <Bike className="w-4 h-4" />
-                    )}
-                  </span>
-                </span>
-              </button>
-            );
-          })}
-        </div>
-
-        {/* Simulation Quick Controls (Top-Left) */}
-        <div className="absolute top-3 left-3 z-20 flex flex-col gap-1.5">
-          <button
-            type="button"
-            onClick={onToggleOffRouteSim}
-            className={`px-2.5 py-1.5 rounded-xl text-[11px] font-semibold border shadow-sm transition-colors cursor-pointer whitespace-nowrap ${
-              isOffRouteSimActive
-                ? 'bg-[#DC2626] text-white border-[#991B1B]'
-                : 'bg-white/95 dark:bg-[#141C24]/95 text-[#334155] dark:text-[#CBD5E1] border-[#E2E8F0] dark:border-[#334155]'
-            }`}
-          >
-            {isOffRouteSimActive ? 'Keluar Jalur: Aktif' : 'Uji Keluar Jalur'}
-          </button>
-
-          <button
-            type="button"
-            onClick={onToggleStragglerSim}
-            className={`px-2.5 py-1.5 rounded-xl text-[11px] font-semibold border shadow-sm transition-colors cursor-pointer whitespace-nowrap ${
-              isStragglerSimActive
-                ? 'bg-[#B45309] text-white border-[#92400E]'
-                : 'bg-white/95 dark:bg-[#141C24]/95 text-[#334155] dark:text-[#CBD5E1] border-[#E2E8F0] dark:border-[#334155]'
-            }`}
-          >
-            {isStragglerSimActive ? 'Tertinggal: Aktif' : 'Uji Tertinggal'}
-          </button>
-        </div>
-
-        {/* Map Controls (Top-Right) */}
-        <div className="absolute top-3 right-3 z-20 flex flex-col gap-1.5">
-          <button
-            type="button"
-            onClick={onToggleSimulation}
-            aria-label={isSimulationRunning ? 'Jeda Simulasi' : 'Lanjut Simulasi'}
-            className="w-9 h-9 rounded-xl bg-white dark:bg-[#141C24] border border-[#E2E8F0] dark:border-[#334155] shadow-sm flex items-center justify-center text-[#1D4ED8] dark:text-[#60A5FA] cursor-pointer"
-          >
-            {isSimulationRunning ? (
-              <Pause className="w-4 h-4" />
-            ) : (
-              <Play className="w-4 h-4" />
-            )}
-          </button>
-          <button
-            type="button"
-            onClick={() => setMapScale((s) => Math.min(1.9, +(s + 0.2).toFixed(1)))}
-            aria-label="Perbesar Peta"
-            className="w-9 h-9 rounded-xl bg-white dark:bg-[#141C24] border border-[#E2E8F0] dark:border-[#334155] shadow-sm flex items-center justify-center cursor-pointer"
-          >
-            <Plus className="w-4 h-4" />
-          </button>
-          <button
-            type="button"
-            onClick={() => setMapScale((s) => Math.max(0.85, +(s - 0.2).toFixed(1)))}
-            aria-label="Perkecil Peta"
-            className="w-9 h-9 rounded-xl bg-white dark:bg-[#141C24] border border-[#E2E8F0] dark:border-[#334155] shadow-sm flex items-center justify-center cursor-pointer"
-          >
-            <Minus className="w-4 h-4" />
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setMapScale(1);
-              setPanOffset({ x: 0, y: 0 });
-            }}
-            aria-label="Pusatkan Peta"
-            className="w-9 h-9 rounded-xl bg-white dark:bg-[#141C24] border border-[#E2E8F0] dark:border-[#334155] shadow-sm flex items-center justify-center cursor-pointer"
-          >
-            <LocateFixed className="w-4 h-4" />
-          </button>
         </div>
 
         {/* Custom Destination / Checkpoint Placement Hint */}
@@ -1729,7 +1487,7 @@ export function LiveTrackingMapView({
       )}
 
       {/* Fallback Dialog if Leader Tapped Map Without Entering Checkpoint Name */}
-      {pendingTapCoord && (
+      {pendingTapLatLng && (
         <div className="absolute inset-0 z-50 bg-black/55 backdrop-blur-[2px] flex items-center justify-center p-5">
           <div className="w-full max-w-[320px] rounded-[24px] bg-white dark:bg-[#141C24] border border-[#E2E8F0] dark:border-[#334155] p-5 space-y-3.5 shadow-xl">
             <div className="flex items-center gap-2 text-[#0F766E]">
@@ -1738,6 +1496,9 @@ export function LiveTrackingMapView({
                 Beri Nama Titik Istirahat
               </h3>
             </div>
+            <p className="text-[10px] font-mono text-[#64748B] dark:text-[#94A3B8]">
+              {pendingTapLatLng.lat.toFixed(5)}, {pendingTapLatLng.lng.toFixed(5)}
+            </p>
             <input
               type="text"
               value={tapCheckpointNameInput}
@@ -1762,7 +1523,7 @@ export function LiveTrackingMapView({
               <button
                 type="button"
                 onClick={() => {
-                  setPendingTapCoord(null);
+                  setPendingTapLatLng(null);
                   onCancelPickCheckpoint();
                 }}
                 className="min-h-[42px] rounded-xl border border-[#CBD5E1] dark:border-[#334155] text-xs font-semibold cursor-pointer"
@@ -1772,12 +1533,12 @@ export function LiveTrackingMapView({
               <button
                 type="button"
                 onClick={() => {
-                  onConfirmAddCheckpoint(
+                  onConfirmAddCheckpointLatLng(
                     tapCheckpointNameInput.trim() || 'Rest Area Konvoi',
-                    pendingTapCoord.xFraction,
-                    pendingTapCoord.yFraction
+                    pendingTapLatLng.lat,
+                    pendingTapLatLng.lng
                   );
-                  setPendingTapCoord(null);
+                  setPendingTapLatLng(null);
                   setTapCheckpointNameInput('');
                 }}
                 className="min-h-[42px] rounded-xl bg-[#0F766E] hover:bg-[#0D9488] text-white text-xs font-semibold cursor-pointer"

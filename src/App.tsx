@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { Moon, RotateCcw, Sun } from 'lucide-react';
+import { User } from 'firebase/auth';
+import { AlertTriangle, Moon, RotateCcw, Sun } from 'lucide-react';
 import { KotlinSourceExplorer } from './components/KotlinSourceExplorer';
 import { AboutAppView } from './components/screens/AboutAppView';
 import { JoinTourView } from './components/screens/JoinTourView';
@@ -10,6 +11,33 @@ import { TourLeaderView } from './components/screens/TourLeaderView';
 import { TripDetailView } from './components/screens/TripDetailView';
 import { TripHistoryView } from './components/screens/TripHistoryView';
 import { VehicleProfileView } from './components/screens/VehicleProfileView';
+import {
+  signInWithGoogle,
+  signOutFirebase,
+  subscribeToAuthState,
+  testFirestoreConnection,
+} from './firebase';
+import { LiveGpsFix, useDeviceGps } from './hooks/useDeviceGps';
+import {
+  addRoomCheckpoint,
+  assignSyncedSweeper,
+  createSyncedRoom,
+  finishSyncedRoom,
+  joinSyncedRoom,
+  loadUserPrivateProfile,
+  loadUserTripsFromFirestore,
+  publishMemberTelemetry,
+  removeRoomCheckpoint,
+  removeSyncedMember,
+  resolveSyncedSos,
+  saveTripRecordToFirestore,
+  saveUserPrivateProfile,
+  sendRoomMessage,
+  subscribeToSyncedRoom,
+  triggerSyncedSos,
+  updateSyncedMemberCondition,
+  updateSyncedRoomRoute,
+} from './services/convoySyncService';
 import {
   ConnectionStatus,
   ConvoyMember,
@@ -30,6 +58,12 @@ import {
   VehicleProfile,
   VehicleType,
 } from './types/convoy';
+import {
+  downsampleRoutePoints,
+  evaluatePositionAlongRoute,
+  haversineMeters,
+  LatLngPoint,
+} from './utils/geo';
 
 const INITIAL_PROFILE: VehicleProfile = {
   fullName: '',
@@ -43,8 +77,8 @@ const INITIAL_PROFILE: VehicleProfile = {
 const DESTINATION_PRESETS: DestinationPreset[] = [
   {
     name: 'Puncak Pass Resort',
-    endPoint: { xFraction: 0.86, yFraction: 0.14, latitude: -6.645, longitude: 106.99 },
-    totalMeters: 12000,
+    endPoint: { xFraction: 0.86, yFraction: 0.14, latitude: -6.7003, longitude: 106.996 },
+    totalMeters: 16500,
   },
   {
     name: 'Lembang Highland',
@@ -65,26 +99,26 @@ const DESTINATION_PRESETS: DestinationPreset[] = [
 
 const INITIAL_ROUTE_CONFIG: ConvoyRouteConfig = {
   destinationName: 'Puncak Pass Resort',
-  destinationAddress: 'Jl. Raya Puncak KM 90, Cisarua · -6.6450, 106.9900',
+  destinationAddress: 'Jl. Raya Puncak KM 90, Cisarua · -6.7003, 106.9960',
   waypoints: [
-    { xFraction: 0.14, yFraction: 0.86, latitude: -6.71, longitude: 106.85 },
-    { xFraction: 0.32, yFraction: 0.65, latitude: -6.692, longitude: 106.885 },
-    { xFraction: 0.55, yFraction: 0.48, latitude: -6.674, longitude: 106.925 },
-    { xFraction: 0.72, yFraction: 0.3, latitude: -6.658, longitude: 106.96 },
-    { xFraction: 0.86, yFraction: 0.14, latitude: -6.645, longitude: 106.99 },
+    { xFraction: 0.14, yFraction: 0.86, latitude: -6.648, longitude: 106.845 },
+    { xFraction: 0.32, yFraction: 0.65, latitude: -6.662, longitude: 106.882 },
+    { xFraction: 0.55, yFraction: 0.48, latitude: -6.678, longitude: 106.925 },
+    { xFraction: 0.72, yFraction: 0.3, latitude: -6.69, longitude: 106.962 },
+    { xFraction: 0.86, yFraction: 0.14, latitude: -6.7003, longitude: 106.996 },
   ],
   checkpoints: [
     {
       id: 'cp-default-1',
-      name: 'Rest Area KM 57',
+      name: 'Rest Area Ciawi KM 45',
       xFraction: 0.44,
       yFraction: 0.56,
-      latitude: -6.683,
-      longitude: 106.905,
+      latitude: -6.668,
+      longitude: 106.895,
     },
   ],
-  totalRouteMeters: 12000,
-  offRouteToleranceMeters: 50,
+  totalRouteMeters: 16500,
+  offRouteToleranceMeters: 75,
   maxStragglerDistanceMeters: 1000,
   soundAlertEnabled: true,
 };
@@ -172,7 +206,7 @@ function createInitialMessages(roomCode: string): RoomMessage[] {
       senderVehicle: '',
       type: 'SYSTEM',
       textContent: `Room ${roomCode} aktif. Jaga jarak aman dan pantau posisi Sweeper.`,
-      timestampLabel: '09:35',
+      timestampLabel: currentClock(),
     },
     {
       id: 'init-1',
@@ -180,42 +214,25 @@ function createInitialMessages(roomCode: string): RoomMessage[] {
       senderName: 'Budi',
       senderVehicle: 'Avanza Hitam',
       type: 'TEXT',
-      textContent: 'Rombongan siap, jalur resmi menuju Puncak Pass sudah ditetapkan.',
-      timestampLabel: '09:37',
+      textContent: 'Rombongan siap, jalur resmi sudah ditetapkan di Google Maps.',
+      timestampLabel: currentClock(),
       senderAvatarPreset: 'RIDER_CAPTAIN',
-    },
-    {
-      id: 'init-voice',
-      senderId: 'sweeper',
-      senderName: 'Siti',
-      senderVehicle: 'Nmax Putih',
-      type: 'VOICE',
-      textContent: 'Pesan Suara Walkie-Talkie',
-      timestampLabel: '09:39',
-      voiceDurationSec: 4,
-      senderAvatarPreset: 'HELMET_TOURING',
     },
   ];
 }
 
-function buildPolylineToDestination(end: RoutePoint): RoutePoint[] {
-  const start: RoutePoint = {
-    xFraction: 0.14,
-    yFraction: 0.86,
-    latitude: -6.71,
-    longitude: 106.85,
-  };
+function buildPolylineToDestination(start: RoutePoint, end: RoutePoint): RoutePoint[] {
   const mid1: RoutePoint = {
-    xFraction: start.xFraction + (end.xFraction - start.xFraction) * 0.3 + 0.04,
-    yFraction: start.yFraction + (end.yFraction - start.yFraction) * 0.28,
-    latitude: start.latitude + (end.latitude - start.latitude) * 0.3,
-    longitude: start.longitude + (end.longitude - start.longitude) * 0.3,
+    xFraction: start.xFraction + (end.xFraction - start.xFraction) * 0.33,
+    yFraction: start.yFraction + (end.yFraction - start.yFraction) * 0.33,
+    latitude: start.latitude + (end.latitude - start.latitude) * 0.33,
+    longitude: start.longitude + (end.longitude - start.longitude) * 0.33,
   };
   const mid2: RoutePoint = {
-    xFraction: start.xFraction + (end.xFraction - start.xFraction) * 0.65 - 0.03,
-    yFraction: start.yFraction + (end.yFraction - start.yFraction) * 0.62,
-    latitude: start.latitude + (end.latitude - start.latitude) * 0.65,
-    longitude: start.longitude + (end.longitude - start.longitude) * 0.65,
+    xFraction: start.xFraction + (end.xFraction - start.xFraction) * 0.66,
+    yFraction: start.yFraction + (end.yFraction - start.yFraction) * 0.66,
+    latitude: start.latitude + (end.latitude - start.latitude) * 0.66,
+    longitude: start.longitude + (end.longitude - start.longitude) * 0.66,
   };
   return [start, mid1, mid2, end];
 }
@@ -250,40 +267,20 @@ function interpolateAlongPolyline(
   const perpX = -dy / len;
   const perpY = dx / len;
 
+  const dLat = b.latitude - a.latitude;
+  const dLng = b.longitude - a.longitude;
+  const geoLen = Math.max(0.0001, Math.hypot(dLat, dLng));
+  const latShift = (-dLng / geoLen) * lateralOffset * 0.03;
+  const lngShift = (dLat / geoLen) * lateralOffset * 0.03;
+
   return {
     routeProgress: p,
     xFraction: Math.max(0.06, Math.min(0.94, a.xFraction + dx * localT + perpX * lateralOffset)),
     yFraction: Math.max(0.06, Math.min(0.94, a.yFraction + dy * localT + perpY * lateralOffset)),
-    latitude: a.latitude + (b.latitude - a.latitude) * localT,
-    longitude: a.longitude + (b.longitude - a.longitude) * localT,
+    latitude: a.latitude + dLat * localT + latShift,
+    longitude: a.longitude + dLng * localT + lngShift,
     speedKmh,
   };
-}
-
-function computeOffRouteMeters(
-  x: number,
-  y: number,
-  waypoints: RoutePoint[],
-  totalRouteMeters: number
-): number {
-  if (waypoints.length < 2) return 0;
-  let minDist = Number.MAX_VALUE;
-  for (let i = 0; i < waypoints.length - 1; i++) {
-    const a = waypoints[i];
-    const b = waypoints[i + 1];
-    const abx = b.xFraction - a.xFraction;
-    const aby = b.yFraction - a.yFraction;
-    const abLenSq = abx * abx + aby * aby;
-    const t =
-      abLenSq > 0
-        ? Math.max(0, Math.min(1, ((x - a.xFraction) * abx + (y - a.yFraction) * aby) / abLenSq))
-        : 0;
-    const projX = a.xFraction + t * abx;
-    const projY = a.yFraction + t * aby;
-    const dist = Math.hypot(x - projX, y - projY);
-    if (dist < minDist) minDist = dist;
-  }
-  return Math.round(minDist * (totalRouteMeters * 0.066));
 }
 
 function evaluateRoomSafety(
@@ -295,16 +292,33 @@ function evaluateRoomSafety(
   stragglerAlert: StragglerAlertState;
 } {
   const enriched = rawMembers.map((member) => {
+    const hasValidGeo =
+      Math.abs(member.mapPosition.latitude) > 0.001 ||
+      Math.abs(member.mapPosition.longitude) > 0.001;
+    if (hasValidGeo && routeConfig.waypoints.length >= 2) {
+      const geoEval = evaluatePositionAlongRoute(
+        {
+          lat: member.mapPosition.latitude,
+          lng: member.mapPosition.longitude,
+        },
+        routeConfig.waypoints,
+        routeConfig.totalRouteMeters
+      );
+      return {
+        ...member,
+        routeDistanceMeters: geoEval.distanceTraveledMeters,
+        offRouteMeters: geoEval.offRouteMeters,
+        mapPosition: {
+          ...member.mapPosition,
+          routeProgress: geoEval.routeProgress,
+        },
+      };
+    }
+
     const routeDistanceMeters = Math.round(
       member.mapPosition.routeProgress * routeConfig.totalRouteMeters
     );
-    const offRouteMeters = computeOffRouteMeters(
-      member.mapPosition.xFraction,
-      member.mapPosition.yFraction,
-      routeConfig.waypoints,
-      routeConfig.totalRouteMeters
-    );
-    return { ...member, routeDistanceMeters, offRouteMeters };
+    return { ...member, routeDistanceMeters, offRouteMeters: 0 };
   });
 
   const sorted = [...enriched].sort(
@@ -392,13 +406,13 @@ const DEFAULT_TRIP_HISTORY: TripHistoryRecord[] = [
     maxSpeedKmh: 82,
     userRole: 'TOUR_LEADER',
     destinationName: 'Puncak Pass Resort',
-    destinationAddress: 'Jl. Raya Puncak KM 90, Cisarua · -6.6450, 106.9900',
+    destinationAddress: 'Jl. Raya Puncak KM 90, Cisarua · -6.7003, 106.9960',
     waypoints: [
-      { xFraction: 0.14, yFraction: 0.86, latitude: -6.71, longitude: 106.85 },
-      { xFraction: 0.32, yFraction: 0.65, latitude: -6.692, longitude: 106.885 },
-      { xFraction: 0.55, yFraction: 0.48, latitude: -6.674, longitude: 106.925 },
-      { xFraction: 0.72, yFraction: 0.3, latitude: -6.658, longitude: 106.96 },
-      { xFraction: 0.86, yFraction: 0.14, latitude: -6.645, longitude: 106.99 },
+      { xFraction: 0.14, yFraction: 0.86, latitude: -6.648, longitude: 106.845 },
+      { xFraction: 0.32, yFraction: 0.65, latitude: -6.662, longitude: 106.882 },
+      { xFraction: 0.55, yFraction: 0.48, latitude: -6.678, longitude: 106.925 },
+      { xFraction: 0.72, yFraction: 0.3, latitude: -6.69, longitude: 106.962 },
+      { xFraction: 0.86, yFraction: 0.14, latitude: -6.7003, longitude: 106.996 },
     ],
     visitedCheckpoints: [
       {
@@ -407,8 +421,8 @@ const DEFAULT_TRIP_HISTORY: TripHistoryRecord[] = [
         arrivedAtLabel: '06:20',
         xFraction: 0.36,
         yFraction: 0.62,
-        latitude: -6.69,
-        longitude: 106.89,
+        latitude: -6.668,
+        longitude: 106.895,
       },
       {
         id: 'cp-s2',
@@ -416,7 +430,7 @@ const DEFAULT_TRIP_HISTORY: TripHistoryRecord[] = [
         arrivedAtLabel: '07:15',
         xFraction: 0.66,
         yFraction: 0.36,
-        latitude: -6.664,
+        latitude: -6.685,
         longitude: 106.948,
       },
     ],
@@ -531,68 +545,6 @@ const DEFAULT_TRIP_HISTORY: TripHistoryRecord[] = [
       },
     ],
   },
-  {
-    id: 'trip-seed-3',
-    roomId: 'KNV-5583',
-    tourTitle: 'Eksplorasi Kawah Putih Ciwidey',
-    dateLabel: '18 Okt 2026',
-    timeRangeLabel: '06:15 - 10:35',
-    durationLabel: '4j 20m',
-    durationMinutes: 260,
-    distanceKm: 118.5,
-    avgSpeedKmh: 46,
-    maxSpeedKmh: 74,
-    userRole: 'MEMBER',
-    destinationName: 'Ciwidey Kawah Putih',
-    destinationAddress: 'Kawasan Wisata Kawah Putih, Ciwidey · -7.1660, 107.4020',
-    waypoints: [
-      { xFraction: 0.84, yFraction: 0.85, latitude: -6.94, longitude: 107.61 },
-      { xFraction: 0.64, yFraction: 0.66, latitude: -7.015, longitude: 107.54 },
-      { xFraction: 0.45, yFraction: 0.42, latitude: -7.095, longitude: 107.47 },
-      { xFraction: 0.24, yFraction: 0.18, latitude: -7.166, longitude: 107.402 },
-    ],
-    visitedCheckpoints: [
-      {
-        id: 'cp-s5',
-        name: 'Rest Area Soreang KM 14',
-        arrivedAtLabel: '07:40',
-        xFraction: 0.64,
-        yFraction: 0.66,
-        latitude: -7.015,
-        longitude: 107.54,
-      },
-    ],
-    participants: [
-      {
-        id: 'p8',
-        fullName: 'Dimas',
-        vehicleType: 'MOBIL',
-        vehicleDetail: 'Innova Zenix',
-        licensePlate: 'D 1180 KNV',
-        role: 'TOUR_LEADER',
-        avatarPreset: 'RIDER_CAPTAIN',
-      },
-      {
-        id: 'p9',
-        fullName: 'Anda',
-        vehicleType: 'MOBIL',
-        vehicleDetail: 'Brio RS Kuning',
-        licensePlate: 'B 1945 KNV',
-        role: 'MEMBER',
-        avatarPreset: 'STANDARD_USER',
-      },
-      {
-        id: 'p10',
-        fullName: 'Nadia',
-        vehicleType: 'MOBIL',
-        vehicleDetail: 'HR-V Abu-abu',
-        licensePlate: 'B 2048 KNV',
-        role: 'MEMBER',
-        isSweeper: true,
-        avatarPreset: 'PILOT_CLASSIC',
-      },
-    ],
-  },
 ];
 
 const ROUTE_STEPS: Array<{ route: ScreenRoute; label: string }> = [
@@ -606,12 +558,20 @@ const ROUTE_STEPS: Array<{ route: ScreenRoute; label: string }> = [
 
 export default function App() {
   const [darkMode, setDarkMode] = useState(false);
+  const [mapsQuotaExceeded, setMapsQuotaExceeded] = useState(false);
   const [currentRoute, setCurrentRoute] = useState<ScreenRoute>('role_selection');
   const [aboutReturnRoute, setAboutReturnRoute] =
     useState<ScreenRoute>('role_selection');
   const [navDirection, setNavDirection] = useState<1 | -1>(1);
   const [selectedRole, setSelectedRole] = useState<UserRole>('TOUR_LEADER');
   const [vehicleProfile, setVehicleProfile] = useState<VehicleProfile>(INITIAL_PROFILE);
+
+  // Auth & Cloud Room Sync state
+  const [authUser, setAuthUser] = useState<User | null>(null);
+  const [isSigningIn, setIsSigningIn] = useState(false);
+  const [isCreatingRoom, setIsCreatingRoom] = useState(false);
+  const [isJoiningRoom, setIsJoiningRoom] = useState(false);
+
   const [activeRoom, setActiveRoom] = useState<TourRoom | null>(null);
   const [joinInput, setJoinInput] = useState('');
   const [joinError, setJoinError] = useState<string | null>(null);
@@ -621,7 +581,7 @@ export default function App() {
   const [offRouteAlert, setOffRouteAlert] = useState<OffRouteAlertState>({
     isOffRoute: false,
     deviationMeters: 0,
-    toleranceMeters: 50,
+    toleranceMeters: 75,
   });
   const [stragglerAlert, setStragglerAlert] = useState<StragglerAlertState>({
     isTriggered: false,
@@ -662,10 +622,62 @@ export default function App() {
   const audioChunksRef = useRef<BlobPart[]>([]);
   const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
   const playbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastTelemetrySentMsRef = useRef<number>(0);
+  const lastTelemetryFixRef = useRef<LatLngPoint | null>(null);
+  const lastSyncedRouteSigRef = useRef<string>('');
+  const routeConfigRef = useRef<ConvoyRouteConfig>(routeConfig);
+  routeConfigRef.current = routeConfig;
+  const activeRoomRef = useRef<TourRoom | null>(activeRoom);
+  activeRoomRef.current = activeRoom;
+  const authUserRef = useRef<User | null>(authUser);
+  authUserRef.current = authUser;
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', darkMode);
   }, [darkMode]);
+
+  // Listen for Google Maps Platform quota exhaustion (Case A)
+  useEffect(() => {
+    const handleQuota = () => setMapsQuotaExceeded(true);
+    window.addEventListener('gmp-quota-exceeded', handleQuota);
+    return () => window.removeEventListener('gmp-quota-exceeded', handleQuota);
+  }, []);
+
+  // Test Firestore connection + Subscribe to Firebase Auth
+  useEffect(() => {
+    testFirestoreConnection();
+    const unsubAuth = subscribeToAuthState(async (user) => {
+      setAuthUser(user);
+      if (user) {
+        try {
+          const savedProfile = await loadUserPrivateProfile(user.uid);
+          if (savedProfile) {
+            setVehicleProfile((prev) => ({
+              ...prev,
+              ...savedProfile,
+              fullName:
+                savedProfile.fullName || prev.fullName || user.displayName || '',
+            }));
+          } else if (user.displayName) {
+            setVehicleProfile((prev) => ({
+              ...prev,
+              fullName: prev.fullName || user.displayName || '',
+            }));
+          }
+          const cloudTrips = await loadUserTripsFromFirestore(user.uid);
+          if (cloudTrips.length > 0) {
+            setTripHistory((prev) => {
+              const cloudIds = new Set(cloudTrips.map((t) => t.id));
+              return [...cloudTrips, ...prev.filter((t) => !cloudIds.has(t.id))];
+            });
+          }
+        } catch (err) {
+          console.warn('Gagal memuat profil cloud:', err);
+        }
+      }
+    });
+    return () => unsubAuth();
+  }, []);
 
   useEffect(() => {
     if (!isRecordingVoice) return;
@@ -675,32 +687,186 @@ export default function App() {
     return () => clearInterval(timer);
   }, [isRecordingVoice]);
 
-  const commitRoomMembers = (
-    rawMembers: ConvoyMember[],
-    config: ConvoyRouteConfig = routeConfig,
-    roomOverride?: TourRoom
-  ) => {
-    const { members, offRouteAlert: nextOffRoute, stragglerAlert: nextStraggler } =
-      evaluateRoomSafety(rawMembers, config);
-    setOffRouteAlert(nextOffRoute);
-    setStragglerAlert(nextStraggler);
-    setActiveRoom((prev) => {
-      const base = roomOverride ?? prev;
-      return base ? { ...base, members } : base;
-    });
-  };
+  const commitRoomMembers = useCallback(
+    (
+      rawMembers: ConvoyMember[],
+      config: ConvoyRouteConfig = routeConfigRef.current,
+      roomOverride?: TourRoom
+    ) => {
+      const { members, offRouteAlert: nextOffRoute, stragglerAlert: nextStraggler } =
+        evaluateRoomSafety(rawMembers, config);
+      setOffRouteAlert(nextOffRoute);
+      setStragglerAlert(nextStraggler);
+      setActiveRoom((prev) => {
+        const base = roomOverride ?? prev;
+        return base ? { ...base, members } : base;
+      });
+    },
+    []
+  );
 
+  // Real Device GPS tracking
+  const handleGpsFix = useCallback(
+    (fix: LiveGpsFix) => {
+      const currentRoom = activeRoomRef.current;
+      const currentCfg = routeConfigRef.current;
+      const user = authUserRef.current;
+      if (!currentRoom) return;
+
+      const geoEval = evaluatePositionAlongRoute(
+        { lat: fix.latitude, lng: fix.longitude },
+        currentCfg.waypoints,
+        currentCfg.totalRouteMeters
+      );
+
+      // Update local self marker immediately for responsive UI
+      const updatedMembers = currentRoom.members.map((m) =>
+        m.isCurrentUser
+          ? {
+              ...m,
+              connectionStatus: 'CONNECTED' as ConnectionStatus,
+              lastLocationText: `GPS (${fix.latitude.toFixed(4)}, ${fix.longitude.toFixed(4)})`,
+              lastUpdatedLabel: 'GPS Live',
+              mapPosition: {
+                ...m.mapPosition,
+                latitude: fix.latitude,
+                longitude: fix.longitude,
+                speedKmh: fix.speedKmh,
+                heading: fix.heading,
+                accuracyMeters: fix.accuracyMeters,
+                routeProgress: geoEval.routeProgress,
+              },
+            }
+          : m
+      );
+      commitRoomMembers(updatedMembers, currentCfg);
+
+      // Publish throttled telemetry to Firestore when in a synced room
+      if (currentRoom.isSyncedRoom && user) {
+        const now = Date.now();
+        const prevPt = lastTelemetryFixRef.current;
+        const movedMeters = prevPt
+          ? haversineMeters(prevPt, { lat: fix.latitude, lng: fix.longitude })
+          : 999;
+        if (now - lastTelemetrySentMsRef.current >= 2200 || movedMeters >= 15) {
+          lastTelemetrySentMsRef.current = now;
+          lastTelemetryFixRef.current = { lat: fix.latitude, lng: fix.longitude };
+          publishMemberTelemetry(currentRoom.roomId, user.uid, {
+            latitude: fix.latitude,
+            longitude: fix.longitude,
+            speedKmh: fix.speedKmh,
+            heading: fix.heading,
+            accuracyMeters: fix.accuracyMeters,
+            routeProgress: geoEval.routeProgress,
+            xFraction: Math.max(0.08, Math.min(0.92, geoEval.routeProgress)),
+            yFraction: Math.max(0.08, Math.min(0.92, 1 - geoEval.routeProgress)),
+            lastLocationText: `GPS Live (±${fix.accuracyMeters}m)`,
+          }).catch((err) => {
+            console.warn('Gagal mengirim telemetri GPS ke Firestore:', err);
+          });
+        }
+      }
+    },
+    [commitRoomMembers]
+  );
+
+  const gps = useDeviceGps({
+    enabled:
+      Boolean(activeRoom) ||
+      currentRoute === 'live_map' ||
+      currentRoute === 'tour_leader',
+    onFix: handleGpsFix,
+  });
+
+  // Real-time Firestore room subscription when activeRoom.isSyncedRoom === true
   useEffect(() => {
-    if (!isSimulationRunning || !activeRoom) return;
+    if (!activeRoom?.isSyncedRoom || !activeRoom.roomId || !authUser) return;
+
+    let latestMembers: ConvoyMember[] = [];
+    let latestCheckpoints: RestCheckpoint[] = routeConfigRef.current.checkpoints;
+
+    const unsub = subscribeToSyncedRoom(activeRoom.roomId, {
+      onRoomUpdate: (snapshot) => {
+        if (!snapshot) return;
+        const mergedConfig: ConvoyRouteConfig = {
+          ...snapshot.routeConfig,
+          checkpoints: latestCheckpoints,
+        };
+        const sig = `${mergedConfig.destinationName}|${mergedConfig.totalRouteMeters}|${mergedConfig.waypoints.length}`;
+        lastSyncedRouteSigRef.current = sig;
+        setRouteConfig(mergedConfig);
+        setSosState(snapshot.sosState);
+        setActiveRoom((prev) => {
+          const base: TourRoom = {
+            roomId: snapshot.room.roomId,
+            roomTitle: snapshot.room.roomTitle,
+            inviteLink: snapshot.room.inviteLink,
+            createdAtLabel: snapshot.room.createdAtLabel,
+            isSyncedRoom: true,
+            leaderUid: snapshot.room.leaderUid,
+            members: prev?.members ?? latestMembers,
+          };
+          const evaluated = evaluateRoomSafety(base.members, mergedConfig);
+          setOffRouteAlert(evaluated.offRouteAlert);
+          setStragglerAlert(evaluated.stragglerAlert);
+          return { ...base, members: evaluated.members };
+        });
+        if (snapshot.room.leaderUid === authUser.uid) {
+          setSelectedRole('TOUR_LEADER');
+        }
+      },
+      onMembersUpdate: (members) => {
+        latestMembers = members;
+        const cfg = routeConfigRef.current;
+        const evaluated = evaluateRoomSafety(members, cfg);
+        setOffRouteAlert(evaluated.offRouteAlert);
+        setStragglerAlert(evaluated.stragglerAlert);
+        setActiveRoom((prev) =>
+          prev ? { ...prev, members: evaluated.members } : prev
+        );
+        const self = members.find((m) => m.isCurrentUser);
+        if (self) {
+          setSelectedMemberId((cur) => cur ?? self.id);
+        }
+      },
+      onCheckpointsUpdate: (checkpoints) => {
+        latestCheckpoints = checkpoints;
+        setRouteConfig((prev) => {
+          const next = { ...prev, checkpoints };
+          if (latestMembers.length > 0) {
+            const evaluated = evaluateRoomSafety(latestMembers, next);
+            setOffRouteAlert(evaluated.offRouteAlert);
+            setStragglerAlert(evaluated.stragglerAlert);
+          }
+          return next;
+        });
+      },
+      onMessagesUpdate: (nextMsgs) => {
+        setMessages(nextMsgs);
+      },
+    });
+
+    return () => {
+      unsub();
+    };
+  }, [activeRoom?.roomId, activeRoom?.isSyncedRoom, authUser?.uid]);
+
+  // Offline Demo Simulator ONLY when NOT in a real Firestore synced room
+  useEffect(() => {
+    if (!isSimulationRunning || !activeRoom || activeRoom.isSyncedRoom) return;
     const interval = setInterval(() => {
       setActiveRoom((prev) => {
-        if (!prev) return prev;
+        if (!prev || prev.isSyncedRoom) return prev;
         const ordered = [...prev.members].sort(
           (a, b) => b.mapPosition.routeProgress - a.mapPosition.routeProgress
         );
         const tailId = ordered[ordered.length - 1]?.id;
+        const useRealSelfGps = gps.status === 'active' && !isOffRouteSimActive;
 
         const moved = prev.members.map((member, idx) => {
+          if (member.isCurrentUser && useRealSelfGps) {
+            return member;
+          }
           const isStopped =
             member.conditionStatus === 'MOGOK' || member.conditionStatus === 'SOS';
           const isTail = member.id === tailId && isStragglerSimActive;
@@ -737,9 +903,11 @@ export default function App() {
   }, [
     isSimulationRunning,
     activeRoom?.roomId,
+    activeRoom?.isSyncedRoom,
     routeConfig,
     isOffRouteSimActive,
     isStragglerSimActive,
+    gps.status,
   ]);
 
   const navigateTo = (next: ScreenRoute, direction: 1 | -1 = 1) => {
@@ -747,9 +915,34 @@ export default function App() {
     setCurrentRoute(next);
   };
 
+  const handleGoogleSignIn = async () => {
+    if (isSigningIn) return;
+    setIsSigningIn(true);
+    try {
+      await signInWithGoogle();
+    } catch (err) {
+      console.error('Login Google gagal:', err);
+    } finally {
+      setIsSigningIn(false);
+    }
+  };
+
+  const handleGoogleSignOut = async () => {
+    try {
+      await signOutFirebase();
+      if (activeRoom?.isSyncedRoom) {
+        setActiveRoom(null);
+      }
+    } catch (err) {
+      console.error('Logout gagal:', err);
+    }
+  };
+
   const ensureDemoRoom = (roleForFallback: UserRole) => {
     if (activeRoom) return;
     const roomId = 'KNV-8492';
+    const initialLat = gps.lastFix?.latitude ?? routeConfig.waypoints[0]?.latitude ?? -6.655;
+    const initialLng = gps.lastFix?.longitude ?? routeConfig.waypoints[0]?.longitude ?? 106.86;
     const selfMember: ConvoyMember = {
       id: 'self-demo',
       fullName: vehicleProfile.fullName.trim() || 'Anda',
@@ -767,12 +960,23 @@ export default function App() {
       avatarPhotoUrl: vehicleProfile.avatarPhotoUrl,
       conditionStatus: 'AMAN',
       connectionStatus: 'CONNECTED',
-      lastLocationText: 'Jalur Puncak KM 45',
+      lastLocationText: gps.lastFix ? 'GPS Live' : 'Jalur Puncak KM 45',
       lastUpdatedLabel: 'Baru saja',
       routeDistanceMeters: 7000,
       offRouteMeters: 0,
       convoyOrderRank: 2,
-      mapPosition: interpolateAlongPolyline(0.58, routeConfig.waypoints, 0, 55),
+      mapPosition: gps.lastFix
+        ? {
+            routeProgress: 0.25,
+            xFraction: 0.4,
+            yFraction: 0.6,
+            latitude: initialLat,
+            longitude: initialLng,
+            speedKmh: gps.lastFix.speedKmh,
+            heading: gps.lastFix.heading,
+            accuracyMeters: gps.lastFix.accuracyMeters,
+          }
+        : interpolateAlongPolyline(0.58, routeConfig.waypoints, 0, 55),
     };
     const simulatedPeers: ConvoyMember[] = DEFAULT_CONVOY_TEMPLATES.slice(0, 3).map(
       (tpl, idx) => ({
@@ -805,9 +1009,10 @@ export default function App() {
 
     const baseRoom: TourRoom = {
       roomId,
-      roomTitle: 'Konvoi Touring Akhir Pekan',
+      roomTitle: 'Konvoi Touring Akhir Pekan (Demo)',
       inviteLink: `https://konvoiku.id/join/${roomId}`,
       createdAtLabel: 'Aktif sekarang',
+      isSyncedRoom: false,
       members: [selfMember, ...simulatedPeers],
     };
     setSelectedMemberId(selfMember.id);
@@ -821,11 +1026,81 @@ export default function App() {
   };
 
   const handleUpdateProfile = (patch: Partial<VehicleProfile>) => {
-    setVehicleProfile((prev) => ({ ...prev, ...patch }));
+    setVehicleProfile((prev) => {
+      const next = { ...prev, ...patch };
+      if (authUser) {
+        saveUserPrivateProfile(authUser.uid, next).catch((err) =>
+          console.warn('Gagal sinkronisasi profil ke Firestore:', err)
+        );
+      }
+      return next;
+    });
   };
 
-  const handleCreateRoom = (customTitle = 'Konvoi Touring Akhir Pekan') => {
+  const handleCreateRoom = async (customTitle = 'Konvoi Touring Akhir Pekan') => {
     const roomId = generateUniqueRoomId();
+    const title = customTitle.trim() || 'Konvoi Touring Akhir Pekan';
+    const startLat = gps.lastFix?.latitude ?? routeConfig.waypoints[0]?.latitude ?? -6.648;
+    const startLng = gps.lastFix?.longitude ?? routeConfig.waypoints[0]?.longitude ?? 106.845;
+
+    // Cloud Synced Firestore Room if authenticated
+    if (authUser) {
+      setIsCreatingRoom(true);
+      try {
+        const dest = routeConfig.waypoints[routeConfig.waypoints.length - 1];
+        const nextWaypoints: RoutePoint[] =
+          gps.lastFix && dest
+            ? buildPolylineToDestination(
+                {
+                  xFraction: 0.14,
+                  yFraction: 0.86,
+                  latitude: startLat,
+                  longitude: startLng,
+                },
+                dest
+              )
+            : routeConfig.waypoints;
+
+        const nextConfig: ConvoyRouteConfig = {
+          ...routeConfig,
+          waypoints: nextWaypoints,
+        };
+
+        await saveUserPrivateProfile(authUser.uid, vehicleProfile);
+        await createSyncedRoom({
+          roomId,
+          roomTitle: title,
+          leaderUid: authUser.uid,
+          profile: vehicleProfile,
+          routeConfig: nextConfig,
+          initialLat: startLat,
+          initialLng: startLng,
+        });
+
+        setRouteConfig(nextConfig);
+        setIsOffRouteSimActive(false);
+        setIsStragglerSimActive(false);
+        const syncedRoom: TourRoom = {
+          roomId,
+          roomTitle: title,
+          inviteLink: `https://konvoiku.id/join/${roomId}`,
+          createdAtLabel: 'Sinkronisasi Cloud Aktif',
+          isSyncedRoom: true,
+          leaderUid: authUser.uid,
+          members: [],
+        };
+        setSelectedMemberId(authUser.uid);
+        setActiveRoom(syncedRoom);
+        navigateTo('live_map', 1);
+      } catch (err) {
+        console.error('Gagal membuat synced room:', err);
+      } finally {
+        setIsCreatingRoom(false);
+      }
+      return;
+    }
+
+    // Offline Demo Room fallback
     const leader: ConvoyMember = {
       id: `leader-${Date.now()}`,
       fullName: vehicleProfile.fullName.trim() || 'Anda (Leader)',
@@ -843,12 +1118,23 @@ export default function App() {
       avatarPhotoUrl: vehicleProfile.avatarPhotoUrl,
       conditionStatus: 'AMAN',
       connectionStatus: 'CONNECTED',
-      lastLocationText: 'Puncak Pass KM 49',
+      lastLocationText: gps.lastFix ? 'GPS Live' : 'Puncak Pass KM 49',
       lastUpdatedLabel: 'Baru saja',
       routeDistanceMeters: 8880,
       offRouteMeters: 0,
       convoyOrderRank: 1,
-      mapPosition: interpolateAlongPolyline(0.74, routeConfig.waypoints, 0, 60),
+      mapPosition: gps.lastFix
+        ? {
+            routeProgress: 0.2,
+            xFraction: 0.3,
+            yFraction: 0.7,
+            latitude: startLat,
+            longitude: startLng,
+            speedKmh: gps.lastFix.speedKmh,
+            heading: gps.lastFix.heading,
+            accuracyMeters: gps.lastFix.accuracyMeters,
+          }
+        : interpolateAlongPolyline(0.74, routeConfig.waypoints, 0, 60),
     };
 
     const peers: ConvoyMember[] = DEFAULT_CONVOY_TEMPLATES.slice(0, 3).map(
@@ -896,9 +1182,10 @@ export default function App() {
     setMessages(createInitialMessages(roomId));
     const room: TourRoom = {
       roomId,
-      roomTitle: customTitle.trim() || 'Konvoi Touring Akhir Pekan',
+      roomTitle: title,
       inviteLink: `https://konvoiku.id/join/${roomId}`,
-      createdAtLabel: 'Aktif sekarang',
+      createdAtLabel: 'Mode Demo Offline',
+      isSyncedRoom: false,
       members: [leader, ...peers],
     };
     setSelectedMemberId(leader.id);
@@ -907,7 +1194,7 @@ export default function App() {
   };
 
   const handleSimulateJoin = () => {
-    if (!activeRoom) return;
+    if (!activeRoom || activeRoom.isSyncedRoom) return;
     const tpl = DEFAULT_CONVOY_TEMPLATES[simIndex % DEFAULT_CONVOY_TEMPLATES.length];
     setSimIndex((prev) => prev + 1);
     const newMember: ConvoyMember = {
@@ -936,12 +1223,18 @@ export default function App() {
 
   const handleRemoveMember = (memberId: string) => {
     if (!activeRoom) return;
+    if (activeRoom.isSyncedRoom && authUser) {
+      removeSyncedMember(activeRoom.roomId, memberId).catch((err) =>
+        console.warn('Gagal menghapus anggota:', err)
+      );
+      return;
+    }
     commitRoomMembers(
       activeRoom.members.filter((m) => m.id !== memberId || m.isCurrentUser)
     );
   };
 
-  const handleJoinSubmit = () => {
+  const handleJoinSubmit = async () => {
     const code = extractRoomId(joinInput);
     if (code.length < 4) {
       setJoinError(
@@ -950,6 +1243,46 @@ export default function App() {
       return;
     }
 
+    if (authUser) {
+      setIsJoiningRoom(true);
+      setJoinError(null);
+      try {
+        const initLat = gps.lastFix?.latitude ?? -6.65;
+        const initLng = gps.lastFix?.longitude ?? 106.85;
+        await saveUserPrivateProfile(authUser.uid, vehicleProfile);
+        const res = await joinSyncedRoom({
+          roomId: code,
+          uid: authUser.uid,
+          profile: vehicleProfile,
+          initialLat: initLat,
+          initialLng: initLng,
+        });
+        if (!res.ok) {
+          setJoinError(res.error || 'Gagal bergabung ke room.');
+          return;
+        }
+        setSelectedRole(res.role);
+        setSelectedMemberId(authUser.uid);
+        setActiveRoom({
+          roomId: code,
+          roomTitle: `Room ${code}`,
+          inviteLink: `https://konvoiku.id/join/${code}`,
+          createdAtLabel: 'Terhubung Cloud',
+          isSyncedRoom: true,
+          members: [],
+        });
+        navigateTo('live_map', 1);
+      } catch (err) {
+        setJoinError(
+          err instanceof Error ? err.message : 'Gagal terhubung ke Firestore.'
+        );
+      } finally {
+        setIsJoiningRoom(false);
+      }
+      return;
+    }
+
+    // Offline Demo join fallback
     const hostTpl = DEFAULT_CONVOY_TEMPLATES[0];
     const peer1Tpl = DEFAULT_CONVOY_TEMPLATES[1];
     const peer2Tpl = DEFAULT_CONVOY_TEMPLATES[2];
@@ -993,12 +1326,23 @@ export default function App() {
       avatarPhotoUrl: vehicleProfile.avatarPhotoUrl,
       conditionStatus: 'AMAN',
       connectionStatus: 'CONNECTED',
-      lastLocationText: 'Jalur Puncak KM 45',
+      lastLocationText: gps.lastFix ? 'GPS Live' : 'Jalur Puncak KM 45',
       lastUpdatedLabel: 'Baru saja',
       routeDistanceMeters: 6960,
       offRouteMeters: 0,
       convoyOrderRank: 3,
-      mapPosition: interpolateAlongPolyline(0.58, routeConfig.waypoints, 0, 54),
+      mapPosition: gps.lastFix
+        ? {
+            routeProgress: 0.4,
+            xFraction: 0.45,
+            yFraction: 0.55,
+            latitude: gps.lastFix.latitude,
+            longitude: gps.lastFix.longitude,
+            speedKmh: gps.lastFix.speedKmh,
+            heading: gps.lastFix.heading,
+            accuracyMeters: gps.lastFix.accuracyMeters,
+          }
+        : interpolateAlongPolyline(0.58, routeConfig.waypoints, 0, 54),
     };
 
     const peer1: ConvoyMember = {
@@ -1061,9 +1405,10 @@ export default function App() {
     setMessages(createInitialMessages(code));
     const room: TourRoom = {
       roomId: code,
-      roomTitle: `Konvoi Bersama ${code}`,
+      roomTitle: `Konvoi Bersama ${code} (Demo)`,
       inviteLink: `https://konvoiku.id/join/${code}`,
-      createdAtLabel: 'Terhubung',
+      createdAtLabel: 'Terhubung Demo',
+      isSyncedRoom: false,
       members: [hostLeader, selfMember, peer1, peer2],
     };
     setSelectedMemberId(selfMember.id);
@@ -1078,6 +1423,31 @@ export default function App() {
       activeRoom.members.find((m) => m.isCurrentUser) || activeRoom.members[0];
     if (!self) return;
     const now = currentClock();
+    const lat = gps.lastFix?.latitude ?? self.mapPosition.latitude;
+    const lng = gps.lastFix?.longitude ?? self.mapPosition.longitude;
+
+    if (activeRoom.isSyncedRoom && authUser) {
+      triggerSyncedSos(activeRoom.roomId, {
+        uid: authUser.uid,
+        fullName: self.fullName,
+        vehicleDetail: self.vehicleDetail,
+        latitude: lat,
+        longitude: lng,
+        locationText: self.lastLocationText,
+        triggeredAtLabel: now,
+      });
+      sendRoomMessage(activeRoom.roomId, {
+        id: `sos-${Date.now()}`,
+        senderUid: authUser.uid,
+        senderName: self.fullName,
+        senderVehicle: self.vehicleDetail,
+        senderAvatarPreset: self.avatarPreset,
+        type: 'SOS_ALERT',
+        textContent: `SINYAL DARURAT SOS di ${self.lastLocationText} (${lat.toFixed(4)}, ${lng.toFixed(4)}). Butuh bantuan segera!`,
+      });
+      return;
+    }
+
     const updated = activeRoom.members.map((m) =>
       m.id === self.id ? { ...m, conditionStatus: 'SOS' as MemberConditionStatus } : m
     );
@@ -1086,8 +1456,8 @@ export default function App() {
       senderId: self.id,
       senderName: self.fullName,
       senderVehicle: self.vehicleDetail,
-      latitude: self.mapPosition.latitude,
-      longitude: self.mapPosition.longitude,
+      latitude: lat,
+      longitude: lng,
       locationText: self.lastLocationText,
       triggeredAtLabel: now,
     });
@@ -1100,7 +1470,7 @@ export default function App() {
         senderName: self.fullName,
         senderVehicle: self.vehicleDetail,
         type: 'SOS_ALERT',
-        textContent: `SINYAL DARURAT SOS di ${self.lastLocationText} (${self.mapPosition.latitude.toFixed(4)}, ${self.mapPosition.longitude.toFixed(4)}). Butuh bantuan segera!`,
+        textContent: `SINYAL DARURAT SOS di ${self.lastLocationText} (${lat.toFixed(4)}, ${lng.toFixed(4)}). Butuh bantuan segera!`,
         timestampLabel: now,
         isFromCurrentUser: true,
       },
@@ -1111,6 +1481,21 @@ export default function App() {
   const handleResolveSos = () => {
     if (!activeRoom) return;
     const senderId = sosState.senderId;
+
+    if (activeRoom.isSyncedRoom && authUser) {
+      resolveSyncedSos(activeRoom.roomId, senderId);
+      sendRoomMessage(activeRoom.roomId, {
+        id: `sys-${Date.now()}`,
+        senderUid: authUser.uid,
+        senderName: 'Sistem Konvoi',
+        senderVehicle: '',
+        senderAvatarPreset: 'RIDER_CAPTAIN',
+        type: 'SYSTEM',
+        textContent: 'Sinyal darurat SOS telah diselesaikan.',
+      });
+      return;
+    }
+
     const updated = activeRoom.members.map((m) =>
       m.id === senderId && m.conditionStatus === 'SOS'
         ? { ...m, conditionStatus: 'AMAN' as MemberConditionStatus }
@@ -1142,8 +1527,20 @@ export default function App() {
   };
 
   const handleSendTextMessage = (text: string) => {
-    if (!activeRoom) return;
+    if (!activeRoom || !text.trim()) return;
     const self = activeRoom.members.find((m) => m.isCurrentUser);
+    if (activeRoom.isSyncedRoom && authUser) {
+      sendRoomMessage(activeRoom.roomId, {
+        id: `txt-${Date.now()}`,
+        senderUid: authUser.uid,
+        senderName: self?.fullName ?? vehicleProfile.fullName ?? 'Rider',
+        senderVehicle: self?.vehicleDetail ?? vehicleProfile.vehicleDetail ?? 'Kendaraan',
+        senderAvatarPreset: self?.avatarPreset ?? vehicleProfile.avatarPreset,
+        type: 'TEXT',
+        textContent: text.trim(),
+      });
+      return;
+    }
     setMessages((prev) => [
       ...prev,
       {
@@ -1190,6 +1587,21 @@ export default function App() {
     const dur = Math.max(1, recordingSeconds);
     setIsRecordingVoice(false);
     setRecordingSeconds(0);
+
+    if (activeRoom?.isSyncedRoom && authUser) {
+      sendRoomMessage(activeRoom.roomId, {
+        id: `voice-${Date.now()}`,
+        senderUid: authUser.uid,
+        senderName: self?.fullName ?? vehicleProfile.fullName ?? 'Rider',
+        senderVehicle: self?.vehicleDetail ?? vehicleProfile.vehicleDetail ?? 'Kendaraan',
+        senderAvatarPreset: self?.avatarPreset ?? vehicleProfile.avatarPreset,
+        type: 'VOICE',
+        textContent: `Pesan Suara PTT (${dur} detik)`,
+        voiceDurationSec: dur,
+      });
+      return;
+    }
+
     setMessages((prev) => [
       ...prev,
       {
@@ -1240,7 +1652,6 @@ export default function App() {
       audio.onended = () => setPlayingMessageId(null);
       audio.play().catch(() => setPlayingMessageId(null));
     } else {
-      // Synthesize subtle radio squelch chirp & simulate playback duration
       try {
         const AudioCtx =
           window.AudioContext ||
@@ -1272,15 +1683,31 @@ export default function App() {
     if (!activeRoom) return;
     const self = activeRoom.members.find((m) => m.isCurrentUser);
     if (!self) return;
-    const updated = activeRoom.members.map((m) =>
-      m.isCurrentUser ? { ...m, conditionStatus: status } : m
-    );
+
     const labelMap: Record<MemberConditionStatus, string> = {
       AMAN: 'Aman',
       ISTIRAHAT: 'Istirahat / Rest Area',
       MOGOK: 'Kendaraan Mogok',
       SOS: 'Darurat SOS',
     };
+
+    if (activeRoom.isSyncedRoom && authUser) {
+      updateSyncedMemberCondition(activeRoom.roomId, authUser.uid, status);
+      sendRoomMessage(activeRoom.roomId, {
+        id: `cond-${Date.now()}`,
+        senderUid: authUser.uid,
+        senderName: self.fullName,
+        senderVehicle: self.vehicleDetail,
+        senderAvatarPreset: self.avatarPreset,
+        type: 'SYSTEM',
+        textContent: `${self.fullName} memperbarui status: ${labelMap[status]}`,
+      });
+      return;
+    }
+
+    const updated = activeRoom.members.map((m) =>
+      m.isCurrentUser ? { ...m, conditionStatus: status } : m
+    );
     setMessages((prev) => [
       ...prev,
       {
@@ -1300,6 +1727,25 @@ export default function App() {
     if (!activeRoom) return;
     const target = activeRoom.members.find((m) => m.id === memberId);
     if (!target) return;
+
+    if (activeRoom.isSyncedRoom && authUser) {
+      assignSyncedSweeper(
+        activeRoom.roomId,
+        memberId,
+        activeRoom.members.map((m) => m.id)
+      );
+      sendRoomMessage(activeRoom.roomId, {
+        id: `swp-${Date.now()}`,
+        senderUid: authUser.uid,
+        senderName: 'Tour Leader',
+        senderVehicle: '',
+        senderAvatarPreset: 'RIDER_CAPTAIN',
+        type: 'SYSTEM',
+        textContent: `${target.fullName} (${target.vehicleDetail}) ditetapkan sebagai Sweeper penutup barisan.`,
+      });
+      return;
+    }
+
     const updated = activeRoom.members.map((m) => ({
       ...m,
       isSweeper: m.id === memberId,
@@ -1319,75 +1765,148 @@ export default function App() {
     commitRoomMembers(updated);
   };
 
-  // --- Stage 3 Handlers ---
+  // --- Route & Checkpoint Handlers ---
   const syncMembersToRoute = (nextConfig: ConvoyRouteConfig) => {
     if (!activeRoom) return;
-    const synced = activeRoom.members.map((member) => ({
-      ...member,
-      mapPosition: interpolateAlongPolyline(
-        member.mapPosition.routeProgress,
-        nextConfig.waypoints,
-        member.isCurrentUser && isOffRouteSimActive ? 0.12 : 0,
-        member.mapPosition.speedKmh
-      ),
-    }));
+    if (activeRoom.isSyncedRoom) {
+      commitRoomMembers(activeRoom.members, nextConfig);
+      return;
+    }
+    const synced = activeRoom.members.map((member) => {
+      if (member.isCurrentUser && gps.status === 'active') {
+        return member;
+      }
+      return {
+        ...member,
+        mapPosition: interpolateAlongPolyline(
+          member.mapPosition.routeProgress,
+          nextConfig.waypoints,
+          member.isCurrentUser && isOffRouteSimActive ? 0.12 : 0,
+          member.mapPosition.speedKmh
+        ),
+      };
+    });
     commitRoomMembers(synced, nextConfig);
   };
 
   const handleSelectPreset = (preset: DestinationPreset) => {
+    const startPt: RoutePoint = gps.lastFix
+      ? {
+          xFraction: 0.14,
+          yFraction: 0.86,
+          latitude: gps.lastFix.latitude,
+          longitude: gps.lastFix.longitude,
+        }
+      : routeConfig.waypoints[0] ?? {
+          xFraction: 0.14,
+          yFraction: 0.86,
+          latitude: -6.648,
+          longitude: 106.845,
+        };
     const coordStr = `${preset.endPoint.latitude.toFixed(4)}, ${preset.endPoint.longitude.toFixed(4)}`;
     const nextConfig: ConvoyRouteConfig = {
       ...routeConfig,
       destinationName: preset.name,
       destinationAddress: `${preset.name} · ${coordStr}`,
-      waypoints: buildPolylineToDestination(preset.endPoint),
+      waypoints: buildPolylineToDestination(startPt, preset.endPoint),
       totalRouteMeters: preset.totalMeters,
     };
     setRouteConfig(nextConfig);
     setIsPickingDestinationOnMap(false);
     syncMembersToRoute(nextConfig);
+    if (activeRoom?.isSyncedRoom && authUser && activeRoom.leaderUid === authUser.uid) {
+      updateSyncedRoomRoute(activeRoom.roomId, nextConfig);
+    }
   };
 
-  const handlePickCustomDestination = (
-    xFrac: number,
-    yFrac: number,
+  const handlePickDestinationLatLng = (
+    lat: number,
+    lng: number,
     placeName?: string,
     addressLabel?: string
   ) => {
-    const cx = Math.max(0.08, Math.min(0.92, xFrac));
-    const cy = Math.max(0.08, Math.min(0.9, yFrac));
-    const lat = -6.71 + (1 - cy) * 0.08;
-    const lng = 106.85 + cx * 0.16;
+    const startPt: RoutePoint = gps.lastFix
+      ? {
+          xFraction: 0.14,
+          yFraction: 0.86,
+          latitude: gps.lastFix.latitude,
+          longitude: gps.lastFix.longitude,
+        }
+      : routeConfig.waypoints[0] ?? {
+          xFraction: 0.14,
+          yFraction: 0.86,
+          latitude: -6.648,
+          longitude: 106.845,
+        };
     const endPoint: RoutePoint = {
-      xFraction: cx,
-      yFraction: cy,
+      xFraction: 0.86,
+      yFraction: 0.14,
       latitude: lat,
       longitude: lng,
     };
-    const waypoints = buildPolylineToDestination(endPoint);
-    const start = waypoints[0];
-    const normDist = Math.hypot(cx - start.xFraction, cy - start.yFraction);
-    const estimatedMeters = Math.max(
-      3000,
-      Math.min(32000, Math.round(normDist * 16500))
+    const waypoints = buildPolylineToDestination(startPt, endPoint);
+    const estMeters = Math.max(
+      500,
+      Math.round(
+        haversineMeters(
+          { lat: startPt.latitude, lng: startPt.longitude },
+          { lat, lng }
+        ) * 1.25
+      )
     );
     const resolvedName =
-      placeName?.trim() ||
-      `Titik Tujuan (${Math.round(cx * 100)}%, ${Math.round(cy * 100)}%)`;
+      placeName?.trim() || `Titik Tujuan (${lat.toFixed(4)}, ${lng.toFixed(4)})`;
     const resolvedAddress =
-      addressLabel?.trim() || `${resolvedName} · ${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+      addressLabel?.trim() || `${resolvedName} · ${lat.toFixed(5)}, ${lng.toFixed(5)}`;
 
     const nextConfig: ConvoyRouteConfig = {
       ...routeConfig,
       destinationName: resolvedName,
       destinationAddress: resolvedAddress,
       waypoints,
-      totalRouteMeters: estimatedMeters,
+      totalRouteMeters: estMeters,
     };
     setRouteConfig(nextConfig);
     setIsPickingDestinationOnMap(false);
     syncMembersToRoute(nextConfig);
+    if (activeRoom?.isSyncedRoom && authUser && activeRoom.leaderUid === authUser.uid) {
+      updateSyncedRoomRoute(activeRoom.roomId, nextConfig);
+    }
   };
+
+  const handleRouteComputed = useCallback(
+    (distanceMeters: number, _durationMillis: number, path: LatLngPoint[]) => {
+      if (path.length < 2 || distanceMeters <= 0) return;
+      const sampled = downsampleRoutePoints(path, 60);
+      const currentCfg = routeConfigRef.current;
+      const distDiff = Math.abs(currentCfg.totalRouteMeters - distanceMeters);
+      const sig = `${currentCfg.destinationName}|${Math.round(distanceMeters / 50)}|${sampled.length}`;
+      if (sig === lastSyncedRouteSigRef.current && distDiff < 80) return;
+
+      lastSyncedRouteSigRef.current = sig;
+      const nextConfig: ConvoyRouteConfig = {
+        ...currentCfg,
+        waypoints: sampled,
+        totalRouteMeters: distanceMeters,
+      };
+      setRouteConfig(nextConfig);
+
+      const room = activeRoomRef.current;
+      const user = authUserRef.current;
+      if (room) {
+        const evaluated = evaluateRoomSafety(room.members, nextConfig);
+        setOffRouteAlert(evaluated.offRouteAlert);
+        setStragglerAlert(evaluated.stragglerAlert);
+        setActiveRoom((prev) =>
+          prev ? { ...prev, members: evaluated.members } : prev
+        );
+        if (room.isSyncedRoom && user && room.leaderUid === user.uid) {
+          updateSyncedRoomRoute(room.roomId, nextConfig).catch(() => {});
+        }
+      }
+    },
+    []
+  );
 
   // --- Rest Area Checkpoint Handlers ---
   const handleStartPickCheckpoint = (name: string) => {
@@ -1401,21 +1920,19 @@ export default function App() {
     setPendingCheckpointName('');
   };
 
-  const handleConfirmAddCheckpoint = (
+  const handleConfirmAddCheckpointLatLng = (
     name: string,
-    xFraction: number,
-    yFraction: number
+    lat: number,
+    lng: number
   ) => {
-    const cx = Math.max(0.08, Math.min(0.92, xFraction));
-    const cy = Math.max(0.08, Math.min(0.9, yFraction));
     const finalName = name.trim() || 'Rest Area Konvoi';
     const newCheckpoint: RestCheckpoint = {
       id: `cp-${Date.now()}`,
       name: finalName,
-      xFraction: cx,
-      yFraction: cy,
-      latitude: -6.71 + (1 - cy) * 0.08,
-      longitude: 106.85 + cx * 0.16,
+      xFraction: 0.5,
+      yFraction: 0.5,
+      latitude: lat,
+      longitude: lng,
     };
     setRouteConfig((prev) => ({
       ...prev,
@@ -1423,6 +1940,21 @@ export default function App() {
     }));
     setIsPickingCheckpointOnMap(false);
     setPendingCheckpointName('');
+
+    if (activeRoom?.isSyncedRoom && authUser) {
+      addRoomCheckpoint(activeRoom.roomId, authUser.uid, newCheckpoint);
+      sendRoomMessage(activeRoom.roomId, {
+        id: `cp-msg-${Date.now()}`,
+        senderUid: authUser.uid,
+        senderName: 'Tour Leader',
+        senderVehicle: '',
+        senderAvatarPreset: 'RIDER_CAPTAIN',
+        type: 'SYSTEM',
+        textContent: `Titik istirahat baru dibagikan ke seluruh rombongan: ${finalName}.`,
+      });
+      return;
+    }
+
     setMessages((prev) => [
       ...prev,
       {
@@ -1437,11 +1969,42 @@ export default function App() {
     ]);
   };
 
+  const handleAddCheckpointFromStepper = (
+    name: string,
+    xFraction: number,
+    yFraction: number
+  ) => {
+    const wps = routeConfig.waypoints;
+    const start = wps[0] ?? { latitude: -6.648, longitude: 106.845 };
+    const end = wps[wps.length - 1] ?? { latitude: -6.7003, longitude: 106.996 };
+    const factor = Math.max(0.1, Math.min(0.9, xFraction));
+    const lat = start.latitude + (end.latitude - start.latitude) * factor;
+    const lng = start.longitude + (end.longitude - start.longitude) * factor;
+    const cp: RestCheckpoint = {
+      id: `cp-${Date.now()}`,
+      name: name.trim() || 'Rest Area Konvoi',
+      xFraction: factor,
+      yFraction,
+      latitude: lat,
+      longitude: lng,
+    };
+    setRouteConfig((prev) => ({
+      ...prev,
+      checkpoints: [...prev.checkpoints, cp],
+    }));
+    if (activeRoom?.isSyncedRoom && authUser) {
+      addRoomCheckpoint(activeRoom.roomId, authUser.uid, cp);
+    }
+  };
+
   const handleRemoveCheckpoint = (checkpointId: string) => {
     setRouteConfig((prev) => ({
       ...prev,
       checkpoints: prev.checkpoints.filter((cp) => cp.id !== checkpointId),
     }));
+    if (activeRoom?.isSyncedRoom && authUser) {
+      removeRoomCheckpoint(activeRoom.roomId, checkpointId);
+    }
   };
 
   const handleUpdateWaypoints = (nextWaypoints: RoutePoint[]) => {
@@ -1452,6 +2015,9 @@ export default function App() {
     };
     setRouteConfig(nextConfig);
     syncMembersToRoute(nextConfig);
+    if (activeRoom?.isSyncedRoom && authUser && activeRoom.leaderUid === authUser.uid) {
+      updateSyncedRoomRoute(activeRoom.roomId, nextConfig);
+    }
   };
 
   const handleResetDefaultWaypoints = () => {
@@ -1461,21 +2027,42 @@ export default function App() {
     };
     setRouteConfig(nextConfig);
     syncMembersToRoute(nextConfig);
+    if (activeRoom?.isSyncedRoom && authUser && activeRoom.leaderUid === authUser.uid) {
+      updateSyncedRoomRoute(activeRoom.roomId, nextConfig);
+    }
   };
 
   const handleUpdateMaxStraggler = (meters: number) => {
     const nextConfig = { ...routeConfig, maxStragglerDistanceMeters: meters };
     setRouteConfig(nextConfig);
     if (activeRoom) commitRoomMembers(activeRoom.members, nextConfig);
+    if (activeRoom?.isSyncedRoom && authUser && activeRoom.leaderUid === authUser.uid) {
+      updateSyncedRoomRoute(activeRoom.roomId, nextConfig);
+    }
   };
 
   const handleUpdateOffRouteTolerance = (meters: number) => {
     const nextConfig = { ...routeConfig, offRouteToleranceMeters: meters };
     setRouteConfig(nextConfig);
     if (activeRoom) commitRoomMembers(activeRoom.members, nextConfig);
+    if (activeRoom?.isSyncedRoom && authUser && activeRoom.leaderUid === authUser.uid) {
+      updateSyncedRoomRoute(activeRoom.roomId, nextConfig);
+    }
+  };
+
+  const handleToggleSoundAlert = () => {
+    const nextConfig = {
+      ...routeConfig,
+      soundAlertEnabled: !routeConfig.soundAlertEnabled,
+    };
+    setRouteConfig(nextConfig);
+    if (activeRoom?.isSyncedRoom && authUser && activeRoom.leaderUid === authUser.uid) {
+      updateSyncedRoomRoute(activeRoom.roomId, nextConfig);
+    }
   };
 
   const handleToggleOffRouteSim = () => {
+    if (activeRoom?.isSyncedRoom) return;
     const next = !isOffRouteSimActive;
     setIsOffRouteSimActive(next);
     if (!activeRoom) return;
@@ -1496,6 +2083,7 @@ export default function App() {
   };
 
   const handleToggleStragglerSim = () => {
+    if (activeRoom?.isSyncedRoom) return;
     const next = !isStragglerSimActive;
     setIsStragglerSimActive(next);
     if (!activeRoom) return;
@@ -1587,6 +2175,15 @@ export default function App() {
       })),
     };
 
+    if (activeRoom.isSyncedRoom && authUser) {
+      if (activeRoom.leaderUid === authUser.uid) {
+        finishSyncedRoom(activeRoom.roomId).catch(() => {});
+      }
+      saveTripRecordToFirestore(authUser.uid, newRecord).catch((err) =>
+        console.warn('Gagal menyimpan riwayat ke Firestore:', err)
+      );
+    }
+
     setTripHistory((prev) => [newRecord, ...prev]);
     setSelectedTripId(newRecord.id);
     setActiveRoom(null);
@@ -1635,6 +2232,28 @@ export default function App() {
 
   return (
     <div className="relative min-h-screen bg-[#F1F5FA] dark:bg-[#0A0F16] text-[#0F172A] dark:text-[#F1F5F9] flex flex-col transition-colors">
+      {/* Mandatory Case A Google Maps Quota Banner */}
+      {mapsQuotaExceeded && (
+        <div
+          role="alert"
+          className="sticky top-0 z-50 w-full bg-[#B91C1C] text-white px-4 py-2.5 text-xs sm:text-sm font-medium flex items-center justify-center gap-2 shadow-md"
+        >
+          <AlertTriangle className="w-4 h-4 shrink-0" />
+          <p className="text-center">
+            Google Maps Platform quota reached. If you are the app owner, visit{' '}
+            <a
+              href="https://developers.google.com/maps/ai/ai-studio?utm_campaign=gmp_mcp_codeassist_v1_aistudio#quota_exceeded_errors"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline font-bold hover:text-amber-200"
+            >
+              maps developer site
+            </a>{' '}
+            for instructions to update your account.
+          </p>
+        </div>
+      )}
+
       {/* Subtle Touring Atmosphere Desktop & Mobile Backdrop */}
       <div
         aria-hidden="true"
@@ -1746,10 +2365,10 @@ export default function App() {
         <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
           <div>
             <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-balance">
-              KonvoiKu — Navigasi Konvoi, Checkpoints & Komunikasi Real-Time
+              KonvoiKu — GPS Live, Sinkronisasi Room & Google Maps Real-Time
             </h1>
             <p className="mt-1 text-sm text-[#475569] dark:text-[#94A3B8]">
-              Material Design 3 · Setup Bertahap · Peta Kolaps · Chat Messenger · Waveform PTT & SOS
+              Material Design 3 · Live Device GPS · Cloud Room Sync · Google Maps & Routes API · PTT & SOS
             </p>
           </div>
 
@@ -1839,7 +2458,9 @@ export default function App() {
               <div className="h-7 px-5 bg-white dark:bg-[#181F26] flex items-center justify-between text-[11px] font-medium text-[#475569] dark:text-[#94A3B8] select-none border-b border-[#F1F5F9] dark:border-[#222B35]">
                 <span className="tabular-nums">09:41</span>
                 <div className="w-16 h-3.5 rounded-full bg-[#0F172A] dark:bg-[#334155]" />
-                <span className="tabular-nums">5G · 98%</span>
+                <span className="tabular-nums">
+                  {gps.status === 'active' ? 'GPS · 5G' : '5G · 98%'}
+                </span>
               </div>
 
               {/* Compose NavHost Animated Viewport */}
@@ -1859,6 +2480,11 @@ export default function App() {
                         destinationName={routeConfig.destinationName}
                         tripHistoryCount={tripHistory.length}
                         latestTripTitle={tripHistory[0]?.tourTitle}
+                        authUserEmail={authUser?.email ?? null}
+                        authUserName={authUser?.displayName ?? null}
+                        isSigningIn={isSigningIn}
+                        onGoogleSignIn={handleGoogleSignIn}
+                        onGoogleSignOut={handleGoogleSignOut}
                         onSelectRole={handleSelectRole}
                         onResumeCurrentConvoy={() => {
                           ensureDemoRoom(selectedRole);
@@ -1898,19 +2524,26 @@ export default function App() {
                         activeRoom={activeRoom}
                         routeConfig={routeConfig}
                         destinationPresets={DESTINATION_PRESETS}
+                        isAuthenticated={Boolean(authUser)}
+                        isCreatingRoom={isCreatingRoom}
+                        userGpsLocation={
+                          gps.lastFix
+                            ? {
+                                lat: gps.lastFix.latitude,
+                                lng: gps.lastFix.longitude,
+                              }
+                            : null
+                        }
+                        darkMode={darkMode}
+                        onGoogleSignIn={handleGoogleSignIn}
                         onSelectPreset={handleSelectPreset}
-                        onPickDestinationFromMap={handlePickCustomDestination}
+                        onPickDestinationLatLng={handlePickDestinationLatLng}
                         onUpdateWaypoints={handleUpdateWaypoints}
                         onResetDefaultWaypoints={handleResetDefaultWaypoints}
-                        onAddCheckpoint={handleConfirmAddCheckpoint}
+                        onAddCheckpoint={handleAddCheckpointFromStepper}
                         onRemoveCheckpoint={handleRemoveCheckpoint}
                         onUpdateMaxStragglerDistance={handleUpdateMaxStraggler}
-                        onToggleSoundAlert={() =>
-                          setRouteConfig((prev) => ({
-                            ...prev,
-                            soundAlertEnabled: !prev.soundAlertEnabled,
-                          }))
-                        }
+                        onToggleSoundAlert={handleToggleSoundAlert}
                         onCreateRoom={handleCreateRoom}
                         onSimulateJoin={handleSimulateJoin}
                         onRemoveMember={handleRemoveMember}
@@ -1927,6 +2560,9 @@ export default function App() {
                         joinError={joinError}
                         extractedRoomId={extractRoomId(joinInput)}
                         vehicleProfile={vehicleProfile}
+                        isAuthenticated={Boolean(authUser)}
+                        isJoining={isJoiningRoom}
+                        onGoogleSignIn={handleGoogleSignIn}
                         onInputChange={(val) => {
                           setJoinInput(val);
                           setJoinError(null);
@@ -1956,12 +2592,17 @@ export default function App() {
                         isOffRouteSimActive={isOffRouteSimActive}
                         isStragglerSimActive={isStragglerSimActive}
                         destinationPresets={DESTINATION_PRESETS}
+                        darkMode={darkMode}
+                        gpsStatus={gps.status}
+                        gpsAccuracyMeters={gps.lastFix?.accuracyMeters}
+                        onRetryGps={gps.retryGps}
+                        onRouteComputed={handleRouteComputed}
                         onSelectMember={setSelectedMemberId}
                         onToggleSimulation={() =>
                           setIsSimulationRunning((prev) => !prev)
                         }
                         onSelectPreset={handleSelectPreset}
-                        onPickCustomDestination={handlePickCustomDestination}
+                        onPickDestinationLatLng={handlePickDestinationLatLng}
                         onTogglePickMode={(enabled) => {
                           if (enabled) {
                             setIsPickingCheckpointOnMap(false);
@@ -1971,16 +2612,11 @@ export default function App() {
                         }}
                         onStartPickCheckpoint={handleStartPickCheckpoint}
                         onCancelPickCheckpoint={handleCancelPickCheckpoint}
-                        onConfirmAddCheckpoint={handleConfirmAddCheckpoint}
+                        onConfirmAddCheckpointLatLng={handleConfirmAddCheckpointLatLng}
                         onRemoveCheckpoint={handleRemoveCheckpoint}
                         onUpdateMaxStragglerDistance={handleUpdateMaxStraggler}
                         onUpdateOffRouteTolerance={handleUpdateOffRouteTolerance}
-                        onToggleSoundAlert={() =>
-                          setRouteConfig((prev) => ({
-                            ...prev,
-                            soundAlertEnabled: !prev.soundAlertEnabled,
-                          }))
-                        }
+                        onToggleSoundAlert={handleToggleSoundAlert}
                         onToggleOffRouteSim={handleToggleOffRouteSim}
                         onToggleStragglerSim={handleToggleStragglerSim}
                         onTriggerSos={handleTriggerSos}

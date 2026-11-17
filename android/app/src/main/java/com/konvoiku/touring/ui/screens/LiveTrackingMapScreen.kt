@@ -1,7 +1,10 @@
 package com.konvoiku.touring.ui.screens
 
+import android.Manifest
 import android.media.AudioManager
 import android.media.ToneGenerator
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -12,11 +15,8 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -25,7 +25,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -45,6 +44,7 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AddLocationAlt
 import androidx.compose.material.icons.rounded.Build
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.CloudDone
 import androidx.compose.material.icons.rounded.Coffee
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.DirectionsCar
@@ -52,6 +52,8 @@ import androidx.compose.material.icons.rounded.EditLocationAlt
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Flag
+import androidx.compose.material.icons.rounded.GpsFixed
+import androidx.compose.material.icons.rounded.Layers
 import androidx.compose.material.icons.rounded.LocalCafe
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.MyLocation
@@ -98,32 +100,38 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.PathEffect
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.StrokeJoin
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.google.android.gms.maps.CameraUpdateFactory
+import com.google.android.gms.maps.model.CameraPosition
+import com.google.android.gms.maps.model.LatLng
+import com.google.maps.android.compose.GoogleMap
+import com.google.maps.android.compose.MapProperties
+import com.google.maps.android.compose.MapType
+import com.google.maps.android.compose.MapUiSettings
+import com.google.maps.android.compose.MarkerComposable
+import com.google.maps.android.compose.MarkerState
+import com.google.maps.android.compose.Polyline
+import com.google.maps.android.compose.rememberCameraPositionState
 import com.konvoiku.touring.model.ChatMessageType
 import com.konvoiku.touring.model.ConvoyMember
 import com.konvoiku.touring.model.ConvoyRouteConfig
 import com.konvoiku.touring.model.DestinationEtaInfo
+import com.konvoiku.touring.model.GpsTrackingStatus
 import com.konvoiku.touring.model.MemberConditionStatus
 import com.konvoiku.touring.model.OffRouteAlertState
 import com.konvoiku.touring.model.RestCheckpoint
@@ -136,6 +144,7 @@ import com.konvoiku.touring.model.VehicleType
 import com.konvoiku.touring.model.calculateDestinationEta
 import com.konvoiku.touring.ui.components.ConvoyAvatar
 import com.konvoiku.touring.viewmodel.ConvoyViewModel
+import kotlinx.coroutines.launch
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -159,15 +168,19 @@ fun LiveTrackingMapScreen(
     pendingCheckpointName: String,
     isOffRouteSimActive: Boolean,
     isStragglerSimActive: Boolean,
+    gpsStatus: GpsTrackingStatus = GpsTrackingStatus.IDLE,
+    gpsAccuracyMeters: Int = 20,
     destinationPresets: List<ConvoyViewModel.DestinationPreset>,
+    onLocationPermissionResult: (Boolean) -> Unit = {},
+    onRetryGps: () -> Unit = {},
     onSelectMember: (String) -> Unit,
     onToggleSimulation: () -> Unit,
     onSelectPreset: (ConvoyViewModel.DestinationPreset) -> Unit,
-    onPickCustomDestination: (Float, Float) -> Unit,
+    onPickCustomDestinationLatLng: (Double, Double) -> Unit,
     onTogglePickMode: (Boolean) -> Unit,
     onStartPickCheckpoint: (String) -> Unit,
     onCancelPickCheckpoint: () -> Unit,
-    onConfirmAddCheckpoint: (String, Float, Float) -> Unit,
+    onConfirmAddCheckpointLatLng: (String, Double, Double) -> Unit,
     onRemoveCheckpoint: (String) -> Unit,
     onUpdateMaxStragglerDistance: (Int) -> Unit,
     onUpdateOffRouteTolerance: (Int) -> Unit,
@@ -185,8 +198,8 @@ fun LiveTrackingMapScreen(
     onFinishAndSaveTrip: () -> Unit,
     onExitRoom: () -> Unit
 ) {
-    var mapScale by remember { mutableFloatStateOf(1f) }
-    var mapOffset by remember { mutableStateOf(Offset.Zero) }
+    val coroutineScope = rememberCoroutineScope()
+    var mapType by remember { mutableStateOf(MapType.NORMAL) }
     var isParticipantsExpanded by remember { mutableStateOf(false) }
     var showChatSheet by remember { mutableStateOf(false) }
     var showLeaderSettingsSheet by remember { mutableStateOf(false) }
@@ -195,7 +208,26 @@ fun LiveTrackingMapScreen(
     var chatInputText by remember { mutableStateOf("") }
 
     var checkpointDraftName by remember { mutableStateOf("") }
-    var tappedCheckpointCoords by remember { mutableStateOf<Pair<Float, Float>?>(null) }
+    var tappedCheckpointLatLng by remember { mutableStateOf<LatLng?>(null) }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { perms ->
+        val granted = perms[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+            perms[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+        onLocationPermissionResult(granted)
+    }
+
+    LaunchedEffect(Unit) {
+        if (gpsStatus == GpsTrackingStatus.IDLE || gpsStatus == GpsTrackingStatus.DENIED) {
+            permissionLauncher.launch(
+                arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                )
+            )
+        }
+    }
 
     val members = activeRoom?.members.orEmpty().sortedBy { it.convoyOrderRank }
     val focusedMember = members.find { it.id == selectedMemberId } ?: members.firstOrNull()
@@ -208,6 +240,26 @@ fun LiveTrackingMapScreen(
         routeConfig.destinationName
     ) {
         calculateDestinationEta(trackedMember, routeConfig)
+    }
+
+    val initialLatLng = remember(trackedMember?.id) {
+        LatLng(
+            trackedMember?.mapPosition?.latitude ?: -6.674,
+            trackedMember?.mapPosition?.longitude ?: 106.925
+        )
+    }
+    val cameraPositionState = rememberCameraPositionState {
+        position = CameraPosition.fromLatLngZoom(initialLatLng, 13.5f)
+    }
+
+    LaunchedEffect(trackedMember?.id) {
+        val m = trackedMember ?: return@LaunchedEffect
+        cameraPositionState.animate(
+            CameraUpdateFactory.newLatLngZoom(
+                LatLng(m.mapPosition.latitude, m.mapPosition.longitude),
+                14.5f
+            )
+        )
     }
 
     LaunchedEffect(stragglerAlert.isTriggered, offRouteAlert.isOffRoute, sosState.isActive, routeConfig.soundAlertEnabled) {
@@ -310,7 +362,14 @@ fun LiveTrackingMapScreen(
                                     isSelected = member.id == focusedMember?.id,
                                     onClick = {
                                         onSelectMember(member.id)
-                                        mapOffset = Offset.Zero
+                                        coroutineScope.launch {
+                                            cameraPositionState.animate(
+                                                CameraUpdateFactory.newLatLngZoom(
+                                                    LatLng(member.mapPosition.latitude, member.mapPosition.longitude),
+                                                    15f
+                                                )
+                                            )
+                                        }
                                     }
                                 )
                             }
@@ -357,8 +416,15 @@ fun LiveTrackingMapScreen(
                                         onAssignSweeper = { onAssignSweeper(member.id) },
                                         onClick = {
                                             onSelectMember(member.id)
-                                            mapOffset = Offset.Zero
                                             isParticipantsExpanded = false
+                                            coroutineScope.launch {
+                                                cameraPositionState.animate(
+                                                    CameraUpdateFactory.newLatLngZoom(
+                                                        LatLng(member.mapPosition.latitude, member.mapPosition.longitude),
+                                                        15f
+                                                    )
+                                                )
+                                            }
                                         }
                                     )
                                 }
@@ -451,147 +517,175 @@ fun LiveTrackingMapScreen(
                 }
             }
 
-            // Full Live Map Viewport
-            BoxWithConstraints(
+            // Real Live Google Maps Viewport (maps-compose)
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
-                    .background(Color(0xFFEEF2F6))
-                    .pointerInput(isPickingDestinationOnMap, isPickingCheckpointOnMap, pendingCheckpointName) {
-                        if (isPickingDestinationOnMap || isPickingCheckpointOnMap) {
-                            detectTapGestures { tapOffset ->
-                                val xFrac = (tapOffset.x - mapOffset.x) / size.width.toFloat()
-                                val yFrac = (tapOffset.y - mapOffset.y) / size.height.toFloat()
-                                if (isPickingDestinationOnMap) {
-                                    onPickCustomDestination(xFrac, yFrac)
-                                } else if (isPickingCheckpointOnMap) {
-                                    if (pendingCheckpointName.isNotBlank()) {
-                                        onConfirmAddCheckpoint(pendingCheckpointName, xFrac, yFrac)
-                                        checkpointDraftName = ""
-                                    } else {
-                                        tappedCheckpointCoords = xFrac to yFrac
+            ) {
+                val waypoints = routeConfig.waypoints
+                val routeLatLngs = remember(waypoints) {
+                    waypoints.map { LatLng(it.latitude, it.longitude) }
+                }
+
+                GoogleMap(
+                    modifier = Modifier.fillMaxSize(),
+                    cameraPositionState = cameraPositionState,
+                    properties = MapProperties(
+                        mapType = mapType,
+                        isMyLocationEnabled = gpsStatus == GpsTrackingStatus.ACTIVE,
+                        isTrafficEnabled = true
+                    ),
+                    uiSettings = MapUiSettings(
+                        zoomControlsEnabled = false,
+                        myLocationButtonEnabled = false,
+                        compassEnabled = true
+                    ),
+                    onMapClick = { latLng ->
+                        if (isPickingDestinationOnMap) {
+                            onPickCustomDestinationLatLng(latLng.latitude, latLng.longitude)
+                        } else if (isPickingCheckpointOnMap) {
+                            if (pendingCheckpointName.isNotBlank()) {
+                                onConfirmAddCheckpointLatLng(
+                                    pendingCheckpointName,
+                                    latLng.latitude,
+                                    latLng.longitude
+                                )
+                                checkpointDraftName = ""
+                            } else {
+                                tappedCheckpointLatLng = latLng
+                            }
+                        }
+                    }
+                ) {
+                    if (routeLatLngs.size >= 2) {
+                        Polyline(
+                            points = routeLatLngs,
+                            color = Color.White,
+                            width = 16f
+                        )
+                        Polyline(
+                            points = routeLatLngs,
+                            color = Color(0xFF1D4ED8),
+                            width = 9f
+                        )
+                    }
+
+                    // Rest Area / Checkpoint Markers
+                    routeConfig.checkpoints.forEach { checkpoint ->
+                        val cpState = remember(checkpoint.id) {
+                            MarkerState(position = LatLng(checkpoint.latitude, checkpoint.longitude))
+                        }
+                        SideEffect {
+                            cpState.position = LatLng(checkpoint.latitude, checkpoint.longitude)
+                        }
+                        MarkerComposable(
+                            keys = arrayOf(checkpoint.id, checkpoint.name),
+                            state = cpState,
+                            anchor = Offset(0.5f, 1.0f)
+                        ) {
+                            RestCheckpointMapMarker(checkpoint = checkpoint)
+                        }
+                    }
+
+                    // Destination Flag Marker with Live ETA Badge
+                    val destPoint = waypoints.lastOrNull()
+                    if (destPoint != null) {
+                        val destState = remember {
+                            MarkerState(position = LatLng(destPoint.latitude, destPoint.longitude))
+                        }
+                        SideEffect {
+                            destState.position = LatLng(destPoint.latitude, destPoint.longitude)
+                        }
+                        MarkerComposable(
+                            keys = arrayOf(
+                                routeConfig.destinationName,
+                                etaInfo.arrivalClockLabel,
+                                etaInfo.distanceLabel
+                            ),
+                            state = destState,
+                            anchor = Offset(0.5f, 1.0f)
+                        ) {
+                            Column(
+                                modifier = Modifier.width(184.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Surface(shape = RoundedCornerShape(10.dp), color = Color(0xFF0F172A), shadowElevation = 4.dp) {
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                    ) {
+                                        Text(
+                                            text = "Tujuan: ${routeConfig.destinationName}",
+                                            style = MaterialTheme.typography.bodyMedium.copy(fontSize = 11.sp, fontWeight = FontWeight.SemiBold),
+                                            color = Color.White,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = if (etaInfo.isStopped) {
+                                                "ETA --:-- · ${etaInfo.distanceLabel}"
+                                            } else {
+                                                "ETA ${etaInfo.arrivalClockLabel} · ${etaInfo.durationLabel} · ${etaInfo.distanceLabel}"
+                                            },
+                                            fontFamily = FontFamily.Monospace,
+                                            fontSize = 10.sp,
+                                            color = Color(0xFF86EFAC),
+                                            maxLines = 1
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(3.dp))
+                                Surface(
+                                    shape = CircleShape,
+                                    color = Color(0xFF16A34A),
+                                    border = BorderStroke(2.dp, Color.White),
+                                    modifier = Modifier.size(30.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(Icons.Rounded.Flag, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
                                     }
                                 }
                             }
-                        } else {
-                            detectTransformGestures { _, pan, zoom, _ ->
-                                mapScale = (mapScale * zoom).coerceIn(0.85f, 2.2f)
-                                mapOffset = Offset(
-                                    x = (mapOffset.x + pan.x).coerceIn(-220f, 220f),
-                                    y = (mapOffset.y + pan.y).coerceIn(-220f, 220f)
-                                )
-                            }
                         }
                     }
-            ) {
-                val widthPx = constraints.maxWidth.toFloat()
-                val heightPx = constraints.maxHeight.toFloat()
-                val waypoints = routeConfig.waypoints
 
-                Canvas(modifier = Modifier.fillMaxSize()) {
-                    val step = 52.dp.toPx() * mapScale
-                    val offsetX = mapOffset.x % step
-                    val offsetY = mapOffset.y % step
-
-                    for (i in -2..((size.width / step).toInt() + 2)) {
-                        val x = i * step + offsetX
-                        drawLine(Color(0xFFDCE3EC), Offset(x, 0f), Offset(x, size.height), 1.dp.toPx())
-                    }
-                    for (j in -2..((size.height / step).toInt() + 2)) {
-                        val y = j * step + offsetY
-                        drawLine(Color(0xFFDCE3EC), Offset(0f, y), Offset(size.width, y), 1.dp.toPx())
-                    }
-
-                    if (waypoints.size >= 2) {
-                        val routePath = Path().apply {
-                            moveTo(waypoints.first().xFraction * size.width + mapOffset.x, waypoints.first().yFraction * size.height + mapOffset.y)
-                            for (i in 1 until waypoints.size) {
-                                lineTo(waypoints[i].xFraction * size.width + mapOffset.x, waypoints[i].yFraction * size.height + mapOffset.y)
-                            }
+                    // Convoy Member Live Markers
+                    members.forEach { member ->
+                        val memberState = remember(member.id) {
+                            MarkerState(
+                                position = LatLng(member.mapPosition.latitude, member.mapPosition.longitude)
+                            )
                         }
-                        drawPath(routePath, Color.White, style = Stroke(14.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
-                        drawPath(
-                            routePath,
-                            Color(0xFF1D4ED8),
-                            style = Stroke(5.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round, pathEffect = PathEffect.dashPathEffect(floatArrayOf(20f, 10f), 0f))
-                        )
-                    }
-                }
-
-                // Rest Area / Checkpoint Markers
-                routeConfig.checkpoints.forEach { checkpoint ->
-                    val cpX = (checkpoint.xFraction * widthPx + mapOffset.x).roundToInt()
-                    val cpY = (checkpoint.yFraction * heightPx + mapOffset.y).roundToInt()
-                    RestCheckpointMapMarker(
-                        checkpoint = checkpoint,
-                        modifier = Modifier.offset { IntOffset(cpX - 84, cpY - 54) }
-                    )
-                }
-
-                // Destination Flag Marker with Live ETA Badge
-                val destPoint = waypoints.lastOrNull()
-                if (destPoint != null) {
-                    val destX = (destPoint.xFraction * widthPx + mapOffset.x).roundToInt()
-                    val destY = (destPoint.yFraction * heightPx + mapOffset.y).roundToInt()
-                    Column(
-                        modifier = Modifier
-                            .offset { IntOffset(destX - 92, destY - 70) }
-                            .width(184.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Surface(shape = RoundedCornerShape(10.dp), color = Color(0xFF0F172A), shadowElevation = 4.dp) {
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                            ) {
-                                Text(
-                                    text = "Tujuan: ${routeConfig.destinationName}",
-                                    style = MaterialTheme.typography.bodyMedium.copy(fontSize = 11.sp, fontWeight = FontWeight.SemiBold),
-                                    color = Color.White,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Text(
-                                    text = if (etaInfo.isStopped) {
-                                        "ETA --:-- · ${etaInfo.distanceLabel}"
-                                    } else {
-                                        "ETA ${etaInfo.arrivalClockLabel} · ${etaInfo.durationLabel} · ${etaInfo.distanceLabel}"
-                                    },
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 10.sp,
-                                    color = Color(0xFF86EFAC),
-                                    maxLines = 1
-                                )
-                            }
+                        SideEffect {
+                            memberState.position = LatLng(member.mapPosition.latitude, member.mapPosition.longitude)
                         }
-                        Spacer(modifier = Modifier.height(3.dp))
-                        Surface(
-                            shape = CircleShape,
-                            color = Color(0xFF16A34A),
-                            border = BorderStroke(2.dp, Color.White),
-                            modifier = Modifier.size(30.dp)
+                        MarkerComposable(
+                            keys = arrayOf(
+                                member.id,
+                                member.mapPosition.latitude,
+                                member.mapPosition.longitude,
+                                member.id == focusedMember?.id,
+                                member.conditionStatus,
+                                member.isSweeper
+                            ),
+                            state = memberState,
+                            anchor = Offset(0.5f, 0.85f),
+                            onClick = {
+                                onSelectMember(member.id)
+                                true
+                            }
                         ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(Icons.Rounded.Flag, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
-                            }
+                            ConvoyMapMarker(
+                                member = member,
+                                isSelected = member.id == focusedMember?.id,
+                                isOffRoute = member.offRouteMeters > routeConfig.offRouteToleranceMeters,
+                                isStraggler = stragglerAlert.isTriggered && stragglerAlert.trailingMember?.id == member.id,
+                                isSosBeacon = member.conditionStatus == MemberConditionStatus.SOS || (sosState.isActive && sosState.senderId == member.id),
+                                onClick = { onSelectMember(member.id) }
+                            )
                         }
                     }
-                }
-
-                // Convoy Member Markers
-                members.forEach { member ->
-                    val markerX = (member.mapPosition.xFraction * widthPx + mapOffset.x).roundToInt().coerceIn(48, (widthPx - 48).roundToInt().coerceAtLeast(48))
-                    val markerY = (member.mapPosition.yFraction * heightPx + mapOffset.y).roundToInt().coerceIn(56, (heightPx - 36).roundToInt().coerceAtLeast(56))
-
-                    ConvoyMapMarker(
-                        member = member,
-                        isSelected = member.id == focusedMember?.id,
-                        isOffRoute = member.offRouteMeters > routeConfig.offRouteToleranceMeters,
-                        isStraggler = stragglerAlert.isTriggered && stragglerAlert.trailingMember?.id == member.id,
-                        isSosBeacon = member.conditionStatus == MemberConditionStatus.SOS || (sosState.isActive && sosState.senderId == member.id),
-                        onClick = { onSelectMember(member.id) },
-                        modifier = Modifier.offset { IntOffset(markerX - 96, markerY - 84) }
-                    )
                 }
 
                 // Map Tap Picking Hint
@@ -611,9 +705,9 @@ fun LiveTrackingMapScreen(
                             Text(
                                 text = if (isPickingCheckpointOnMap) {
                                     if (pendingCheckpointName.isNotBlank()) "Ketuk peta untuk menaruh: $pendingCheckpointName"
-                                    else "Ketuk di peta untuk lokasi Titik Istirahat"
+                                    else "Ketuk Google Map untuk lokasi Titik Istirahat"
                                 } else {
-                                    "Ketuk di peta untuk menetapkan Titik Tujuan baru"
+                                    "Ketuk Google Map untuk menetapkan Titik Tujuan baru"
                                 },
                                 color = Color.White,
                                 style = MaterialTheme.typography.bodyMedium,
@@ -631,26 +725,88 @@ fun LiveTrackingMapScreen(
                     }
                 }
 
-                // Top-Left Quick Simulation Triggers
+                // Top-Left GPS & Cloud Sync Status + Offline Sim Triggers
                 Column(
                     modifier = Modifier
                         .align(Alignment.TopStart)
                         .padding(12.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    FilterChip(
-                        selected = isOffRouteSimActive,
-                        onClick = onToggleOffRouteSim,
-                        label = { Text("Uji Keluar Jalur", fontSize = 11.sp) }
-                    )
-                    FilterChip(
-                        selected = isStragglerSimActive,
-                        onClick = onToggleStragglerSim,
-                        label = { Text("Uji Tertinggal", fontSize = 11.sp) }
-                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Surface(
+                            onClick = {
+                                if (gpsStatus == GpsTrackingStatus.DENIED) {
+                                    permissionLauncher.launch(
+                                        arrayOf(
+                                            Manifest.permission.ACCESS_FINE_LOCATION,
+                                            Manifest.permission.ACCESS_COARSE_LOCATION
+                                        )
+                                    )
+                                } else {
+                                    onRetryGps()
+                                }
+                            },
+                            shape = RoundedCornerShape(10.dp),
+                            color = when (gpsStatus) {
+                                GpsTrackingStatus.ACTIVE -> Color(0xE6059669)
+                                GpsTrackingStatus.DENIED -> Color(0xE6DC2626)
+                                else -> Color(0xCC0F172A)
+                            },
+                            contentColor = Color.White,
+                            shadowElevation = 3.dp
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(Icons.Rounded.GpsFixed, contentDescription = null, modifier = Modifier.size(13.dp))
+                                Text(
+                                    text = if (gpsStatus == GpsTrackingStatus.ACTIVE) {
+                                        "GPS ±${gpsAccuracyMeters}m"
+                                    } else {
+                                        gpsStatus.label
+                                    },
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+
+                        if (activeRoom?.isSyncedRoom == true) {
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = Color(0xE61D4ED8),
+                                contentColor = Color.White,
+                                shadowElevation = 3.dp
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(Icons.Rounded.CloudDone, contentDescription = null, modifier = Modifier.size(13.dp))
+                                    Text("Room Sync", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                                }
+                            }
+                        }
+                    }
+
+                    if (activeRoom?.isSyncedRoom != true) {
+                        FilterChip(
+                            selected = isOffRouteSimActive,
+                            onClick = onToggleOffRouteSim,
+                            label = { Text("Uji Keluar Jalur", fontSize = 11.sp) }
+                        )
+                        FilterChip(
+                            selected = isStragglerSimActive,
+                            onClick = onToggleStragglerSim,
+                            label = { Text("Uji Tertinggal", fontSize = 11.sp) }
+                        )
+                    }
                 }
 
-                // Top-Right Zoom & Center Controls
+                // Top-Right Layer, Zoom & Center Controls
                 Column(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
@@ -658,28 +814,56 @@ fun LiveTrackingMapScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     SmallFloatingActionButton(
-                        onClick = onToggleSimulation,
+                        onClick = {
+                            mapType = if (mapType == MapType.NORMAL) MapType.HYBRID else MapType.NORMAL
+                        },
                         containerColor = MaterialTheme.colorScheme.surface,
                         contentColor = MaterialTheme.colorScheme.primary
                     ) {
-                        Icon(if (isSimulationRunning) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, contentDescription = null)
+                        Icon(Icons.Rounded.Layers, contentDescription = "Ubah Lapisan Peta")
+                    }
+                    if (activeRoom?.isSyncedRoom != true) {
+                        SmallFloatingActionButton(
+                            onClick = onToggleSimulation,
+                            containerColor = MaterialTheme.colorScheme.surface,
+                            contentColor = MaterialTheme.colorScheme.primary
+                        ) {
+                            Icon(if (isSimulationRunning) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, contentDescription = null)
+                        }
                     }
                     SmallFloatingActionButton(
-                        onClick = { mapScale = (mapScale + 0.2f).coerceAtMost(2.2f) },
+                        onClick = {
+                            coroutineScope.launch {
+                                cameraPositionState.animate(CameraUpdateFactory.zoomIn())
+                            }
+                        },
                         containerColor = MaterialTheme.colorScheme.surface
                     ) {
                         Icon(Icons.Rounded.Add, contentDescription = "Perbesar")
                     }
                     SmallFloatingActionButton(
-                        onClick = { mapScale = (mapScale - 0.2f).coerceAtLeast(0.85f) },
+                        onClick = {
+                            coroutineScope.launch {
+                                cameraPositionState.animate(CameraUpdateFactory.zoomOut())
+                            }
+                        },
                         containerColor = MaterialTheme.colorScheme.surface
                     ) {
                         Icon(Icons.Rounded.Remove, contentDescription = "Perkecil")
                     }
                     SmallFloatingActionButton(
                         onClick = {
-                            mapScale = 1f
-                            mapOffset = Offset.Zero
+                            val target = trackedMember ?: currentUser
+                            if (target != null) {
+                                coroutineScope.launch {
+                                    cameraPositionState.animate(
+                                        CameraUpdateFactory.newLatLngZoom(
+                                            LatLng(target.mapPosition.latitude, target.mapPosition.longitude),
+                                            15f
+                                        )
+                                    )
+                                }
+                            }
                         },
                         containerColor = MaterialTheme.colorScheme.surface
                     ) {
@@ -872,12 +1056,12 @@ fun LiveTrackingMapScreen(
     }
 
     // Dialog naming a tapped Checkpoint if Leader tapped map without pre-entering name
-    if (tappedCheckpointCoords != null) {
-        val (xFrac, yFrac) = tappedCheckpointCoords!!
+    if (tappedCheckpointLatLng != null) {
+        val latLng = tappedCheckpointLatLng!!
         var dialogName by remember { mutableStateOf("") }
         AlertDialog(
             onDismissRequest = {
-                tappedCheckpointCoords = null
+                tappedCheckpointLatLng = null
                 onCancelPickCheckpoint()
             },
             icon = { Icon(Icons.Rounded.LocalCafe, contentDescription = null, tint = Color(0xFF0F766E)) },
@@ -906,8 +1090,12 @@ fun LiveTrackingMapScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        onConfirmAddCheckpoint(dialogName.ifBlank { "Rest Area Konvoi" }, xFrac, yFrac)
-                        tappedCheckpointCoords = null
+                        onConfirmAddCheckpointLatLng(
+                            dialogName.ifBlank { "Rest Area Konvoi" },
+                            latLng.latitude,
+                            latLng.longitude
+                        )
+                        tappedCheckpointLatLng = null
                     }
                 ) {
                     Text("Simpan & Broadcast")
@@ -916,7 +1104,7 @@ fun LiveTrackingMapScreen(
             dismissButton = {
                 TextButton(
                     onClick = {
-                        tappedCheckpointCoords = null
+                        tappedCheckpointLatLng = null
                         onCancelPickCheckpoint()
                     }
                 ) {
