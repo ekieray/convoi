@@ -242,12 +242,83 @@
         "destinationAddress",
         "createdAt"
       ]
+    },
+    "GlobalAppConfig": {
+      "title": "GlobalAppConfig",
+      "description": "Global application settings and operational controls managed from the Admin Backend.",
+      "type": "object",
+      "properties": {
+        "configId": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "defaultOffRouteToleranceMeters": { "type": "number" },
+        "defaultMaxStragglerDistanceMeters": { "type": "number" },
+        "defaultSoundAlertEnabled": { "type": "boolean" },
+        "maintenanceMode": { "type": "boolean" },
+        "maintenanceMessage": { "type": "string", "minLength": 0, "maxLength": 240 },
+        "announcementActive": { "type": "boolean" },
+        "announcementTitle": { "type": "string", "minLength": 0, "maxLength": 80 },
+        "announcementMessage": { "type": "string", "minLength": 0, "maxLength": 240 },
+        "allowGuestMode": { "type": "boolean" },
+        "allowNewRooms": { "type": "boolean" },
+        "updatedByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "configId",
+        "defaultOffRouteToleranceMeters",
+        "defaultMaxStragglerDistanceMeters",
+        "defaultSoundAlertEnabled",
+        "maintenanceMode",
+        "maintenanceMessage",
+        "announcementActive",
+        "announcementTitle",
+        "announcementMessage",
+        "allowGuestMode",
+        "allowNewRooms",
+        "updatedByUid",
+        "updatedAt"
+      ]
+    },
+    "UserPresence": {
+      "title": "UserPresence",
+      "description": "Real-time user online heartbeat and active convoy journey state for Admin Backend monitoring.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "fullName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "email": { "type": "string", "minLength": 0, "maxLength": 160 },
+        "platform": { "type": "string", "enum": ["web", "android"] },
+        "isTraveling": { "type": "boolean" },
+        "activeRoomId": { "type": "string", "minLength": 0, "maxLength": 32 },
+        "speedKmh": { "type": "number" },
+        "lastSeenAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "uid",
+        "fullName",
+        "email",
+        "platform",
+        "isTraveling",
+        "activeRoomId",
+        "speedKmh",
+        "lastSeenAt"
+      ]
+    },
+    "AdminUser": {
+      "title": "AdminUser",
+      "description": "Explicitly authorized admin operator record.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "email": { "type": "string", "minLength": 3, "maxLength": 160 },
+        "grantedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "grantedAt"]
     }
   },
   "firestore": {
     "/users/{userId}": {
       "schema": { "$ref": "#/entities/UserPrivateProfile" },
-      "description": "Owner-only private user profile with emergency contact details."
+      "description": "Owner-only private user profile with emergency contact details (plus Admin read access)."
     },
     "/users/{userId}/trips/{tripId}": {
       "schema": { "$ref": "#/entities/TripHistoryRecord" },
@@ -268,6 +339,18 @@
     "/rooms/{roomId}/messages/{messageId}": {
       "schema": { "$ref": "#/entities/RoomMessage" },
       "description": "Real-time convoy room chat, voice metadata, and system/SOS notifications."
+    },
+    "/app_config/{configId}": {
+      "schema": { "$ref": "#/entities/GlobalAppConfig" },
+      "description": "Global application configuration controlled by Admin Backend."
+    },
+    "/presence/{userId}": {
+      "schema": { "$ref": "#/entities/UserPresence" },
+      "description": "Real-time active user presence and traveling telemetry heartbeat."
+    },
+    "/admins/{adminId}": {
+      "schema": { "$ref": "#/entities/AdminUser" },
+      "description": "Authorized admin role allowlist."
     }
   }
 }

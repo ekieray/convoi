@@ -23,6 +23,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.automirrored.rounded.Login
 import androidx.compose.material.icons.rounded.AlternateEmail
+import androidx.compose.material.icons.rounded.Build
+import androidx.compose.material.icons.rounded.Campaign
 import androidx.compose.material.icons.rounded.Email
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Lock
@@ -73,6 +75,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.konvoiku.touring.model.AuthProviderType
+import com.konvoiku.touring.model.GlobalAppConfig
 import com.konvoiku.touring.ui.components.TouringDashboardCanvasBackdrop
 import com.konvoiku.touring.ui.components.TouringHeroAtmosphereHeader
 
@@ -83,6 +86,7 @@ fun LoginScreen(
     initialEmail: String = "",
     isAuthLoading: Boolean = false,
     authError: String? = null,
+    globalConfig: GlobalAppConfig = GlobalAppConfig(),
     onClearAuthError: () -> Unit = {},
     onEmailSignIn: (email: String, password: String) -> Unit = { _, _ -> },
     onEmailSignUp: (fullName: String, email: String, password: String) -> Unit = { _, _, _ -> },
@@ -176,6 +180,76 @@ fun LoginScreen(
                     title = if (isSignUpMode) "Daftar Akun KonvoiKu" else "Masuk ke KonvoiKu",
                     subtitle = "Masuk atau daftar dengan email, Google, Facebook, atau Instagram untuk menyinkronkan profil pengendara Anda."
                 )
+
+                if (globalConfig.maintenanceMode) {
+                    Surface(
+                        color = Color(0xFFFEF3C7),
+                        shape = RoundedCornerShape(16.dp),
+                        border = BorderStroke(1.dp, Color(0xFFF59E0B)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.Top
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Build,
+                                contentDescription = null,
+                                tint = Color(0xFFD97706),
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Column {
+                                Text(
+                                    text = "Mode Pemeliharaan Aktif",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp,
+                                    color = Color(0xFF92400E)
+                                )
+                                Text(
+                                    text = globalConfig.maintenanceMessage,
+                                    fontSize = 11.sp,
+                                    color = Color(0xFF92400E)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                if (globalConfig.announcementActive && globalConfig.announcementMessage.isNotBlank()) {
+                    Surface(
+                        color = Color(0xFFEFF6FF),
+                        shape = RoundedCornerShape(16.dp),
+                        border = BorderStroke(1.dp, Color(0xFFBFDBFE)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.Top
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Campaign,
+                                contentDescription = null,
+                                tint = Color(0xFF1D4ED8),
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Column {
+                                Text(
+                                    text = globalConfig.announcementTitle.ifBlank { "Info KonvoiKu" },
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp,
+                                    color = Color(0xFF1E3A8A)
+                                )
+                                Text(
+                                    text = globalConfig.announcementMessage,
+                                    fontSize = 11.sp,
+                                    color = Color(0xFF1E3A8A)
+                                )
+                            }
+                        }
+                    }
+                }
 
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -505,22 +579,32 @@ fun LoginScreen(
                             }
                         }
 
-                        OutlinedButton(
-                            onClick = {
-                                val guestName = fullName.trim().ifBlank { "Rider Tamu" }
-                                val guestEmail = email.trim().ifBlank { "tamu@konvoiku.id" }
-                                onLoginSuccess(guestName, guestEmail, true)
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(46.dp),
-                            shape = RoundedCornerShape(14.dp),
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
-                        ) {
+                        if (globalConfig.allowGuestMode) {
+                            OutlinedButton(
+                                onClick = {
+                                    val guestName = fullName.trim().ifBlank { "Rider Tamu" }
+                                    val guestEmail = email.trim().ifBlank { "tamu@konvoiku.id" }
+                                    onLoginSuccess(guestName, guestEmail, true)
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(46.dp),
+                                shape = RoundedCornerShape(14.dp),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+                            ) {
+                                Text(
+                                    text = "Masuk Cepat sebagai Tamu (Mode Lokal)",
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        } else {
                             Text(
-                                text = "Masuk Cepat sebagai Tamu (Mode Lokal)",
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.primary
+                                text = "Mode Tamu dinonaktifkan sementara oleh Admin Backend.",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.fillMaxWidth()
                             )
                         }
                     }

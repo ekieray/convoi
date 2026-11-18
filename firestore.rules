@@ -27,6 +27,17 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == userId;
     }
 
+    function isAdminEmail() {
+      return isSignedIn() &&
+        request.auth.token.email == 'ekie.ray@gmail.com' &&
+        request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      return isAdminEmail() ||
+        (isSignedIn() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)));
+    }
+
     function isValidRoomId(roomId) {
       return roomId is string && roomId.size() >= 4 && roomId.size() <= 32 && roomId.matches('^[A-Za-z0-9_\\-]+$');
     }
@@ -366,9 +377,99 @@ service cloud.firestore {
       data.createdAt is timestamp;
     }
 
-    // Owner-Only Private User Profile (PII isolated)
+    function isValidGlobalAppConfig(data, configId) {
+      return data.keys().hasAll([
+        'configId',
+        'defaultOffRouteToleranceMeters',
+        'defaultMaxStragglerDistanceMeters',
+        'defaultSoundAlertEnabled',
+        'maintenanceMode',
+        'maintenanceMessage',
+        'announcementActive',
+        'announcementTitle',
+        'announcementMessage',
+        'allowGuestMode',
+        'allowNewRooms',
+        'updatedByUid',
+        'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'configId',
+        'defaultOffRouteToleranceMeters',
+        'defaultMaxStragglerDistanceMeters',
+        'defaultSoundAlertEnabled',
+        'maintenanceMode',
+        'maintenanceMessage',
+        'announcementActive',
+        'announcementTitle',
+        'announcementMessage',
+        'allowGuestMode',
+        'allowNewRooms',
+        'updatedByUid',
+        'updatedAt'
+      ]) &&
+      data.configId is string && data.configId == configId && data.configId == 'global' &&
+      data.defaultOffRouteToleranceMeters is number &&
+      data.defaultOffRouteToleranceMeters >= 10 &&
+      data.defaultOffRouteToleranceMeters <= 5000 &&
+      data.defaultMaxStragglerDistanceMeters is number &&
+      data.defaultMaxStragglerDistanceMeters >= 100 &&
+      data.defaultMaxStragglerDistanceMeters <= 50000 &&
+      data.defaultSoundAlertEnabled is bool &&
+      data.maintenanceMode is bool &&
+      data.maintenanceMessage is string && data.maintenanceMessage.size() <= 240 &&
+      data.announcementActive is bool &&
+      data.announcementTitle is string && data.announcementTitle.size() <= 80 &&
+      data.announcementMessage is string && data.announcementMessage.size() <= 240 &&
+      data.allowGuestMode is bool &&
+      data.allowNewRooms is bool &&
+      data.updatedByUid is string && data.updatedByUid == request.auth.uid && data.updatedByUid.size() <= 128 &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidUserPresence(data, userId) {
+      return data.keys().hasAll([
+        'uid',
+        'fullName',
+        'email',
+        'platform',
+        'isTraveling',
+        'activeRoomId',
+        'speedKmh',
+        'lastSeenAt'
+      ]) &&
+      data.keys().hasOnly([
+        'uid',
+        'fullName',
+        'email',
+        'platform',
+        'isTraveling',
+        'activeRoomId',
+        'speedKmh',
+        'lastSeenAt'
+      ]) &&
+      data.uid is string && data.uid == userId && data.uid.size() >= 1 && data.uid.size() <= 128 &&
+      data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 80 &&
+      data.email is string && data.email.size() <= 160 &&
+      data.platform in ['web', 'android'] &&
+      data.isTraveling is bool &&
+      data.activeRoomId is string && data.activeRoomId.size() <= 32 &&
+      data.speedKmh is number && data.speedKmh >= 0 && data.speedKmh <= 350 &&
+      data.lastSeenAt is timestamp;
+    }
+
+    function isValidAdminEntry(data, adminId) {
+      return data.keys().hasAll(['uid', 'email', 'grantedAt']) &&
+      data.keys().hasOnly(['uid', 'email', 'grantedAt']) &&
+      data.uid is string && data.uid == adminId && data.uid.size() >= 1 && data.uid.size() <= 128 &&
+      data.email is string && data.email.size() >= 3 && data.email.size() <= 160 &&
+      data.grantedAt is timestamp;
+    }
+
+    // Owner-Only Private User Profile (PII isolated, plus Admin Backend read)
     match /users/{userId} {
-      allow get: if isValidId(userId) && isOwner(userId);
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdminEmail();
       allow create: if isValidId(userId) && isOwner(userId) &&
         isValidUserPrivateProfile(incoming(), userId) &&
         incoming().createdAt == request.time &&
@@ -393,21 +494,58 @@ service cloud.firestore {
           'avatarPreset',
           'updatedAt'
         ]);
-      allow delete: if isValidId(userId) && isOwner(userId);
+      allow delete: if isValidId(userId) && (isOwner(userId) || isAdmin());
 
       match /trips/{tripId} {
-        allow get: if isValidId(userId) && isValidId(tripId) && isOwner(userId);
-        allow list: if isValidId(userId) && isOwner(userId) && resource.data.ownerUid == request.auth.uid;
+        allow get: if isValidId(userId) && isValidId(tripId) && (isOwner(userId) || isAdmin());
+        allow list: if isValidId(userId) && (
+          (isOwner(userId) && resource.data.ownerUid == request.auth.uid) ||
+          isAdminEmail()
+        );
         allow create: if isValidId(userId) && isValidId(tripId) && isOwner(userId) &&
           isValidTripRecord(incoming(), userId) &&
           incoming().createdAt == request.time;
-        allow delete: if isValidId(userId) && isValidId(tripId) && isOwner(userId);
+        allow delete: if isValidId(userId) && isValidId(tripId) && (isOwner(userId) || isAdmin());
       }
+    }
+
+    // Global App Settings managed by Admin Backend
+    match /app_config/{configId} {
+      allow get: if isValidId(configId) && configId == 'global';
+      allow create: if isValidId(configId) && isAdmin() &&
+        isValidGlobalAppConfig(incoming(), configId) &&
+        incoming().updatedAt == request.time;
+      allow update: if isValidId(configId) && isAdmin() &&
+        isValidGlobalAppConfig(incoming(), configId) &&
+        incoming().configId == existing().configId &&
+        incoming().updatedAt == request.time;
+      allow delete: if false;
+    }
+
+    // Real-time User Online & Traveling Presence Heartbeat
+    match /presence/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdminEmail();
+      allow create, update: if isValidId(userId) && isOwner(userId) &&
+        isValidUserPresence(incoming(), userId) &&
+        incoming().lastSeenAt == request.time;
+      allow delete: if isValidId(userId) && (isOwner(userId) || isAdmin());
+    }
+
+    // Explicit Admin Operators Allowlist
+    match /admins/{adminId} {
+      allow get: if isValidId(adminId) && (isOwner(adminId) || isAdmin());
+      allow list: if isAdminEmail();
+      allow create, update: if isValidId(adminId) && isAdmin() &&
+        isValidAdminEntry(incoming(), adminId) &&
+        incoming().grantedAt == request.time;
+      allow delete: if isValidId(adminId) && isAdmin();
     }
 
     // Shared Convoy Rooms
     match /rooms/{roomId} {
       allow get: if isSignedIn() && isValidRoomId(roomId);
+      allow list: if isAdminEmail();
       allow create: if isSignedIn() && isValidRoomId(roomId) &&
         isValidConvoyRoom(incoming(), roomId) &&
         incoming().leaderUid == request.auth.uid &&
@@ -416,60 +554,66 @@ service cloud.firestore {
         incoming().updatedAt == request.time;
       allow update: if isSignedIn() && isValidRoomId(roomId) &&
         isValidConvoyRoom(incoming(), roomId) &&
-        existing().status == 'ACTIVE' &&
         incoming().roomId == existing().roomId &&
         incoming().leaderUid == existing().leaderUid &&
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time &&
         (
+          isAdmin() ||
           (
-            existing().leaderUid == request.auth.uid &&
-            incoming().diff(existing()).affectedKeys().hasOnly([
-              'destinationName',
-              'destinationAddress',
-              'destLat',
-              'destLng',
-              'originLat',
-              'originLng',
-              'encodedPolyline',
-              'totalRouteMeters',
-              'offRouteToleranceMeters',
-              'maxStragglerDistanceMeters',
-              'soundAlertEnabled',
-              'status',
-              'sosActive',
-              'sosSenderUid',
-              'sosSenderName',
-              'sosSenderVehicle',
-              'sosLat',
-              'sosLng',
-              'sosLocationText',
-              'sosTriggeredAtLabel',
-              'updatedAt'
-            ])
-          ) ||
-          (
-            incoming().diff(existing()).affectedKeys().hasOnly([
-              'sosActive',
-              'sosSenderUid',
-              'sosSenderName',
-              'sosSenderVehicle',
-              'sosLat',
-              'sosLng',
-              'sosLocationText',
-              'sosTriggeredAtLabel',
-              'updatedAt'
-            ]) &&
+            existing().status == 'ACTIVE' &&
             (
-              (incoming().sosActive == true && incoming().sosSenderUid == request.auth.uid) ||
-              (incoming().sosActive == false)
+              (
+                existing().leaderUid == request.auth.uid &&
+                incoming().diff(existing()).affectedKeys().hasOnly([
+                  'destinationName',
+                  'destinationAddress',
+                  'destLat',
+                  'destLng',
+                  'originLat',
+                  'originLng',
+                  'encodedPolyline',
+                  'totalRouteMeters',
+                  'offRouteToleranceMeters',
+                  'maxStragglerDistanceMeters',
+                  'soundAlertEnabled',
+                  'status',
+                  'sosActive',
+                  'sosSenderUid',
+                  'sosSenderName',
+                  'sosSenderVehicle',
+                  'sosLat',
+                  'sosLng',
+                  'sosLocationText',
+                  'sosTriggeredAtLabel',
+                  'updatedAt'
+                ])
+              ) ||
+              (
+                incoming().diff(existing()).affectedKeys().hasOnly([
+                  'sosActive',
+                  'sosSenderUid',
+                  'sosSenderName',
+                  'sosSenderVehicle',
+                  'sosLat',
+                  'sosLng',
+                  'sosLocationText',
+                  'sosTriggeredAtLabel',
+                  'updatedAt'
+                ]) &&
+                (
+                  (incoming().sosActive == true && incoming().sosSenderUid == request.auth.uid) ||
+                  (incoming().sosActive == false)
+                )
+              )
             )
           )
         );
+      allow delete: if isValidRoomId(roomId) && isAdmin();
 
       match /members/{memberId} {
-        allow get: if isSignedIn() && isValidRoomId(roomId) && isValidId(memberId) && roomExists(roomId);
-        allow list: if isSignedIn() && isValidRoomId(roomId) && resource.data.roomId == roomId;
+        allow get: if isSignedIn() && isValidRoomId(roomId) && isValidId(memberId) && (roomExists(roomId) || isAdmin());
+        allow list: if isSignedIn() && isValidRoomId(roomId) && (resource.data.roomId == roomId || isAdminEmail());
         allow create: if isSignedIn() && isValidRoomId(roomId) && isValidId(memberId) &&
           isRoomActive(roomId) &&
           request.auth.uid == memberId &&
@@ -489,6 +633,7 @@ service cloud.firestore {
           incoming().joinedAt == existing().joinedAt &&
           incoming().updatedAt == request.time &&
           (
+            isAdmin() ||
             (
               request.auth.uid == memberId &&
               incoming().isSweeper == existing().isSweeper &&
@@ -518,24 +663,24 @@ service cloud.firestore {
             )
           );
         allow delete: if isSignedIn() && isValidRoomId(roomId) && isValidId(memberId) &&
-          (request.auth.uid == memberId || isRoomLeader(roomId));
+          (request.auth.uid == memberId || isRoomLeader(roomId) || isAdmin());
       }
 
       match /checkpoints/{checkpointId} {
-        allow get: if isSignedIn() && isValidRoomId(roomId) && isValidId(checkpointId) && roomExists(roomId);
-        allow list: if isSignedIn() && isValidRoomId(roomId) && resource.data.roomId == roomId;
+        allow get: if isSignedIn() && isValidRoomId(roomId) && isValidId(checkpointId) && (roomExists(roomId) || isAdmin());
+        allow list: if isSignedIn() && isValidRoomId(roomId) && (resource.data.roomId == roomId || isAdminEmail());
         allow create: if isSignedIn() && isValidRoomId(roomId) && isValidId(checkpointId) &&
           isRoomActive(roomId) &&
-          isRoomLeader(roomId) &&
+          (isRoomLeader(roomId) || isAdmin()) &&
           isValidRoomCheckpoint(incoming(), roomId) &&
           incoming().createdAt == request.time;
         allow delete: if isSignedIn() && isValidRoomId(roomId) && isValidId(checkpointId) &&
-          isRoomLeader(roomId);
+          (isRoomLeader(roomId) || isAdmin());
       }
 
       match /messages/{messageId} {
-        allow get: if isSignedIn() && isValidRoomId(roomId) && isValidId(messageId) && roomExists(roomId);
-        allow list: if isSignedIn() && isValidRoomId(roomId) && resource.data.roomId == roomId;
+        allow get: if isSignedIn() && isValidRoomId(roomId) && isValidId(messageId) && (roomExists(roomId) || isAdmin());
+        allow list: if isSignedIn() && isValidRoomId(roomId) && (resource.data.roomId == roomId || isAdminEmail());
         allow create: if isSignedIn() && isValidRoomId(roomId) && isValidId(messageId) &&
           isRoomActive(roomId) &&
           isValidRoomMessage(incoming(), roomId) &&

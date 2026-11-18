@@ -9,12 +9,14 @@ import {
   Lock,
   Mail,
   MapPin,
+  Megaphone,
   Navigation,
   ShieldCheck,
   User as UserIcon,
   UserPlus,
+  Wrench,
 } from 'lucide-react';
-import { AuthProviderId } from '../../types/convoy';
+import { AuthProviderId, GlobalAppConfig } from '../../types/convoy';
 import {
   TouringCanvasBackdrop,
   TouringHeroBanner,
@@ -30,6 +32,7 @@ interface LoginViewProps {
   authInfoMessage?: string | null;
   initialName?: string;
   initialEmail?: string;
+  globalConfig?: GlobalAppConfig;
   onGoogleSignIn: () => void;
   onFacebookSignIn: () => void;
   onInstagramSignIn: () => void;
@@ -64,6 +67,7 @@ export function LoginView({
   authInfoMessage,
   initialName = '',
   initialEmail = '',
+  globalConfig,
   onGoogleSignIn,
   onFacebookSignIn,
   onInstagramSignIn,
@@ -177,6 +181,34 @@ export function LoginView({
             }
             subtitle="Sign Up atau Sign In untuk sinkronisasi profil pengendara dengan email, custom avatar, dan koordinasi konvoi real-time."
           />
+
+          {/* Global Backend Maintenance Banner */}
+          {globalConfig?.maintenanceMode && (
+            <div
+              role="alert"
+              className="rounded-[18px] bg-[#FEF3C7] dark:bg-[#451A03]/70 border border-[#F59E0B] px-3.5 py-3 flex items-start gap-2.5 text-xs text-[#92400E] dark:text-[#FCD34D]"
+            >
+              <Wrench className="w-4 h-4 shrink-0 mt-0.5 text-[#D97706]" />
+              <div>
+                <p className="font-bold">Mode Pemeliharaan Sistem Aktif</p>
+                <p className="mt-0.5 leading-relaxed">
+                  {globalConfig.maintenanceMessage ||
+                    'Aplikasi sedang dalam pemeliharaan berkala. Hanya admin terverifikasi yang memiliki akses penuh.'}
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Global Backend Announcement Banner */}
+          {globalConfig?.announcementActive && globalConfig?.announcementMessage && (
+            <div className="rounded-[18px] bg-[#EFF6FF] dark:bg-[#1E3A8A]/40 border border-[#BFDBFE] dark:border-[#2563EB] px-3.5 py-3 flex items-start gap-2.5 text-xs text-[#1E3A8A] dark:text-[#DBEAFE]">
+              <Megaphone className="w-4 h-4 shrink-0 mt-0.5 text-[#1D4ED8] dark:text-[#60A5FA]" />
+              <div>
+                <p className="font-bold">{globalConfig.announcementTitle || 'Info KonvoiKu'}</p>
+                <p className="mt-0.5 leading-relaxed">{globalConfig.announcementMessage}</p>
+              </div>
+            </div>
+          )}
 
           {/* Active Session Card */}
           {hasActiveAccount && (
@@ -500,50 +532,56 @@ export function LoginView({
           </div>
 
           {/* Collapsible Local Quick Entry */}
-          <div className="rounded-[18px] bg-white dark:bg-[#131B26] border border-[#E2E8F0] dark:border-[#2D3A4F] p-3.5 space-y-3">
-            <button
-              type="button"
-              onClick={() => setShowQuickLocal((prev) => !prev)}
-              className="w-full flex items-center justify-between text-left cursor-pointer"
-            >
-              <div>
-                <p className="text-xs font-bold text-[#0F172A] dark:text-white">
-                  Masuk Cepat Mode Lokal / Tamu
-                </p>
-                <p className="text-[11px] text-[#64748B] dark:text-[#94A3B8]">
-                  Simpan & pulihkan profil lokal berdasarkan email tanpa cloud
-                </p>
-              </div>
-              <span className="text-xs font-semibold text-[#1D4ED8] dark:text-[#93C5FD]">
-                {showQuickLocal ? 'Tutup' : 'Buka'}
-              </span>
-            </button>
+          {globalConfig?.allowGuestMode !== false ? (
+            <div className="rounded-[18px] bg-white dark:bg-[#131B26] border border-[#E2E8F0] dark:border-[#2D3A4F] p-3.5 space-y-3">
+              <button
+                type="button"
+                onClick={() => setShowQuickLocal((prev) => !prev)}
+                className="w-full flex items-center justify-between text-left cursor-pointer"
+              >
+                <div>
+                  <p className="text-xs font-bold text-[#0F172A] dark:text-white">
+                    Masuk Cepat Mode Lokal / Tamu
+                  </p>
+                  <p className="text-[11px] text-[#64748B] dark:text-[#94A3B8]">
+                    Simpan & pulihkan profil lokal berdasarkan email tanpa cloud
+                  </p>
+                </div>
+                <span className="text-xs font-semibold text-[#1D4ED8] dark:text-[#93C5FD]">
+                  {showQuickLocal ? 'Tutup' : 'Buka'}
+                </span>
+              </button>
 
-            {showQuickLocal && (
-              <form onSubmit={handleQuickLocalSubmit} className="space-y-2.5 pt-1">
-                <input
-                  type="text"
-                  value={quickName}
-                  onChange={(e) => setQuickName(e.target.value)}
-                  placeholder="Nama Pengendara (mis. Kang Ekie)"
-                  className="w-full min-h-[42px] px-3.5 py-2 rounded-xl bg-[#F8FAFC] dark:bg-[#0F172A] border border-[#CBD5E1] dark:border-[#334155] text-sm focus:outline-none focus:ring-2 focus:ring-[#1D4ED8]"
-                />
-                <input
-                  type="email"
-                  value={quickEmail}
-                  onChange={(e) => setQuickEmail(e.target.value)}
-                  placeholder="Email profil lokal (opsional, untuk sinkronisasi)"
-                  className="w-full min-h-[42px] px-3.5 py-2 rounded-xl bg-[#F8FAFC] dark:bg-[#0F172A] border border-[#CBD5E1] dark:border-[#334155] text-sm focus:outline-none focus:ring-2 focus:ring-[#1D4ED8]"
-                />
-                <button
-                  type="submit"
-                  className="w-full min-h-[44px] px-4 py-2.5 rounded-xl border border-[#1D4ED8] text-[#1D4ED8] dark:text-[#93C5FD] text-xs font-semibold hover:bg-[#EFF6FF] dark:hover:bg-[#1E3A8A]/30 transition-colors cursor-pointer"
-                >
-                  Lanjutkan Mode Lokal
-                </button>
-              </form>
-            )}
-          </div>
+              {showQuickLocal && (
+                <form onSubmit={handleQuickLocalSubmit} className="space-y-2.5 pt-1">
+                  <input
+                    type="text"
+                    value={quickName}
+                    onChange={(e) => setQuickName(e.target.value)}
+                    placeholder="Nama Pengendara (mis. Kang Ekie)"
+                    className="w-full min-h-[42px] px-3.5 py-2 rounded-xl bg-[#F8FAFC] dark:bg-[#0F172A] border border-[#CBD5E1] dark:border-[#334155] text-sm focus:outline-none focus:ring-2 focus:ring-[#1D4ED8]"
+                  />
+                  <input
+                    type="email"
+                    value={quickEmail}
+                    onChange={(e) => setQuickEmail(e.target.value)}
+                    placeholder="Email profil lokal (opsional, untuk sinkronisasi)"
+                    className="w-full min-h-[42px] px-3.5 py-2 rounded-xl bg-[#F8FAFC] dark:bg-[#0F172A] border border-[#CBD5E1] dark:border-[#334155] text-sm focus:outline-none focus:ring-2 focus:ring-[#1D4ED8]"
+                  />
+                  <button
+                    type="submit"
+                    className="w-full min-h-[44px] px-4 py-2.5 rounded-xl border border-[#1D4ED8] text-[#1D4ED8] dark:text-[#93C5FD] text-xs font-semibold hover:bg-[#EFF6FF] dark:hover:bg-[#1E3A8A]/30 transition-colors cursor-pointer"
+                  >
+                    Lanjutkan Mode Lokal
+                  </button>
+                </form>
+              )}
+            </div>
+          ) : (
+            <div className="rounded-[18px] bg-[#F8FAFC] dark:bg-[#131B26] border border-dashed border-[#CBD5E1] dark:border-[#334155] p-3.5 text-[11px] text-[#64748B] dark:text-[#94A3B8]">
+              Mode Tamu dinonaktifkan sementara oleh Admin Backend. Silakan masuk menggunakan Google, Facebook, atau Email.
+            </div>
+          )}
 
           {/* Key Features Overview */}
           <div className="rounded-[18px] bg-white dark:bg-[#131B26] border border-[#E2E8F0] dark:border-[#2D3A4F] p-3.5 space-y-2">

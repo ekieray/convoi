@@ -469,6 +469,64 @@ private fun escapeXml(input: String): String =
 private fun escapeJson(input: String): String =
     input.replace("\\", "\\\\").replace("\"", "\\\"")
 
+data class GlobalAppConfig(
+    val configId: String = "global",
+    val defaultOffRouteToleranceMeters: Int = 75,
+    val defaultMaxStragglerDistanceMeters: Int = 1000,
+    val defaultSoundAlertEnabled: Boolean = true,
+    val maintenanceMode: Boolean = false,
+    val maintenanceMessage: String = "Aplikasi sedang dalam pemeliharaan berkala. Mohon tunggu beberapa saat.",
+    val announcementActive: Boolean = false,
+    val announcementTitle: String = "Info KonvoiKu",
+    val announcementMessage: String = "",
+    val allowGuestMode: Boolean = true,
+    val allowNewRooms: Boolean = true,
+    val updatedAtLabel: String = ""
+)
+
+data class UserPresenceInfo(
+    val uid: String,
+    val fullName: String,
+    val email: String,
+    val platform: String,
+    val isTraveling: Boolean,
+    val activeRoomId: String,
+    val speedKmh: Int,
+    val lastSeenMs: Long,
+    val lastSeenLabel: String
+)
+
+data class AdminUserSummary(
+    val uid: String,
+    val fullName: String,
+    val email: String,
+    val authProvider: AuthProviderType,
+    val clubName: String,
+    val homeCity: String,
+    val vehicleType: VehicleType,
+    val vehicleDetail: String,
+    val licensePlate: String,
+    val avatarPreset: AvatarPreset,
+    val avatarPhotoUri: String? = null,
+    val updatedAtLabel: String = "-"
+)
+
+data class AdminRoomOverview(
+    val roomId: String,
+    val roomTitle: String,
+    val leaderUid: String,
+    val destinationName: String,
+    val status: String,
+    val sosActive: Boolean,
+    val sosSenderName: String,
+    val offRouteToleranceMeters: Int,
+    val maxStragglerDistanceMeters: Int,
+    val createdAtLabel: String,
+    val updatedAtMs: Long,
+    val updatedAtLabel: String,
+    val members: List<ConvoyMember> = emptyList()
+)
+
 data class TourRoom(
     val roomId: String,
     val roomTitle: String,
@@ -515,5 +573,12 @@ data class ConvoyUiState(
     val isAuthLoading: Boolean = false,
     val authError: String? = null,
     val isSavingProfile: Boolean = false,
-    val profileSyncMessage: String? = null
+    val profileSyncMessage: String? = null,
+    val globalConfig: GlobalAppConfig = GlobalAppConfig(),
+    val adminPresenceList: List<UserPresenceInfo> = emptyList(),
+    val adminRooms: List<AdminRoomOverview> = emptyList(),
+    val adminUsers: List<AdminUserSummary> = emptyList(),
+    val adminMonitorError: String? = null,
+    val isSavingGlobalConfig: Boolean = false,
+    val globalConfigFeedback: String? = null
 )

@@ -13,6 +13,7 @@ import com.konvoiku.touring.model.ConnectionStatus
 import com.konvoiku.touring.model.ConvoyMember
 import com.konvoiku.touring.model.ConvoyRouteConfig
 import com.konvoiku.touring.model.ConvoyUiState
+import com.konvoiku.touring.model.GlobalAppConfig
 import com.konvoiku.touring.model.GpsTrackingStatus
 import com.konvoiku.touring.model.MapPosition
 import com.konvoiku.touring.model.MemberConditionStatus
@@ -61,7 +62,10 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
 
     private var voiceTimerJob: Job? = null
     private var gpsJob: Job? = null
+    private var presenceJob: Job? = null
     private var roomUnsubscribe: (() -> Unit)? = null
+    private var configUnsubscribe: (() -> Unit)? = null
+    private var adminMonitorUnsubscribe: (() -> Unit)? = null
     private var lastTelemetrySentMs = 0L
 
     private data class SimTemplate(
@@ -158,6 +162,8 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
             )
         }
         restoreSessionAndProfile()
+        subscribeToGlobalConfig()
+        startPresenceHeartbeatLoop()
         startLiveMapTicker()
         if (gpsTracker.hasLocationPermission()) {
             startGpsTracking()
@@ -167,6 +173,9 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
     override fun onCleared() {
         super.onCleared()
         roomUnsubscribe?.invoke()
+        configUnsubscribe?.invoke()
+        adminMonitorUnsubscribe?.invoke()
+        presenceJob?.cancel()
         gpsJob?.cancel()
     }
 
@@ -511,6 +520,7 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
                         vehicleProfile = merged
                     )
                 }
+                pushPresenceSnapshotNow()
                 onSuccess()
             } else {
                 _uiState.update {
@@ -570,6 +580,7 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
                         vehicleProfile = syncedProfile
                     )
                 }
+                pushPresenceSnapshotNow()
                 onSuccess()
             } else {
                 _uiState.update {
@@ -629,6 +640,7 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
                 val uid = syncRepo.ensureSignedInUid()
                 if (uid != null) {
                     syncRepo.saveUserPrivateProfile(uid, merged)
+                    pushPresenceSnapshotNow()
                 }
             }
         }
@@ -745,11 +757,13 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
                 vehicleProfile = merged
             )
         }
+        pushPresenceSnapshotNow()
     }
 
     fun logoutUser() {
         roomUnsubscribe?.invoke()
         roomUnsubscribe = null
+        stopAdminMonitoring()
         syncRepo.signOutAuth()
         clearActiveSession()
         _uiState.update { state ->
@@ -801,6 +815,12 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
 
     fun createNewTourRoom(customTitle: String = "Konvoi Touring Akhir Pekan") {
         val state = _uiState.value
+        if (!state.globalConfig.allowNewRooms && !syncRepo.isVerifiedAdminSession()) {
+            _uiState.update {
+                it.copy(authError = "Pembuatan room baru sedang dijeda sementara oleh Admin Backend.")
+            }
+            return
+        }
         val profile = state.vehicleProfile
         val routeConfig = state.routeConfig
         val roomCode = generateUniqueRoomId()
@@ -839,13 +859,16 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
                             )
                         }
                         attachRoomSubscription(roomCode, uid)
+                        pushPresenceSnapshotNow()
                         return@launch
                     }
                 }
                 createLocalDemoRoom(roomCode, customTitle, mockLink, startLat, startLng)
+                pushPresenceSnapshotNow()
             }
         } else {
             createLocalDemoRoom(roomCode, customTitle, mockLink, startLat, startLng)
+            pushPresenceSnapshotNow()
         }
     }
 
@@ -1055,6 +1078,7 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
                             )
                         }
                         attachRoomSubscription(extractedId, uid)
+                        pushPresenceSnapshotNow()
                         onSuccess()
                         return@launch
                     } else {
@@ -1968,6 +1992,7 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
                 sosState = SosEmergencyState()
             )
         }
+        pushPresenceSnapshotNow()
         return record
     }
 
@@ -2035,6 +2060,168 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
             )
         )
     )
+
+    private fun subscribeToGlobalConfig() {
+        configUnsubscribe?.invoke()
+        configUnsubscribe = syncRepo.subscribeToGlobalAppConfig { cfg ->
+            _uiState.update { state ->
+                val updatedRoute = if (state.activeRoom == null) {
+                    state.routeConfig.copy(
+                        offRouteToleranceMeters = cfg.defaultOffRouteToleranceMeters,
+                        maxStragglerDistanceMeters = cfg.defaultMaxStragglerDistanceMeters,
+                        soundAlertEnabled = cfg.defaultSoundAlertEnabled
+                    )
+                } else {
+                    state.routeConfig
+                }
+                state.copy(
+                    globalConfig = cfg,
+                    routeConfig = updatedRoute
+                )
+            }
+        }
+    }
+
+    private fun startPresenceHeartbeatLoop() {
+        presenceJob?.cancel()
+        presenceJob = viewModelScope.launch {
+            while (isActive) {
+                pushPresenceSnapshotNow()
+                delay(30_000L)
+            }
+        }
+    }
+
+    private fun pushPresenceSnapshotNow() {
+        if (!syncRepo.isAvailable()) return
+        val state = _uiState.value
+        val uid = syncRepo.currentUid() ?: return
+        if (!state.isLoggedIn && state.activeRoom == null) return
+        val selfMember = state.activeRoom?.members?.firstOrNull { it.isCurrentUser }
+        val speed = selfMember?.mapPosition?.speedKmh ?: 0
+        val name = state.vehicleProfile.fullName.ifBlank { state.authUserName }.ifBlank { "Rider KonvoiKu" }
+        val email = state.vehicleProfile.email.ifBlank { state.authUserEmail }
+        syncRepo.publishUserPresence(
+            uid = uid,
+            fullName = name,
+            email = email,
+            isTraveling = state.activeRoom != null,
+            activeRoomId = state.activeRoom?.roomId.orEmpty(),
+            speedKmh = speed
+        )
+    }
+
+    fun isAdminEmailSession(): Boolean {
+        val state = _uiState.value
+        return syncRepo.isAdminEmail(state.authUserEmail.ifBlank { state.vehicleProfile.email })
+    }
+
+    fun isVerifiedAdminSession(): Boolean = syncRepo.isVerifiedAdminSession()
+
+    fun startAdminMonitoring() {
+        if (!syncRepo.isVerifiedAdminSession()) {
+            _uiState.update {
+                it.copy(
+                    adminMonitorError = "Masuk dengan akun terverifikasi ekie.ray@gmail.com untuk membaca monitoring realtime."
+                )
+            }
+            return
+        }
+        adminMonitorUnsubscribe?.invoke()
+        _uiState.update { it.copy(adminMonitorError = null) }
+        adminMonitorUnsubscribe = syncRepo.subscribeToAdminMonitoring(
+            onPresence = { list ->
+                _uiState.update { it.copy(adminPresenceList = list) }
+            },
+            onRooms = { rooms ->
+                _uiState.update { it.copy(adminRooms = rooms) }
+            },
+            onUsers = { users ->
+                _uiState.update { it.copy(adminUsers = users) }
+            },
+            onError = { msg ->
+                _uiState.update { it.copy(adminMonitorError = msg) }
+            }
+        )
+    }
+
+    fun stopAdminMonitoring() {
+        adminMonitorUnsubscribe?.invoke()
+        adminMonitorUnsubscribe = null
+    }
+
+    fun clearGlobalConfigFeedback() {
+        _uiState.update { it.copy(globalConfigFeedback = null) }
+    }
+
+    fun saveGlobalConfig(config: GlobalAppConfig) {
+        val uid = syncRepo.currentUid()
+        if (uid == null || !syncRepo.isVerifiedAdminSession()) {
+            _uiState.update {
+                it.copy(globalConfigFeedback = "Akses ditolak: perlu akun admin ekie.ray@gmail.com terverifikasi.")
+            }
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update { it.copy(isSavingGlobalConfig = true, globalConfigFeedback = null) }
+            val result = syncRepo.saveGlobalAppConfig(uid, config)
+            _uiState.update { state ->
+                state.copy(
+                    isSavingGlobalConfig = false,
+                    globalConfigFeedback = if (result.isSuccess) {
+                        "Pengaturan global berhasil disimpan ke backend & langsung diterapkan."
+                    } else {
+                        "Gagal menyimpan pengaturan: ${result.exceptionOrNull()?.message ?: "Coba lagi"}"
+                    }
+                )
+            }
+        }
+    }
+
+    fun adminToggleRoomStatus(roomId: String, currentStatus: String) {
+        viewModelScope.launch {
+            val nextStatus = if (currentStatus == "ACTIVE") "FINISHED" else "ACTIVE"
+            val result = syncRepo.adminSetRoomStatus(roomId, nextStatus)
+            if (result.isFailure) {
+                _uiState.update {
+                    it.copy(adminMonitorError = "Gagal ubah status room $roomId: ${result.exceptionOrNull()?.message}")
+                }
+            }
+        }
+    }
+
+    fun adminResolveSos(roomId: String) {
+        viewModelScope.launch {
+            val result = syncRepo.adminResolveRoomSos(roomId)
+            if (result.isFailure) {
+                _uiState.update {
+                    it.copy(adminMonitorError = "Gagal reset SOS room $roomId: ${result.exceptionOrNull()?.message}")
+                }
+            }
+        }
+    }
+
+    fun adminRemoveRoomMember(roomId: String, memberUid: String) {
+        viewModelScope.launch {
+            val result = syncRepo.adminRemoveMember(roomId, memberUid)
+            if (result.isFailure) {
+                _uiState.update {
+                    it.copy(adminMonitorError = "Gagal mengeluarkan anggota: ${result.exceptionOrNull()?.message}")
+                }
+            }
+        }
+    }
+
+    fun adminDeleteRoom(roomId: String) {
+        viewModelScope.launch {
+            val result = syncRepo.adminDeleteRoom(roomId)
+            if (result.isFailure) {
+                _uiState.update {
+                    it.copy(adminMonitorError = "Gagal menghapus room $roomId: ${result.exceptionOrNull()?.message}")
+                }
+            }
+        }
+    }
 
     private fun generateUniqueRoomId(): String {
         val chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"

@@ -14,6 +14,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.konvoiku.touring.model.UserRole
 import com.konvoiku.touring.ui.screens.AboutAppScreen
+import com.konvoiku.touring.ui.screens.AdminBackendScreen
 import com.konvoiku.touring.ui.screens.CustomizeProfileScreen
 import com.konvoiku.touring.ui.screens.JoinTourScreen
 import com.konvoiku.touring.ui.screens.LiveTrackingMapScreen
@@ -29,6 +30,7 @@ sealed class ConvoyRoute(val route: String) {
     data object Login : ConvoyRoute("login")
     data object RoleSelection : ConvoyRoute("role_selection")
     data object CustomizeProfile : ConvoyRoute("customize_profile")
+    data object AdminBackend : ConvoyRoute("admin_backend")
     data object VehicleProfile : ConvoyRoute("vehicle_profile")
     data object TourLeader : ConvoyRoute("tour_leader")
     data object JoinTour : ConvoyRoute("join_tour")
@@ -79,6 +81,7 @@ fun ConvoyNavGraph(
                 initialEmail = uiState.authUserEmail,
                 isAuthLoading = uiState.isAuthLoading,
                 authError = uiState.authError,
+                globalConfig = uiState.globalConfig,
                 onClearAuthError = viewModel::clearAuthError,
                 onEmailSignIn = { email, password ->
                     viewModel.signInWithEmail(email, password) {
@@ -124,6 +127,8 @@ fun ConvoyNavGraph(
                 authProvider = uiState.authProvider,
                 userProfile = uiState.vehicleProfile,
                 isGuestMode = uiState.isGuestMode,
+                globalConfig = uiState.globalConfig,
+                isAdminUser = viewModel.isAdminEmailSession(),
                 onRoleSelected = { role ->
                     viewModel.selectRole(role)
                     navController.navigate(ConvoyRoute.VehicleProfile.route)
@@ -139,6 +144,10 @@ fun ConvoyNavGraph(
                     viewModel.clearProfileSyncMessage()
                     navController.navigate(ConvoyRoute.CustomizeProfile.route)
                 },
+                onOpenAdminBackend = {
+                    viewModel.clearGlobalConfigFeedback()
+                    navController.navigate(ConvoyRoute.AdminBackend.route)
+                },
                 onOpenTripHistory = {
                     navController.navigate(ConvoyRoute.TripHistory.route)
                 },
@@ -151,6 +160,28 @@ fun ConvoyNavGraph(
                         popUpTo(0) { inclusive = true }
                     }
                 }
+            )
+        }
+
+        composable(ConvoyRoute.AdminBackend.route) {
+            AdminBackendScreen(
+                isVerifiedAdmin = viewModel.isVerifiedAdminSession(),
+                authUserEmail = uiState.authUserEmail,
+                globalConfig = uiState.globalConfig,
+                presenceList = uiState.adminPresenceList,
+                rooms = uiState.adminRooms,
+                users = uiState.adminUsers,
+                monitorError = uiState.adminMonitorError,
+                isSavingConfig = uiState.isSavingGlobalConfig,
+                configFeedback = uiState.globalConfigFeedback,
+                onStartMonitoring = viewModel::startAdminMonitoring,
+                onStopMonitoring = viewModel::stopAdminMonitoring,
+                onSaveGlobalConfig = viewModel::saveGlobalConfig,
+                onToggleRoomStatus = viewModel::adminToggleRoomStatus,
+                onResolveRoomSos = viewModel::adminResolveSos,
+                onRemoveRoomMember = viewModel::adminRemoveRoomMember,
+                onDeleteRoom = viewModel::adminDeleteRoom,
+                onBack = { navController.popBackStack() }
             )
         }
 

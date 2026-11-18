@@ -1,5 +1,5 @@
-import { ArrowRight, BadgeCheck, Bike, Car, History, Info, Link2, LogOut, Navigation, UserCog, Users } from 'lucide-react';
-import { AuthProviderId, TourRoom, UserRole, VehicleProfile } from '../../types/convoy';
+import { ArrowRight, BadgeCheck, Bike, Car, History, Info, Link2, LogOut, Megaphone, Navigation, ShieldCheck, UserCog, Users, Wrench } from 'lucide-react';
+import { AuthProviderId, GlobalAppConfig, TourRoom, UserRole, VehicleProfile } from '../../types/convoy';
 import { ConvoyAvatar } from '../ConvoyAvatar';
 import {
   TouringCanvasBackdrop,
@@ -17,9 +17,12 @@ interface RoleSelectionViewProps {
   userProfile?: VehicleProfile;
   localUserName?: string | null;
   isSigningIn?: boolean;
+  globalConfig?: GlobalAppConfig;
+  isAdminUser?: boolean;
   onGoogleSignIn: () => void;
   onGoogleSignOut: () => void;
   onOpenCustomizeProfile: () => void;
+  onOpenAdminBackend?: () => void;
   onSelectRole: (role: UserRole) => void;
   onResumeCurrentConvoy: () => void;
   onOpenTripHistory: () => void;
@@ -45,14 +48,18 @@ export function RoleSelectionView({
   userProfile,
   localUserName,
   isSigningIn,
+  globalConfig,
+  isAdminUser = false,
   onGoogleSignIn,
   onGoogleSignOut,
   onOpenCustomizeProfile,
+  onOpenAdminBackend,
   onSelectRole,
   onResumeCurrentConvoy,
   onOpenTripHistory,
   onOpenAboutApp,
 }: RoleSelectionViewProps) {
+  const roomCreationPaused = globalConfig?.allowNewRooms === false && !isAdminUser;
   const activeTourName = activeRoom?.roomTitle || 'Konvoi Puncak Pass Weekend';
   const activeMemberCount = activeRoom?.members.length ?? 4;
   const activeStatus = activeRoom ? 'Sedang Berjalan' : 'Siap Bergabung';
@@ -108,6 +115,30 @@ export function RoleSelectionView({
             title="Dashboard Konvoi Touring"
             subtitle="Koordinasi perjalanan mobil dan motor secara real-time dengan GPS, Google Maps & Sinkronisasi Room."
           />
+
+          {/* Backend Maintenance & Announcement Banners */}
+          {globalConfig?.maintenanceMode && (
+            <div className="rounded-[18px] bg-[#FEF3C7] dark:bg-[#451A03]/70 border border-[#F59E0B] px-3.5 py-3 flex items-start gap-2.5 text-xs text-[#92400E] dark:text-[#FCD34D]">
+              <Wrench className="w-4 h-4 shrink-0 mt-0.5 text-[#D97706]" />
+              <div>
+                <p className="font-bold">Mode Pemeliharaan Aktif</p>
+                <p className="mt-0.5 leading-relaxed">
+                  {globalConfig.maintenanceMessage ||
+                    'Sistem sedang dalam pemeliharaan oleh Admin.'}
+                </p>
+              </div>
+            </div>
+          )}
+
+          {globalConfig?.announcementActive && globalConfig?.announcementMessage && (
+            <div className="rounded-[18px] bg-[#EFF6FF] dark:bg-[#1E3A8A]/40 border border-[#BFDBFE] dark:border-[#2563EB] px-3.5 py-3 flex items-start gap-2.5 text-xs text-[#1E3A8A] dark:text-[#DBEAFE]">
+              <Megaphone className="w-4 h-4 shrink-0 mt-0.5 text-[#1D4ED8] dark:text-[#60A5FA]" />
+              <div>
+                <p className="font-bold">{globalConfig.announcementTitle || 'Info KonvoiKu'}</p>
+                <p className="mt-0.5 leading-relaxed">{globalConfig.announcementMessage}</p>
+              </div>
+            </div>
+          )}
 
           {/* Account & Customize Profile Card */}
           <div className="rounded-[18px] bg-white dark:bg-[#131B26] border border-[#E2E8F0] dark:border-[#2D3A4F] p-3.5 space-y-3 shadow-xs">
@@ -171,6 +202,26 @@ export function RoleSelectionView({
             </div>
           </div>
 
+          {/* Admin Backend Console Quick Access (Only for ekie.ray@gmail.com) */}
+          {isAdminUser && onOpenAdminBackend && (
+            <button
+              type="button"
+              onClick={onOpenAdminBackend}
+              className="w-full text-left rounded-[20px] bg-gradient-to-r from-[#1E3A8A] to-[#0F172A] text-white border border-[#3B82F6]/50 p-4 shadow-sm flex items-center gap-3 hover:opacity-95 active:scale-[0.99] transition-all cursor-pointer"
+            >
+              <div className="w-11 h-11 rounded-[13px] bg-white/15 flex items-center justify-center shrink-0">
+                <ShieldCheck className="w-5 h-5 text-[#93C5FD]" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-bold truncate">Admin Backend Console</p>
+                <p className="text-[11px] text-[#CBD5E1] truncate">
+                  Pantau user aktif, room berjalan, &amp; atur konfigurasi global
+                </p>
+              </div>
+              <ArrowRight className="w-4 h-4 text-[#93C5FD] shrink-0" />
+            </button>
+          )}
+
           {/* Card Header 1: Mulai Konvoi Baru */}
           <div className="rounded-[22px] bg-white dark:bg-[#131B26] border border-[#E2E8F0] dark:border-[#2D3A4F] p-4 shadow-xs space-y-3">
           <div className="flex items-center gap-3">
@@ -189,15 +240,20 @@ export function RoleSelectionView({
           </div>
 
           <p className="text-xs text-[#475569] dark:text-[#CBD5E1] leading-relaxed">
-            Tentukan tujuan akhir, gambar jalur resmi, tambah titik istirahat, dan atur jarak sweeper.
+            {roomCreationPaused
+              ? 'Pembuatan room konvoi baru sedang dijeda sementara oleh Admin Backend.'
+              : 'Tentukan tujuan akhir, gambar jalur resmi, tambah titik istirahat, dan atur jarak sweeper.'}
           </p>
 
           <button
             type="button"
+            disabled={roomCreationPaused}
             onClick={() => onSelectRole('TOUR_LEADER')}
-            className="w-full min-h-[48px] px-4 py-3 rounded-[14px] bg-[#EA580C] hover:bg-[#C2410C] active:scale-[0.98] text-white text-sm font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer"
+            className="w-full min-h-[48px] px-4 py-3 rounded-[14px] bg-[#EA580C] hover:bg-[#C2410C] disabled:opacity-50 disabled:cursor-not-allowed active:scale-[0.98] text-white text-sm font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer"
           >
-            <span className="whitespace-nowrap">Mulai Konvoi Baru</span>
+            <span className="whitespace-nowrap">
+              {roomCreationPaused ? 'Pembuatan Room Dijeda Admin' : 'Mulai Konvoi Baru'}
+            </span>
             <ArrowRight className="w-4 h-4 shrink-0" />
           </button>
         </div>

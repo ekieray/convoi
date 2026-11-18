@@ -14,6 +14,7 @@ export type ScreenRoute =
   | 'login'
   | 'role_selection'
   | 'customize_profile'
+  | 'admin_backend'
   | 'vehicle_profile'
   | 'tour_leader'
   | 'join_tour'
@@ -222,3 +223,61 @@ export type TripCardTheme =
   | 'MINIMAL_LIGHT'
   | 'CUSTOM_PHOTO';
 
+export interface GlobalAppConfig {
+  configId: 'global';
+  defaultOffRouteToleranceMeters: number;
+  defaultMaxStragglerDistanceMeters: number;
+  defaultSoundAlertEnabled: boolean;
+  maintenanceMode: boolean;
+  maintenanceMessage: string;
+  announcementActive: boolean;
+  announcementTitle: string;
+  announcementMessage: string;
+  allowGuestMode: boolean;
+  allowNewRooms: boolean;
+  updatedByUid?: string;
+  updatedAtLabel?: string;
+}
+
+export interface UserPresenceRecord {
+  uid: string;
+  fullName: string;
+  email: string;
+  platform: 'web' | 'android';
+  isTraveling: boolean;
+  activeRoomId: string;
+  speedKmh: number;
+  lastSeenMs: number;
+  lastSeenLabel: string;
+}
+
+export interface AdminUserSummary {
+  uid: string;
+  fullName: string;
+  email: string;
+  authProvider: AuthProviderId;
+  clubName: string;
+  homeCity: string;
+  vehicleType: VehicleType;
+  vehicleDetail: string;
+  licensePlate: string;
+  avatarPreset: AvatarPreset;
+  avatarPhotoUrl?: string;
+  updatedAtLabel: string;
+}
+
+export interface AdminRoomOverview {
+  roomId: string;
+  roomTitle: string;
+  leaderUid: string;
+  destinationName: string;
+  status: 'ACTIVE' | 'FINISHED';
+  sosActive: boolean;
+  sosSenderName: string;
+  offRouteToleranceMeters: number;
+  maxStragglerDistanceMeters: number;
+  createdAtLabel: string;
+  updatedAtMs: number;
+  updatedAtLabel: string;
+  members: ConvoyMember[];
+}

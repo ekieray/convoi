@@ -21,6 +21,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.automirrored.rounded.Logout
+import androidx.compose.material.icons.rounded.Build
+import androidx.compose.material.icons.rounded.Campaign
 import androidx.compose.material.icons.rounded.DirectionsCar
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Group
@@ -28,6 +30,7 @@ import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.Navigation
+import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.TwoWheeler
 import androidx.compose.material.icons.rounded.Verified
 import androidx.compose.material3.OutlinedButton
@@ -54,6 +57,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.konvoiku.touring.model.AuthProviderType
+import com.konvoiku.touring.model.GlobalAppConfig
 import com.konvoiku.touring.model.TourRoom
 import com.konvoiku.touring.model.UserRole
 import com.konvoiku.touring.model.VehicleProfile
@@ -73,13 +77,17 @@ fun RoleSelectionScreen(
     authProvider: AuthProviderType = AuthProviderType.LOCAL,
     userProfile: VehicleProfile = VehicleProfile(),
     isGuestMode: Boolean = false,
+    globalConfig: GlobalAppConfig = GlobalAppConfig(),
+    isAdminUser: Boolean = false,
     onRoleSelected: (UserRole) -> Unit,
     onResumeCurrentConvoy: () -> Unit,
     onOpenCustomizeProfile: () -> Unit = {},
+    onOpenAdminBackend: () -> Unit = {},
     onOpenTripHistory: () -> Unit,
     onOpenAboutApp: () -> Unit,
     onLogout: () -> Unit = {}
 ) {
+    val roomCreationPaused = !globalConfig.allowNewRooms && !isAdminUser
     val activeTourName = activeRoom?.roomTitle ?: "Konvoi Puncak Pass Weekend"
     val activeMemberCount = activeRoom?.members?.size ?: 4
     val activeStatusText = if (activeRoom != null) "Sedang Berjalan" else "Siap Bergabung"
@@ -157,6 +165,74 @@ fun RoleSelectionScreen(
                     title = "Dashboard Konvoi Touring",
                     subtitle = "Koordinasi perjalanan mobil dan motor secara real-time dalam satu layar bersih."
                 )
+
+                if (globalConfig.maintenanceMode) {
+                    Surface(
+                        color = Color(0xFFFEF3C7),
+                        shape = RoundedCornerShape(16.dp),
+                        border = BorderStroke(1.dp, Color(0xFFF59E0B)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Build,
+                                contentDescription = null,
+                                tint = Color(0xFFD97706),
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Column {
+                                Text(
+                                    text = "Mode Pemeliharaan Aktif",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp,
+                                    color = Color(0xFF92400E)
+                                )
+                                Text(
+                                    text = globalConfig.maintenanceMessage,
+                                    fontSize = 11.sp,
+                                    color = Color(0xFF92400E)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                if (globalConfig.announcementActive && globalConfig.announcementMessage.isNotBlank()) {
+                    Surface(
+                        color = Color(0xFFEFF6FF),
+                        shape = RoundedCornerShape(16.dp),
+                        border = BorderStroke(1.dp, Color(0xFFBFDBFE)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Campaign,
+                                contentDescription = null,
+                                tint = Color(0xFF1D4ED8),
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Column {
+                                Text(
+                                    text = globalConfig.announcementTitle.ifBlank { "Info KonvoiKu" },
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp,
+                                    color = Color(0xFF1E3A8A)
+                                )
+                                Text(
+                                    text = globalConfig.announcementMessage,
+                                    fontSize = 11.sp,
+                                    color = Color(0xFF1E3A8A)
+                                )
+                            }
+                        }
+                    }
+                }
 
                 // Account Session Bar with Customize Profil & Keluar
                 Card(
@@ -286,6 +362,61 @@ fun RoleSelectionScreen(
                     }
                 }
 
+                if (isAdminUser) {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(onClick = onOpenAdminBackend),
+                        shape = RoundedCornerShape(20.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = Color(0xFF0F172A)
+                        ),
+                        border = BorderStroke(1.dp, Color(0xFF3B82F6))
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Surface(
+                                color = Color(0xFF1E3A8A),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.size(44.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Shield,
+                                        contentDescription = null,
+                                        tint = Color(0xFF93C5FD)
+                                    )
+                                }
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Admin Backend Console",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = "Pantau user aktif, room berjalan, & kontrol global",
+                                    fontSize = 11.sp,
+                                    color = Color(0xFFCBD5E1),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
+                                contentDescription = "Buka Admin Backend",
+                                tint = Color(0xFF93C5FD)
+                            )
+                        }
+                    }
+                }
+
             // Card Header 1: Mulai Konvoi Baru (Tour Leader)
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -341,7 +472,11 @@ fun RoleSelectionScreen(
                     Spacer(modifier = Modifier.height(12.dp))
 
                     Text(
-                        text = "Tentukan tujuan akhir, gambar jalur resmi, tambah titik istirahat, dan atur jarak sweeper.",
+                        text = if (roomCreationPaused) {
+                            "Pembuatan room konvoi baru sedang dijeda sementara oleh Admin Backend."
+                        } else {
+                            "Tentukan tujuan akhir, gambar jalur resmi, tambah titik istirahat, dan atur jarak sweeper."
+                        },
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -350,6 +485,7 @@ fun RoleSelectionScreen(
 
                     Button(
                         onClick = { onRoleSelected(UserRole.TOUR_LEADER) },
+                        enabled = !roomCreationPaused,
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(50.dp),
@@ -360,7 +496,7 @@ fun RoleSelectionScreen(
                         )
                     ) {
                         Text(
-                            text = "Mulai Konvoi Baru",
+                            text = if (roomCreationPaused) "Pembuatan Room Dijeda Admin" else "Mulai Konvoi Baru",
                             fontWeight = FontWeight.SemiBold
                         )
                         Spacer(modifier = Modifier.width(8.dp))

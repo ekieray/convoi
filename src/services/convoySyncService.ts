@@ -19,12 +19,15 @@ import {
   OperationType,
 } from '../firebase';
 import {
+  AdminRoomOverview,
+  AdminUserSummary,
   AuthProviderId,
   AvatarPreset,
   ChatMessageType,
   ConnectionStatus,
   ConvoyMember,
   ConvoyRouteConfig,
+  GlobalAppConfig,
   MemberConditionStatus,
   RestCheckpoint,
   RoomMessage,
@@ -32,6 +35,7 @@ import {
   SosEmergencyState,
   TourRoom,
   TripHistoryRecord,
+  UserPresenceRecord,
   UserRole,
   VehicleProfile,
   VehicleType,
@@ -973,3 +977,357 @@ export async function loadUserTripsFromFirestore(
     handleFirestoreError(error, OperationType.LIST, path);
   }
 }
+
+// --- Admin Backend, Global Config & Active Presence Monitoring ---
+
+export const ADMIN_EMAIL = 'ekie.ray@gmail.com';
+
+export function isAdminEmailAddress(email?: string | null): boolean {
+  return normalizeProfileEmail(email) === ADMIN_EMAIL;
+}
+
+export function isVerifiedAdminSession(
+  user?: { email?: string | null; emailVerified?: boolean } | null
+): boolean {
+  return Boolean(
+    user &&
+      normalizeProfileEmail(user.email) === ADMIN_EMAIL &&
+      user.emailVerified === true
+  );
+}
+
+export const DEFAULT_GLOBAL_APP_CONFIG: GlobalAppConfig = {
+  configId: 'global',
+  defaultOffRouteToleranceMeters: 75,
+  defaultMaxStragglerDistanceMeters: 1000,
+  defaultSoundAlertEnabled: true,
+  maintenanceMode: false,
+  maintenanceMessage:
+    'Aplikasi sedang dalam pemeliharaan berkala. Mohon tunggu beberapa saat.',
+  announcementActive: false,
+  announcementTitle: 'Info KonvoiKu',
+  announcementMessage: '',
+  allowGuestMode: true,
+  allowNewRooms: true,
+};
+
+export function subscribeToGlobalAppConfig(
+  callback: (config: GlobalAppConfig) => void
+): () => void {
+  const path = 'app_config/global';
+  return onSnapshot(
+    doc(db, 'app_config', 'global'),
+    (snap) => {
+      if (!snap.exists()) {
+        callback(DEFAULT_GLOBAL_APP_CONFIG);
+        return;
+      }
+      const d = snap.data();
+      callback({
+        configId: 'global',
+        defaultOffRouteToleranceMeters: Math.max(
+          10,
+          Math.min(5000, Number(d.defaultOffRouteToleranceMeters ?? 75))
+        ),
+        defaultMaxStragglerDistanceMeters: Math.max(
+          100,
+          Math.min(50000, Number(d.defaultMaxStragglerDistanceMeters ?? 1000))
+        ),
+        defaultSoundAlertEnabled: Boolean(d.defaultSoundAlertEnabled ?? true),
+        maintenanceMode: Boolean(d.maintenanceMode),
+        maintenanceMessage: String(
+          d.maintenanceMessage || DEFAULT_GLOBAL_APP_CONFIG.maintenanceMessage
+        ),
+        announcementActive: Boolean(d.announcementActive),
+        announcementTitle: String(d.announcementTitle || 'Info KonvoiKu'),
+        announcementMessage: String(d.announcementMessage || ''),
+        allowGuestMode: Boolean(d.allowGuestMode ?? true),
+        allowNewRooms: Boolean(d.allowNewRooms ?? true),
+        updatedByUid: typeof d.updatedByUid === 'string' ? d.updatedByUid : undefined,
+        updatedAtLabel: toClockLabel(d.updatedAt, 'Baru saja'),
+      });
+    },
+    (error) => {
+      console.warn('Gagal membaca pengaturan global:', error);
+      callback(DEFAULT_GLOBAL_APP_CONFIG);
+    }
+  );
+}
+
+export async function saveGlobalAppConfig(
+  uid: string,
+  config: GlobalAppConfig
+): Promise<void> {
+  const path = 'app_config/global';
+  try {
+    await setDoc(doc(db, 'app_config', 'global'), {
+      configId: 'global',
+      defaultOffRouteToleranceMeters: Math.max(
+        10,
+        Math.min(5000, Math.round(config.defaultOffRouteToleranceMeters || 75))
+      ),
+      defaultMaxStragglerDistanceMeters: Math.max(
+        100,
+        Math.min(50000, Math.round(config.defaultMaxStragglerDistanceMeters || 1000))
+      ),
+      defaultSoundAlertEnabled: Boolean(config.defaultSoundAlertEnabled),
+      maintenanceMode: Boolean(config.maintenanceMode),
+      maintenanceMessage: (config.maintenanceMessage || '').trim().slice(0, 240),
+      announcementActive: Boolean(config.announcementActive),
+      announcementTitle: (config.announcementTitle || '').trim().slice(0, 80),
+      announcementMessage: (config.announcementMessage || '').trim().slice(0, 240),
+      allowGuestMode: Boolean(config.allowGuestMode),
+      allowNewRooms: Boolean(config.allowNewRooms),
+      updatedByUid: uid,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+
+export async function publishUserPresence(
+  uid: string,
+  payload: {
+    fullName: string;
+    email: string;
+    isTraveling: boolean;
+    activeRoomId: string;
+    speedKmh: number;
+  }
+): Promise<void> {
+  const path = `presence/${uid}`;
+  try {
+    await setDoc(doc(db, 'presence', uid), {
+      uid,
+      fullName: (payload.fullName.trim() || 'Rider KonvoiKu').slice(0, 80),
+      email: normalizeProfileEmail(payload.email).slice(0, 160),
+      platform: 'web',
+      isTraveling: Boolean(payload.isTraveling),
+      activeRoomId: (payload.activeRoomId || '').trim().slice(0, 32),
+      speedKmh: Math.max(0, Math.min(350, Math.round(payload.speedKmh || 0))),
+      lastSeenAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+
+export function subscribeToAdminMonitoring(callbacks: {
+  onPresence: (items: UserPresenceRecord[]) => void;
+  onRooms: (rooms: AdminRoomOverview[]) => void;
+  onUsers: (users: AdminUserSummary[]) => void;
+  onError: (msg: string) => void;
+}): () => void {
+  const memberUnsubs = new Map<string, () => void>();
+  let latestRoomsBase: Omit<AdminRoomOverview, 'members'>[] = [];
+  const membersByRoom = new Map<string, ConvoyMember[]>();
+
+  const emitRooms = () => {
+    const combined: AdminRoomOverview[] = latestRoomsBase
+      .map((r) => ({
+        ...r,
+        members: membersByRoom.get(r.roomId) || [],
+      }))
+      .sort((a, b) => {
+        if (a.status !== b.status) return a.status === 'ACTIVE' ? -1 : 1;
+        return b.updatedAtMs - a.updatedAtMs;
+      });
+    callbacks.onRooms(combined);
+  };
+
+  const unsubPresence = onSnapshot(
+    collection(db, 'presence'),
+    (snap) => {
+      const list: UserPresenceRecord[] = snap.docs
+        .map((docSnap) => {
+          const d = docSnap.data();
+          const seenMs = toMillis(d.lastSeenAt);
+          return {
+            uid: String(d.uid || docSnap.id),
+            fullName: String(d.fullName || 'Rider'),
+            email: String(d.email || ''),
+            platform: (d.platform === 'android' ? 'android' : 'web') as 'web' | 'android',
+            isTraveling: Boolean(d.isTraveling),
+            activeRoomId: String(d.activeRoomId || ''),
+            speedKmh: Number(d.speedKmh || 0),
+            lastSeenMs: seenMs,
+            lastSeenLabel: toClockLabel(d.lastSeenAt, 'Baru saja'),
+          };
+        })
+        .sort((a, b) => b.lastSeenMs - a.lastSeenMs);
+      callbacks.onPresence(list);
+    },
+    (err) => {
+      callbacks.onError(`Gagal memuat presence aktif: ${err.message}`);
+    }
+  );
+
+  const unsubUsers = onSnapshot(
+    collection(db, 'users'),
+    (snap) => {
+      const list: AdminUserSummary[] = snap.docs.map((docSnap) => {
+        const d = docSnap.data();
+        return {
+          uid: String(d.uid || docSnap.id),
+          fullName: String(d.fullName || 'Rider KonvoiKu'),
+          email: String(d.email || ''),
+          authProvider: sanitizeAuthProvider(
+            typeof d.authProvider === 'string' ? d.authProvider : 'google'
+          ),
+          clubName: String(d.clubName || ''),
+          homeCity: String(d.homeCity || ''),
+          vehicleType: (d.vehicleType === 'MOTOR' ? 'MOTOR' : 'MOBIL') as VehicleType,
+          vehicleDetail: String(d.vehicleDetail || ''),
+          licensePlate: String(d.licensePlate || ''),
+          avatarPreset: (d.avatarPreset || 'HELMET_TOURING') as AvatarPreset,
+          avatarPhotoUrl:
+            typeof d.avatarPhotoUrl === 'string' && d.avatarPhotoUrl.length > 0
+              ? d.avatarPhotoUrl
+              : undefined,
+          updatedAtLabel: toClockLabel(d.updatedAt, '-'),
+        };
+      });
+      callbacks.onUsers(list);
+    },
+    (err) => {
+      callbacks.onError(`Gagal memuat daftar pengguna: ${err.message}`);
+    }
+  );
+
+  const unsubRooms = onSnapshot(
+    collection(db, 'rooms'),
+    (snap) => {
+      const activeIds = new Set<string>();
+      latestRoomsBase = snap.docs.map((docSnap) => {
+        const d = docSnap.data();
+        const roomId = String(d.roomId || docSnap.id);
+        activeIds.add(roomId);
+
+        if (!memberUnsubs.has(roomId)) {
+          const unsubM = onSnapshot(
+            collection(db, 'rooms', roomId, 'members'),
+            (mSnap) => {
+              const members: ConvoyMember[] = mSnap.docs.map((mDoc, idx) => {
+                const md = mDoc.data();
+                return {
+                  id: String(md.uid || mDoc.id),
+                  fullName: String(md.fullName || 'Rider'),
+                  vehicleType: (md.vehicleType === 'MOTOR' ? 'MOTOR' : 'MOBIL') as VehicleType,
+                  vehicleDetail: String(md.vehicleDetail || ''),
+                  licensePlate: String(md.licensePlate || ''),
+                  emergencyContact: '',
+                  role: (md.role === 'TOUR_LEADER' ? 'TOUR_LEADER' : 'MEMBER') as UserRole,
+                  joinedAtLabel: toClockLabel(md.joinedAt, 'Aktif'),
+                  isCurrentUser: false,
+                  isSweeper: Boolean(md.isSweeper),
+                  avatarPreset: (md.avatarPreset || 'HELMET_TOURING') as AvatarPreset,
+                  conditionStatus: (md.conditionStatus || 'AMAN') as MemberConditionStatus,
+                  connectionStatus: (md.connectionStatus || 'CONNECTED') as ConnectionStatus,
+                  lastLocationText: String(md.lastLocationText || 'GPS Live'),
+                  lastUpdatedLabel: toClockLabel(md.updatedAt, 'Baru saja'),
+                  routeDistanceMeters: 0,
+                  offRouteMeters: 0,
+                  convoyOrderRank: idx + 1,
+                  mapPosition: {
+                    routeProgress: Number(md.routeProgress ?? 0),
+                    xFraction: Number(md.xFraction ?? 0.5),
+                    yFraction: Number(md.yFraction ?? 0.5),
+                    latitude: Number(md.latitude ?? 0),
+                    longitude: Number(md.longitude ?? 0),
+                    speedKmh: Number(md.speedKmh ?? 0),
+                    heading: Number(md.heading ?? 0),
+                    accuracyMeters: Number(md.accuracyMeters ?? 20),
+                  },
+                };
+              });
+              membersByRoom.set(roomId, members);
+              emitRooms();
+            },
+            () => {}
+          );
+          memberUnsubs.set(roomId, unsubM);
+        }
+
+        return {
+          roomId,
+          roomTitle: String(d.roomTitle || 'Konvoi Live'),
+          leaderUid: String(d.leaderUid || ''),
+          destinationName: String(d.destinationName || '-'),
+          status: d.status === 'FINISHED' ? 'FINISHED' : 'ACTIVE',
+          sosActive: Boolean(d.sosActive),
+          sosSenderName: String(d.sosSenderName || ''),
+          offRouteToleranceMeters: Number(d.offRouteToleranceMeters || 75),
+          maxStragglerDistanceMeters: Number(d.maxStragglerDistanceMeters || 1000),
+          createdAtLabel: toClockLabel(d.createdAt, '-'),
+          updatedAtMs: toMillis(d.updatedAt),
+          updatedAtLabel: toClockLabel(d.updatedAt, '-'),
+        };
+      });
+
+      for (const [rId, unsub] of memberUnsubs.entries()) {
+        if (!activeIds.has(rId)) {
+          unsub();
+          memberUnsubs.delete(rId);
+          membersByRoom.delete(rId);
+        }
+      }
+      emitRooms();
+    },
+    (err) => {
+      callbacks.onError(`Gagal memuat daftar room konvoi: ${err.message}`);
+    }
+  );
+
+  return () => {
+    unsubPresence();
+    unsubUsers();
+    unsubRooms();
+    memberUnsubs.forEach((unsub) => unsub());
+    memberUnsubs.clear();
+  };
+}
+
+export async function adminSetRoomStatus(
+  roomId: string,
+  status: 'ACTIVE' | 'FINISHED'
+): Promise<void> {
+  const path = `rooms/${roomId}`;
+  try {
+    await updateDoc(doc(db, 'rooms', roomId), {
+      status,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function adminResolveRoomSos(roomId: string): Promise<void> {
+  const path = `rooms/${roomId}`;
+  try {
+    await updateDoc(doc(db, 'rooms', roomId), {
+      sosActive: false,
+      sosSenderUid: '',
+      sosSenderName: '',
+      sosSenderVehicle: '',
+      sosLat: 0,
+      sosLng: 0,
+      sosLocationText: '',
+      sosTriggeredAtLabel: '',
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function adminDeleteRoom(roomId: string): Promise<void> {
+  const path = `rooms/${roomId}`;
+  try {
+    await deleteDoc(doc(db, 'rooms', roomId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+}
+

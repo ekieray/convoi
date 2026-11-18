@@ -4,6 +4,7 @@ import { User } from 'firebase/auth';
 import { AlertTriangle, Moon, RotateCcw, Sun } from 'lucide-react';
 import { KotlinSourceExplorer } from './components/KotlinSourceExplorer';
 import { AboutAppView } from './components/screens/AboutAppView';
+import { AdminBackendView } from './components/screens/AdminBackendView';
 import { CustomizeProfileView } from './components/screens/CustomizeProfileView';
 import { JoinTourView } from './components/screens/JoinTourView';
 import { LiveTrackingMapView } from './components/screens/LiveTrackingMapView';
@@ -29,7 +30,10 @@ import {
   addRoomCheckpoint,
   assignSyncedSweeper,
   createSyncedRoom,
+  DEFAULT_GLOBAL_APP_CONFIG,
   finishSyncedRoom,
+  isAdminEmailAddress,
+  isVerifiedAdminSession,
   joinSyncedRoom,
   loadLocalSession,
   loadProfileByEmail,
@@ -37,6 +41,7 @@ import {
   loadUserTripsFromFirestore,
   normalizeProfileEmail,
   publishMemberTelemetry,
+  publishUserPresence,
   removeRoomCheckpoint,
   removeSyncedMember,
   resolveSyncedSos,
@@ -45,6 +50,7 @@ import {
   saveTripRecordToFirestore,
   saveUserPrivateProfile,
   sendRoomMessage,
+  subscribeToGlobalAppConfig,
   subscribeToSyncedRoom,
   triggerSyncedSos,
   updateSyncedMemberCondition,
@@ -56,6 +62,7 @@ import {
   ConvoyMember,
   ConvoyRouteConfig,
   DestinationPreset,
+  GlobalAppConfig,
   MapPosition,
   MemberConditionStatus,
   OffRouteAlertState,
@@ -601,6 +608,9 @@ export default function App() {
   const [profileSyncMessage, setProfileSyncMessage] = useState<string | null>(null);
   const [isCreatingRoom, setIsCreatingRoom] = useState(false);
   const [isJoiningRoom, setIsJoiningRoom] = useState(false);
+  const [globalConfig, setGlobalConfig] = useState<GlobalAppConfig>(
+    DEFAULT_GLOBAL_APP_CONFIG
+  );
 
   const [activeRoom, setActiveRoom] = useState<TourRoom | null>(null);
   const [joinInput, setJoinInput] = useState('');
@@ -853,6 +863,22 @@ export default function App() {
     return () => unsubAuth();
   }, []);
 
+  // Subscribe to Global App Config (/app_config/global)
+  useEffect(() => {
+    const unsubConfig = subscribeToGlobalAppConfig((cfg) => {
+      setGlobalConfig(cfg);
+      if (!activeRoomRef.current) {
+        setRouteConfig((prev) => ({
+          ...prev,
+          offRouteToleranceMeters: cfg.defaultOffRouteToleranceMeters,
+          maxStragglerDistanceMeters: cfg.defaultMaxStragglerDistanceMeters,
+          soundAlertEnabled: cfg.defaultSoundAlertEnabled,
+        }));
+      }
+    });
+    return () => unsubConfig();
+  }, []);
+
   useEffect(() => {
     if (!isRecordingVoice) return;
     const timer = setInterval(() => {
@@ -951,6 +977,42 @@ export default function App() {
       currentRoute === 'tour_leader',
     onFix: handleGpsFix,
   });
+
+  // Publish live online/traveling presence heartbeat for Admin Backend monitoring
+  useEffect(() => {
+    if (!authUser) return;
+    const sendHeartbeat = () => {
+      const selfMember = activeRoom?.members.find((m) => m.isCurrentUser);
+      const speed = gps.lastFix?.speedKmh ?? selfMember?.mapPosition.speedKmh ?? 0;
+      publishUserPresence(authUser.uid, {
+        fullName:
+          vehicleProfile.fullName.trim() ||
+          authUser.displayName ||
+          'Rider KonvoiKu',
+        email:
+          (vehicleProfile.email ?? '').trim() ||
+          authUser.email ||
+          localUserEmail ||
+          '',
+        isTraveling: Boolean(activeRoom),
+        activeRoomId: activeRoom?.roomId || '',
+        speedKmh: speed,
+      }).catch(() => {});
+    };
+
+    sendHeartbeat();
+    const timer = setInterval(sendHeartbeat, 30_000);
+    return () => clearInterval(timer);
+  }, [
+    authUser?.uid,
+    authUser?.displayName,
+    authUser?.email,
+    activeRoom?.roomId,
+    vehicleProfile.fullName,
+    vehicleProfile.email,
+    localUserEmail,
+    gps.lastFix?.speedKmh,
+  ]);
 
   // Real-time Firestore room subscription when activeRoom.isSyncedRoom === true
   useEffect(() => {
@@ -1085,6 +1147,12 @@ export default function App() {
   ]);
 
   const isSessionAuthenticated = Boolean(authUser || localUserName);
+  const isAdminUser = isAdminEmailAddress(
+    authUser?.email || vehicleProfile.email || localUserEmail
+  );
+  const navSteps = isAdminUser
+    ? [...ROUTE_STEPS, { route: 'admin_backend' as ScreenRoute, label: '6. Admin Backend' }]
+    : ROUTE_STEPS;
 
   const navigateTo = (next: ScreenRoute, direction: 1 | -1 = 1) => {
     if (
@@ -1457,6 +1525,14 @@ export default function App() {
   };
 
   const handleSelectRole = (role: UserRole) => {
+    if (
+      role === 'TOUR_LEADER' &&
+      globalConfig.allowNewRooms === false &&
+      !isVerifiedAdminSession(authUser)
+    ) {
+      setAuthError('Pembuatan room baru sedang dijeda sementara oleh Admin Backend.');
+      return;
+    }
     setSelectedRole(role);
     navigateTo('vehicle_profile', 1);
   };
@@ -1484,6 +1560,13 @@ export default function App() {
   };
 
   const handleCreateRoom = async (customTitle = 'Konvoi Touring Akhir Pekan') => {
+    if (
+      globalConfig.allowNewRooms === false &&
+      !isVerifiedAdminSession(authUser)
+    ) {
+      setJoinError('Pembuatan room baru sedang dijeda oleh Admin Backend.');
+      return;
+    }
     const roomId = generateUniqueRoomId();
     const title = customTitle.trim() || 'Konvoi Touring Akhir Pekan';
     const startLat = gps.lastFix?.latitude ?? routeConfig.waypoints[0]?.latitude ?? -6.648;
@@ -2771,7 +2854,7 @@ export default function App() {
             aria-label="Navigasi Layar"
             className="hidden md:flex items-center gap-5 text-sm font-medium text-[#475569] dark:text-[#CBD5E1]"
           >
-            {ROUTE_STEPS.map((step) => {
+            {navSteps.map((step) => {
               const active =
                 currentRoute === step.route ||
                 (step.route === 'trip_history' && currentRoute === 'trip_detail');
@@ -2877,7 +2960,7 @@ export default function App() {
             }`}
           >
             <div className="flex md:hidden flex-wrap justify-center gap-1.5 mb-4 w-full">
-              {ROUTE_STEPS.map((step) => {
+              {navSteps.map((step) => {
                 const active =
                   currentRoute === step.route ||
                   (step.route === 'trip_history' && currentRoute === 'trip_detail');
@@ -2937,6 +3020,7 @@ export default function App() {
                         authInfoMessage={authInfoMessage}
                         initialName={vehicleProfile.fullName}
                         initialEmail={vehicleProfile.email || localUserEmail}
+                        globalConfig={globalConfig}
                         onGoogleSignIn={handleGoogleSignIn}
                         onFacebookSignIn={handleFacebookSignIn}
                         onInstagramSignIn={handleInstagramSignIn}
@@ -2968,6 +3052,8 @@ export default function App() {
                         userProfile={vehicleProfile}
                         localUserName={localUserName}
                         isSigningIn={isSigningIn}
+                        globalConfig={globalConfig}
+                        isAdminUser={isAdminUser}
                         onGoogleSignIn={handleGoogleSignIn}
                         onGoogleSignOut={handleGoogleSignOut}
                         onOpenCustomizeProfile={() => {
@@ -2975,6 +3061,7 @@ export default function App() {
                           setProfileSyncMessage(null);
                           navigateTo('customize_profile', 1);
                         }}
+                        onOpenAdminBackend={() => navigateTo('admin_backend', 1)}
                         onSelectRole={handleSelectRole}
                         onResumeCurrentConvoy={() => {
                           ensureDemoRoom(selectedRole);
@@ -2985,6 +3072,16 @@ export default function App() {
                           setAboutReturnRoute('role_selection');
                           navigateTo('about_app', 1);
                         }}
+                      />
+                    )}
+
+                    {currentRoute === 'admin_backend' && (
+                      <AdminBackendView
+                        authUser={authUser}
+                        globalConfig={globalConfig}
+                        isSigningIn={isSigningIn}
+                        onGoogleSignIn={handleGoogleSignIn}
+                        onBack={() => navigateTo('role_selection', -1)}
                       />
                     )}
 

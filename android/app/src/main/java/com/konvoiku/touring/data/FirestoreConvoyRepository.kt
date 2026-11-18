@@ -7,17 +7,21 @@ import com.google.firebase.auth.UserProfileChangeRequest
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
+import com.konvoiku.touring.model.AdminRoomOverview
+import com.konvoiku.touring.model.AdminUserSummary
 import com.konvoiku.touring.model.AuthProviderType
 import com.konvoiku.touring.model.AvatarPreset
 import com.konvoiku.touring.model.ChatMessageType
 import com.konvoiku.touring.model.ConnectionStatus
 import com.konvoiku.touring.model.ConvoyMember
 import com.konvoiku.touring.model.ConvoyRouteConfig
+import com.konvoiku.touring.model.GlobalAppConfig
 import com.konvoiku.touring.model.MapPosition
 import com.konvoiku.touring.model.MemberConditionStatus
 import com.konvoiku.touring.model.RestCheckpoint
 import com.konvoiku.touring.model.RoomMessage
 import com.konvoiku.touring.model.SosEmergencyState
+import com.konvoiku.touring.model.UserPresenceInfo
 import com.konvoiku.touring.model.UserRole
 import com.konvoiku.touring.model.VehicleProfile
 import com.konvoiku.touring.model.VehicleType
@@ -42,6 +46,7 @@ class FirestoreConvoyRepository {
         // Named Firestore database provisioned for KonvoiKu Web & Android sync
         private const val FIRESTORE_DB_ID =
             "ai-studio-konvoikutouringc-4b128c6d-2347-4d6f-afba-25201f26dbcb"
+        const val ADMIN_EMAIL = "ekie.ray@gmail.com"
     }
 
     private fun getAuth(): FirebaseAuth? = runCatching {
@@ -630,6 +635,312 @@ class FirestoreConvoyRepository {
                         "updatedAt" to FieldValue.serverTimestamp()
                     )
                 )
+        }
+    }
+
+    fun isAdminEmail(email: String?): Boolean =
+        email?.trim()?.lowercase(Locale.ROOT) == ADMIN_EMAIL
+
+    fun isVerifiedAdminSession(): Boolean {
+        val user = getAuth()?.currentUser ?: return false
+        return isAdminEmail(user.email) && user.isEmailVerified
+    }
+
+    fun subscribeToGlobalAppConfig(onUpdate: (GlobalAppConfig) -> Unit): () -> Unit {
+        val db = getFirestore() ?: return {}
+        val reg = db.collection("app_config").document("global")
+            .addSnapshotListener { snap, _ ->
+                if (snap == null || !snap.exists()) {
+                    onUpdate(GlobalAppConfig())
+                    return@addSnapshotListener
+                }
+                onUpdate(
+                    GlobalAppConfig(
+                        configId = "global",
+                        defaultOffRouteToleranceMeters = (snap.getLong("defaultOffRouteToleranceMeters") ?: 75L)
+                            .toInt().coerceIn(10, 5000),
+                        defaultMaxStragglerDistanceMeters = (snap.getLong("defaultMaxStragglerDistanceMeters") ?: 1000L)
+                            .toInt().coerceIn(100, 50000),
+                        defaultSoundAlertEnabled = snap.getBoolean("defaultSoundAlertEnabled") ?: true,
+                        maintenanceMode = snap.getBoolean("maintenanceMode") ?: false,
+                        maintenanceMessage = snap.getString("maintenanceMessage")
+                            ?: "Aplikasi sedang dalam pemeliharaan berkala. Mohon tunggu beberapa saat.",
+                        announcementActive = snap.getBoolean("announcementActive") ?: false,
+                        announcementTitle = snap.getString("announcementTitle") ?: "Info KonvoiKu",
+                        announcementMessage = snap.getString("announcementMessage") ?: "",
+                        allowGuestMode = snap.getBoolean("allowGuestMode") ?: true,
+                        allowNewRooms = snap.getBoolean("allowNewRooms") ?: true,
+                        updatedAtLabel = formatTimestamp(snap.getTimestamp("updatedAt"), "Baru saja")
+                    )
+                )
+            }
+        return { reg.remove() }
+    }
+
+    suspend fun saveGlobalAppConfig(uid: String, config: GlobalAppConfig): Result<Unit> {
+        val db = getFirestore()
+            ?: return Result.failure(IllegalStateException("Firestore tidak tersedia."))
+        return runCatching {
+            val payload = hashMapOf(
+                "configId" to "global",
+                "defaultOffRouteToleranceMeters" to config.defaultOffRouteToleranceMeters.coerceIn(10, 5000),
+                "defaultMaxStragglerDistanceMeters" to config.defaultMaxStragglerDistanceMeters.coerceIn(100, 50000),
+                "defaultSoundAlertEnabled" to config.defaultSoundAlertEnabled,
+                "maintenanceMode" to config.maintenanceMode,
+                "maintenanceMessage" to config.maintenanceMessage.trim().take(240),
+                "announcementActive" to config.announcementActive,
+                "announcementTitle" to config.announcementTitle.trim().take(80),
+                "announcementMessage" to config.announcementMessage.trim().take(240),
+                "allowGuestMode" to config.allowGuestMode,
+                "allowNewRooms" to config.allowNewRooms,
+                "updatedByUid" to uid,
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
+            db.collection("app_config").document("global").set(payload).await()
+            Unit
+        }
+    }
+
+    fun publishUserPresence(
+        uid: String,
+        fullName: String,
+        email: String,
+        isTraveling: Boolean,
+        activeRoomId: String,
+        speedKmh: Int
+    ) {
+        val db = getFirestore() ?: return
+        db.collection("presence").document(uid).set(
+            mapOf(
+                "uid" to uid,
+                "fullName" to fullName.trim().ifBlank { "Rider KonvoiKu" }.take(80),
+                "email" to email.trim().lowercase(Locale.ROOT).take(160),
+                "platform" to "android",
+                "isTraveling" to isTraveling,
+                "activeRoomId" to activeRoomId.trim().take(32),
+                "speedKmh" to speedKmh.coerceIn(0, 350),
+                "lastSeenAt" to FieldValue.serverTimestamp()
+            )
+        )
+    }
+
+    fun subscribeToAdminMonitoring(
+        onPresence: (List<UserPresenceInfo>) -> Unit,
+        onRooms: (List<AdminRoomOverview>) -> Unit,
+        onUsers: (List<AdminUserSummary>) -> Unit,
+        onError: (String) -> Unit
+    ): () -> Unit {
+        val db = getFirestore() ?: return {}
+        val regs = mutableListOf<ListenerRegistration>()
+        val memberRegs = mutableMapOf<String, ListenerRegistration>()
+        var latestRoomsBase = emptyList<AdminRoomOverview>()
+        val membersByRoom = mutableMapOf<String, List<ConvoyMember>>()
+
+        fun emitRooms() {
+            val combined = latestRoomsBase.map { r ->
+                r.copy(members = membersByRoom[r.roomId].orEmpty())
+            }.sortedWith(
+                compareBy<AdminRoomOverview> { if (it.status == "ACTIVE") 0 else 1 }
+                    .thenByDescending { it.updatedAtMs }
+            )
+            onRooms(combined)
+        }
+
+        regs += db.collection("presence").addSnapshotListener { snap, err ->
+            if (err != null) {
+                onError("Gagal memuat presence aktif: ${err.message}")
+                return@addSnapshotListener
+            }
+            if (snap == null) return@addSnapshotListener
+            val items = snap.documents.map { doc ->
+                val ts = doc.getTimestamp("lastSeenAt")
+                UserPresenceInfo(
+                    uid = doc.getString("uid") ?: doc.id,
+                    fullName = doc.getString("fullName") ?: "Rider",
+                    email = doc.getString("email").orEmpty(),
+                    platform = if (doc.getString("platform") == "android") "android" else "web",
+                    isTraveling = doc.getBoolean("isTraveling") ?: false,
+                    activeRoomId = doc.getString("activeRoomId").orEmpty(),
+                    speedKmh = (doc.getLong("speedKmh") ?: 0L).toInt(),
+                    lastSeenMs = ts?.toDate()?.time ?: 0L,
+                    lastSeenLabel = formatTimestamp(ts, "Baru saja")
+                )
+            }.sortedByDescending { it.lastSeenMs }
+            onPresence(items)
+        }
+
+        regs += db.collection("users").addSnapshotListener { snap, err ->
+            if (err != null) {
+                onError("Gagal memuat daftar pengguna: ${err.message}")
+                return@addSnapshotListener
+            }
+            if (snap == null) return@addSnapshotListener
+            val list = snap.documents.map { doc ->
+                AdminUserSummary(
+                    uid = doc.getString("uid") ?: doc.id,
+                    fullName = doc.getString("fullName") ?: "Rider KonvoiKu",
+                    email = doc.getString("email").orEmpty(),
+                    authProvider = AuthProviderType.fromId(doc.getString("authProvider")),
+                    clubName = doc.getString("clubName").orEmpty(),
+                    homeCity = doc.getString("homeCity").orEmpty(),
+                    vehicleType = runCatching {
+                        VehicleType.valueOf(doc.getString("vehicleType") ?: "MOBIL")
+                    }.getOrDefault(VehicleType.MOBIL),
+                    vehicleDetail = doc.getString("vehicleDetail").orEmpty(),
+                    licensePlate = doc.getString("licensePlate").orEmpty(),
+                    avatarPreset = runCatching {
+                        AvatarPreset.valueOf(doc.getString("avatarPreset") ?: "HELMET_TOURING")
+                    }.getOrDefault(AvatarPreset.HELMET_TOURING),
+                    avatarPhotoUri = doc.getString("avatarPhotoUrl")?.takeIf { it.isNotBlank() },
+                    updatedAtLabel = formatTimestamp(doc.getTimestamp("updatedAt"), "-")
+                )
+            }
+            onUsers(list)
+        }
+
+        regs += db.collection("rooms").addSnapshotListener { snap, err ->
+            if (err != null) {
+                onError("Gagal memuat daftar room konvoi: ${err.message}")
+                return@addSnapshotListener
+            }
+            if (snap == null) return@addSnapshotListener
+            val activeIds = mutableSetOf<String>()
+            latestRoomsBase = snap.documents.map { doc ->
+                val roomId = doc.getString("roomId") ?: doc.id
+                activeIds += roomId
+                if (!memberRegs.containsKey(roomId)) {
+                    memberRegs[roomId] = db.collection("rooms").document(roomId)
+                        .collection("members")
+                        .addSnapshotListener { mSnap, _ ->
+                            if (mSnap == null) return@addSnapshotListener
+                            val mList = mSnap.documents.mapIndexed { idx, mDoc ->
+                                val uid = mDoc.getString("uid") ?: mDoc.id
+                                ConvoyMember(
+                                    id = uid,
+                                    fullName = mDoc.getString("fullName") ?: "Rider",
+                                    vehicleType = runCatching {
+                                        VehicleType.valueOf(mDoc.getString("vehicleType") ?: "MOBIL")
+                                    }.getOrDefault(VehicleType.MOBIL),
+                                    vehicleDetail = mDoc.getString("vehicleDetail").orEmpty(),
+                                    licensePlate = mDoc.getString("licensePlate").orEmpty(),
+                                    emergencyContact = "",
+                                    role = runCatching {
+                                        UserRole.valueOf(mDoc.getString("role") ?: "MEMBER")
+                                    }.getOrDefault(UserRole.MEMBER),
+                                    joinedAtLabel = formatTimestamp(mDoc.getTimestamp("joinedAt"), "Aktif"),
+                                    isCurrentUser = false,
+                                    isSweeper = mDoc.getBoolean("isSweeper") ?: false,
+                                    avatarPreset = runCatching {
+                                        AvatarPreset.valueOf(mDoc.getString("avatarPreset") ?: "HELMET_TOURING")
+                                    }.getOrDefault(AvatarPreset.HELMET_TOURING),
+                                    conditionStatus = runCatching {
+                                        MemberConditionStatus.valueOf(mDoc.getString("conditionStatus") ?: "AMAN")
+                                    }.getOrDefault(MemberConditionStatus.AMAN),
+                                    connectionStatus = runCatching {
+                                        ConnectionStatus.valueOf(mDoc.getString("connectionStatus") ?: "CONNECTED")
+                                    }.getOrDefault(ConnectionStatus.CONNECTED),
+                                    lastLocationText = mDoc.getString("lastLocationText") ?: "GPS Live",
+                                    lastUpdatedLabel = formatTimestamp(mDoc.getTimestamp("updatedAt"), "Baru saja"),
+                                    convoyOrderRank = idx + 1,
+                                    mapPosition = MapPosition(
+                                        routeProgress = (mDoc.getDouble("routeProgress") ?: 0.0).toFloat(),
+                                        xFraction = (mDoc.getDouble("xFraction") ?: 0.5).toFloat(),
+                                        yFraction = (mDoc.getDouble("yFraction") ?: 0.5).toFloat(),
+                                        latitude = mDoc.getDouble("latitude") ?: 0.0,
+                                        longitude = mDoc.getDouble("longitude") ?: 0.0,
+                                        speedKmh = (mDoc.getLong("speedKmh") ?: 0L).toInt(),
+                                        heading = (mDoc.getLong("heading") ?: 0L).toInt(),
+                                        accuracyMeters = (mDoc.getLong("accuracyMeters") ?: 20L).toInt()
+                                    )
+                                )
+                            }
+                            membersByRoom[roomId] = mList
+                            emitRooms()
+                        }
+                }
+                val updatedTs = doc.getTimestamp("updatedAt")
+                AdminRoomOverview(
+                    roomId = roomId,
+                    roomTitle = doc.getString("roomTitle") ?: "Konvoi Live",
+                    leaderUid = doc.getString("leaderUid").orEmpty(),
+                    destinationName = doc.getString("destinationName") ?: "-",
+                    status = if (doc.getString("status") == "FINISHED") "FINISHED" else "ACTIVE",
+                    sosActive = doc.getBoolean("sosActive") ?: false,
+                    sosSenderName = doc.getString("sosSenderName").orEmpty(),
+                    offRouteToleranceMeters = (doc.getLong("offRouteToleranceMeters") ?: 75L).toInt(),
+                    maxStragglerDistanceMeters = (doc.getLong("maxStragglerDistanceMeters") ?: 1000L).toInt(),
+                    createdAtLabel = formatTimestamp(doc.getTimestamp("createdAt"), "-"),
+                    updatedAtMs = updatedTs?.toDate()?.time ?: 0L,
+                    updatedAtLabel = formatTimestamp(updatedTs, "-")
+                )
+            }
+            val staleIds = memberRegs.keys.filterNot { it in activeIds }
+            staleIds.forEach { staleId ->
+                memberRegs.remove(staleId)?.remove()
+                membersByRoom.remove(staleId)
+            }
+            emitRooms()
+        }
+
+        return {
+            regs.forEach { it.remove() }
+            memberRegs.values.forEach { it.remove() }
+            memberRegs.clear()
+        }
+    }
+
+    suspend fun adminSetRoomStatus(roomId: String, status: String): Result<Unit> {
+        val db = getFirestore()
+            ?: return Result.failure(IllegalStateException("Firestore tidak tersedia."))
+        return runCatching {
+            db.collection("rooms").document(roomId).update(
+                mapOf(
+                    "status" to status,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            Unit
+        }
+    }
+
+    suspend fun adminResolveRoomSos(roomId: String): Result<Unit> {
+        val db = getFirestore()
+            ?: return Result.failure(IllegalStateException("Firestore tidak tersedia."))
+        return runCatching {
+            db.collection("rooms").document(roomId).update(
+                mapOf(
+                    "sosActive" to false,
+                    "sosSenderUid" to "",
+                    "sosSenderName" to "",
+                    "sosSenderVehicle" to "",
+                    "sosLat" to 0.0,
+                    "sosLng" to 0.0,
+                    "sosLocationText" to "",
+                    "sosTriggeredAtLabel" to "",
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            Unit
+        }
+    }
+
+    suspend fun adminRemoveMember(roomId: String, memberUid: String): Result<Unit> {
+        val db = getFirestore()
+            ?: return Result.failure(IllegalStateException("Firestore tidak tersedia."))
+        return runCatching {
+            db.collection("rooms").document(roomId)
+                .collection("members").document(memberUid)
+                .delete().await()
+            Unit
+        }
+    }
+
+    suspend fun adminDeleteRoom(roomId: String): Result<Unit> {
+        val db = getFirestore()
+            ?: return Result.failure(IllegalStateException("Firestore tidak tersedia."))
+        return runCatching {
+            db.collection("rooms").document(roomId).delete().await()
+            Unit
         }
     }
 

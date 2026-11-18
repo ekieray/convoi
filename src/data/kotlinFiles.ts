@@ -8,6 +8,7 @@ import liveTrackingMapKt from '../../android/app/src/main/java/com/konvoiku/tour
 import tripHistoryKt from '../../android/app/src/main/java/com/konvoiku/touring/ui/screens/TripHistoryScreen.kt?raw';
 import tripDetailKt from '../../android/app/src/main/java/com/konvoiku/touring/ui/screens/TripDetailScreen.kt?raw';
 import aboutAppKt from '../../android/app/src/main/java/com/konvoiku/touring/ui/screens/AboutAppScreen.kt?raw';
+import adminBackendKt from '../../android/app/src/main/java/com/konvoiku/touring/ui/screens/AdminBackendScreen.kt?raw';
 import tripSummaryCardRendererKt from '../../android/app/src/main/java/com/konvoiku/touring/ui/components/TripSummaryCardRenderer.kt?raw';
 import touringAtmosphereKt from '../../android/app/src/main/java/com/konvoiku/touring/ui/components/TouringAtmosphereBackground.kt?raw';
 import navGraphKt from '../../android/app/src/main/java/com/konvoiku/touring/ui/navigation/ConvoyNavGraph.kt?raw';
@@ -131,6 +132,14 @@ export const KOTLIN_SOURCE_FILES: KotlinSourceFile[] = [
     category: 'Layar Compose',
     linkedRoute: 'about_app',
     code: aboutAppKt,
+  },
+  {
+    id: 'admin_backend',
+    name: 'AdminBackendScreen.kt',
+    path: 'app/src/main/java/com/konvoiku/touring/ui/screens/AdminBackendScreen.kt',
+    category: 'Layar Compose',
+    linkedRoute: 'admin_backend',
+    code: adminBackendKt,
   },
   {
     id: 'convoy_avatar',
