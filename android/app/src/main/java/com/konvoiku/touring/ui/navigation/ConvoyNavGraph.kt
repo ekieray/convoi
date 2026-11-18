@@ -14,6 +14,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.konvoiku.touring.model.UserRole
 import com.konvoiku.touring.ui.screens.AboutAppScreen
+import com.konvoiku.touring.ui.screens.CustomizeProfileScreen
 import com.konvoiku.touring.ui.screens.JoinTourScreen
 import com.konvoiku.touring.ui.screens.LiveTrackingMapScreen
 import com.konvoiku.touring.ui.screens.LoginScreen
@@ -27,6 +28,7 @@ import com.konvoiku.touring.viewmodel.ConvoyViewModel
 sealed class ConvoyRoute(val route: String) {
     data object Login : ConvoyRoute("login")
     data object RoleSelection : ConvoyRoute("role_selection")
+    data object CustomizeProfile : ConvoyRoute("customize_profile")
     data object VehicleProfile : ConvoyRoute("vehicle_profile")
     data object TourLeader : ConvoyRoute("tour_leader")
     data object JoinTour : ConvoyRoute("join_tour")
@@ -45,7 +47,7 @@ fun ConvoyNavGraph(
 
     NavHost(
         navController = navController,
-        startDestination = ConvoyRoute.Login.route,
+        startDestination = if (uiState.isLoggedIn) ConvoyRoute.RoleSelection.route else ConvoyRoute.Login.route,
         enterTransition = {
             slideIntoContainer(
                 towards = AnimatedContentTransitionScope.SlideDirection.Left,
@@ -75,6 +77,30 @@ fun ConvoyNavGraph(
             LoginScreen(
                 initialName = uiState.authUserName.ifBlank { uiState.vehicleProfile.fullName },
                 initialEmail = uiState.authUserEmail,
+                isAuthLoading = uiState.isAuthLoading,
+                authError = uiState.authError,
+                onClearAuthError = viewModel::clearAuthError,
+                onEmailSignIn = { email, password ->
+                    viewModel.signInWithEmail(email, password) {
+                        navController.navigate(ConvoyRoute.RoleSelection.route) {
+                            popUpTo(ConvoyRoute.Login.route) { inclusive = true }
+                        }
+                    }
+                },
+                onEmailSignUp = { name, email, password ->
+                    viewModel.signUpWithEmail(name, email, password) {
+                        navController.navigate(ConvoyRoute.RoleSelection.route) {
+                            popUpTo(ConvoyRoute.Login.route) { inclusive = true }
+                        }
+                    }
+                },
+                onSocialSignIn = { provider, name, email, handle ->
+                    viewModel.loginWithSocialProvider(provider, name, email, handle) {
+                        navController.navigate(ConvoyRoute.RoleSelection.route) {
+                            popUpTo(ConvoyRoute.Login.route) { inclusive = true }
+                        }
+                    }
+                },
                 onLoginSuccess = { name, email, isGuest ->
                     viewModel.loginUser(name, email, isGuest)
                     navController.navigate(ConvoyRoute.RoleSelection.route) {
@@ -95,6 +121,8 @@ fun ConvoyNavGraph(
                 latestTripTitle = uiState.tripHistory.firstOrNull()?.tourTitle,
                 authUserName = uiState.authUserName,
                 authUserEmail = uiState.authUserEmail,
+                authProvider = uiState.authProvider,
+                userProfile = uiState.vehicleProfile,
                 isGuestMode = uiState.isGuestMode,
                 onRoleSelected = { role ->
                     viewModel.selectRole(role)
@@ -106,6 +134,10 @@ fun ConvoyNavGraph(
                         viewModel.createNewTourRoom()
                     }
                     navController.navigate(ConvoyRoute.LiveMap.route)
+                },
+                onOpenCustomizeProfile = {
+                    viewModel.clearProfileSyncMessage()
+                    navController.navigate(ConvoyRoute.CustomizeProfile.route)
                 },
                 onOpenTripHistory = {
                     navController.navigate(ConvoyRoute.TripHistory.route)
@@ -119,6 +151,17 @@ fun ConvoyNavGraph(
                         popUpTo(0) { inclusive = true }
                     }
                 }
+            )
+        }
+
+        composable(ConvoyRoute.CustomizeProfile.route) {
+            CustomizeProfileScreen(
+                profile = uiState.vehicleProfile,
+                authProvider = uiState.authProvider,
+                isSavingProfile = uiState.isSavingProfile,
+                syncStatusMessage = uiState.profileSyncMessage,
+                onSaveAndSyncProfile = viewModel::saveAndSyncCustomizedProfile,
+                onBack = { navController.popBackStack() }
             )
         }
 

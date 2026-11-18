@@ -1,5 +1,6 @@
-import { ArrowRight, BadgeCheck, Bike, Car, Cloud, History, Info, Link2, LogOut, Navigation, Users } from 'lucide-react';
-import { TourRoom, UserRole } from '../../types/convoy';
+import { ArrowRight, BadgeCheck, Bike, Car, History, Info, Link2, LogOut, Navigation, UserCog, Users } from 'lucide-react';
+import { AuthProviderId, TourRoom, UserRole, VehicleProfile } from '../../types/convoy';
+import { ConvoyAvatar } from '../ConvoyAvatar';
 import {
   TouringCanvasBackdrop,
   TouringHeroBanner,
@@ -12,15 +13,26 @@ interface RoleSelectionViewProps {
   latestTripTitle?: string;
   authUserEmail?: string | null;
   authUserName?: string | null;
+  authProvider?: AuthProviderId;
+  userProfile?: VehicleProfile;
   localUserName?: string | null;
   isSigningIn?: boolean;
   onGoogleSignIn: () => void;
   onGoogleSignOut: () => void;
+  onOpenCustomizeProfile: () => void;
   onSelectRole: (role: UserRole) => void;
   onResumeCurrentConvoy: () => void;
   onOpenTripHistory: () => void;
   onOpenAboutApp: () => void;
 }
+
+const PROVIDER_TAG: Record<AuthProviderId, string> = {
+  google: 'Google Sync',
+  facebook: 'Facebook Sync',
+  instagram: 'Instagram Sync',
+  email: 'Email Sync',
+  local: 'Email Lokal',
+};
 
 export function RoleSelectionView({
   activeRoom,
@@ -29,10 +41,13 @@ export function RoleSelectionView({
   latestTripTitle,
   authUserEmail,
   authUserName,
+  authProvider = 'local',
+  userProfile,
   localUserName,
   isSigningIn,
   onGoogleSignIn,
   onGoogleSignOut,
+  onOpenCustomizeProfile,
   onSelectRole,
   onResumeCurrentConvoy,
   onOpenTripHistory,
@@ -42,6 +57,16 @@ export function RoleSelectionView({
   const activeMemberCount = activeRoom?.members.length ?? 4;
   const activeStatus = activeRoom ? 'Sedang Berjalan' : 'Siap Bergabung';
   const hasAnySession = Boolean(authUserEmail || localUserName);
+  const displayName =
+    userProfile?.fullName?.trim() || authUserName || localUserName || 'Pengendara KonvoiKu';
+  const displayEmail =
+    userProfile?.email?.trim() || authUserEmail || '';
+  const metaSubtitle = [
+    userProfile?.clubName?.trim(),
+    userProfile?.homeCity?.trim(),
+  ]
+    .filter(Boolean)
+    .join(' · ');
 
   return (
     <div className="relative flex flex-col min-h-full bg-[#F4F6FA] dark:bg-[#0A0F16] text-[#0F172A] dark:text-[#F1F5F9]">
@@ -84,45 +109,32 @@ export function RoleSelectionView({
             subtitle="Koordinasi perjalanan mobil dan motor secara real-time dengan GPS, Google Maps & Sinkronisasi Room."
           />
 
-          {/* Real-Time Cloud Sync Account Bar */}
-          <div className="rounded-[18px] bg-white dark:bg-[#131B26] border border-[#E2E8F0] dark:border-[#2D3A4F] px-3.5 py-3 flex items-center justify-between gap-2.5 shadow-xs">
-            <div className="flex items-center gap-2.5 min-w-0">
-              <div
-                className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
-                  authUserEmail
-                    ? 'bg-[#DCFCE7] dark:bg-[#064E3B] text-[#15803D] dark:text-[#4ADE80]'
-                    : 'bg-[#EFF6FF] dark:bg-[#1E3A8A] text-[#1D4ED8] dark:text-[#60A5FA]'
-                }`}
-              >
-                <Cloud className="w-4 h-4" />
+          {/* Account & Customize Profile Card */}
+          <div className="rounded-[18px] bg-white dark:bg-[#131B26] border border-[#E2E8F0] dark:border-[#2D3A4F] p-3.5 space-y-3 shadow-xs">
+            <div className="flex items-center justify-between gap-2.5">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <ConvoyAvatar
+                  preset={userProfile?.avatarPreset || 'HELMET_TOURING'}
+                  photoUrl={userProfile?.avatarPhotoUrl}
+                  name={displayName}
+                  sizeClass="w-11 h-11"
+                  ringClass="ring-2 ring-[#1D4ED8]/70 dark:ring-[#60A5FA]/70"
+                />
+                <div className="min-w-0">
+                  <p className="text-sm font-bold truncate">{displayName}</p>
+                  <p className="text-[11px] text-[#64748B] dark:text-[#94A3B8] truncate">
+                    {displayEmail
+                      ? `${displayEmail} · ${PROVIDER_TAG[authProvider]}`
+                      : 'Belum terhubung email · Customize untuk sinkronisasi'}
+                  </p>
+                  {metaSubtitle && (
+                    <p className="text-[11px] font-medium text-[#1D4ED8] dark:text-[#93C5FD] truncate">
+                      {metaSubtitle}
+                    </p>
+                  )}
+                </div>
               </div>
-              <div className="min-w-0">
-                <p className="text-xs font-bold truncate">
-                  {authUserEmail
-                    ? authUserName || 'Akun Google Terhubung'
-                    : localUserName || 'Sinkronisasi Room Real-Time'}
-                </p>
-                <p className="text-[11px] text-[#64748B] dark:text-[#94A3B8] truncate">
-                  {authUserEmail
-                    ? `${authUserEmail} · Cloud Sync Aktif`
-                    : localUserName
-                      ? 'Sesi Lokal · Hubungkan Google untuk Cloud Sync'
-                      : 'Masuk Google untuk konvoi multi-perangkat'}
-                </p>
-              </div>
-            </div>
 
-            <div className="flex items-center gap-1.5 shrink-0">
-              {!authUserEmail && (
-                <button
-                  type="button"
-                  disabled={isSigningIn}
-                  onClick={onGoogleSignIn}
-                  className="px-2.5 py-1.5 rounded-xl bg-[#1D4ED8] hover:bg-[#1E40AF] disabled:opacity-60 text-white text-[11px] font-semibold cursor-pointer whitespace-nowrap shrink-0"
-                >
-                  {isSigningIn ? 'Memuat...' : 'Hubungkan Google'}
-                </button>
-              )}
               {hasAnySession && (
                 <button
                   type="button"
@@ -132,6 +144,28 @@ export function RoleSelectionView({
                 >
                   <LogOut className="w-3 h-3" />
                   <span>Keluar</span>
+                </button>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={onOpenCustomizeProfile}
+                className="flex-1 min-h-[40px] px-3 py-2 rounded-xl bg-[#EFF6FF] dark:bg-[#1E3A8A]/60 text-[#1D4ED8] dark:text-[#93C5FD] text-xs font-semibold flex items-center justify-center gap-1.5 hover:bg-[#DBEAFE] transition-colors cursor-pointer"
+              >
+                <UserCog className="w-3.5 h-3.5 shrink-0" />
+                <span>Customize Profil</span>
+              </button>
+
+              {!authUserEmail && (
+                <button
+                  type="button"
+                  disabled={isSigningIn}
+                  onClick={onGoogleSignIn}
+                  className="px-3 min-h-[40px] py-2 rounded-xl bg-[#1D4ED8] hover:bg-[#1E40AF] disabled:opacity-60 text-white text-xs font-semibold cursor-pointer whitespace-nowrap shrink-0"
+                >
+                  {isSigningIn ? 'Memuat...' : 'Sync Google'}
                 </button>
               )}
             </div>

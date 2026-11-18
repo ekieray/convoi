@@ -1,5 +1,6 @@
 import loginKt from '../../android/app/src/main/java/com/konvoiku/touring/ui/screens/LoginScreen.kt?raw';
 import roleSelectionKt from '../../android/app/src/main/java/com/konvoiku/touring/ui/screens/RoleSelectionScreen.kt?raw';
+import customizeProfileKt from '../../android/app/src/main/java/com/konvoiku/touring/ui/screens/CustomizeProfileScreen.kt?raw';
 import vehicleProfileKt from '../../android/app/src/main/java/com/konvoiku/touring/ui/screens/VehicleProfileScreen.kt?raw';
 import tourLeaderKt from '../../android/app/src/main/java/com/konvoiku/touring/ui/screens/TourLeaderScreen.kt?raw';
 import joinTourKt from '../../android/app/src/main/java/com/konvoiku/touring/ui/screens/JoinTourScreen.kt?raw';
@@ -58,6 +59,14 @@ export const KOTLIN_SOURCE_FILES: KotlinSourceFile[] = [
     category: 'Layar Compose',
     linkedRoute: 'role_selection',
     code: roleSelectionKt,
+  },
+  {
+    id: 'customize_profile',
+    name: 'CustomizeProfileScreen.kt',
+    path: 'app/src/main/java/com/konvoiku/touring/ui/screens/CustomizeProfileScreen.kt',
+    category: 'Layar Compose',
+    linkedRoute: 'customize_profile',
+    code: customizeProfileKt,
   },
   {
     id: 'vehicle_profile',

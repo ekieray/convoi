@@ -4,6 +4,7 @@ import { User } from 'firebase/auth';
 import { AlertTriangle, Moon, RotateCcw, Sun } from 'lucide-react';
 import { KotlinSourceExplorer } from './components/KotlinSourceExplorer';
 import { AboutAppView } from './components/screens/AboutAppView';
+import { CustomizeProfileView } from './components/screens/CustomizeProfileView';
 import { JoinTourView } from './components/screens/JoinTourView';
 import { LiveTrackingMapView } from './components/screens/LiveTrackingMapView';
 import { LoginView } from './components/screens/LoginView';
@@ -13,8 +14,13 @@ import { TripDetailView } from './components/screens/TripDetailView';
 import { TripHistoryView } from './components/screens/TripHistoryView';
 import { VehicleProfileView } from './components/screens/VehicleProfileView';
 import {
+  mapFirebaseAuthError,
+  sendResetPasswordEmail,
+  signInWithEmail,
+  signInWithFacebook,
   signInWithGoogle,
   signOutFirebase,
+  signUpWithEmail,
   subscribeToAuthState,
   testFirestoreConnection,
 } from './firebase';
@@ -25,12 +31,17 @@ import {
   createSyncedRoom,
   finishSyncedRoom,
   joinSyncedRoom,
+  loadLocalSession,
+  loadProfileByEmail,
   loadUserPrivateProfile,
   loadUserTripsFromFirestore,
+  normalizeProfileEmail,
   publishMemberTelemetry,
   removeRoomCheckpoint,
   removeSyncedMember,
   resolveSyncedSos,
+  saveLocalSession,
+  saveProfileByEmail,
   saveTripRecordToFirestore,
   saveUserPrivateProfile,
   sendRoomMessage,
@@ -40,6 +51,7 @@ import {
   updateSyncedRoomRoute,
 } from './services/convoySyncService';
 import {
+  AuthProviderId,
   ConnectionStatus,
   ConvoyMember,
   ConvoyRouteConfig,
@@ -68,6 +80,12 @@ import {
 
 const INITIAL_PROFILE: VehicleProfile = {
   fullName: '',
+  email: '',
+  authProvider: 'local',
+  clubName: '',
+  homeCity: '',
+  bio: '',
+  instagramHandle: '',
   vehicleType: 'MOBIL',
   vehicleDetail: '',
   licensePlate: '',
@@ -551,7 +569,8 @@ const DEFAULT_TRIP_HISTORY: TripHistoryRecord[] = [
 const ROUTE_STEPS: Array<{ route: ScreenRoute; label: string }> = [
   { route: 'login', label: '0. Masuk' },
   { route: 'role_selection', label: '1. Beranda' },
-  { route: 'vehicle_profile', label: '2. Profil' },
+  { route: 'customize_profile', label: '1B. Profil User' },
+  { route: 'vehicle_profile', label: '2. Kendaraan' },
   { route: 'tour_leader', label: '3A. Setup Leader' },
   { route: 'join_tour', label: '3B. Gabung' },
   { route: 'live_map', label: '4. Peta Live' },
@@ -564,15 +583,22 @@ export default function App() {
   const [currentRoute, setCurrentRoute] = useState<ScreenRoute>('login');
   const [aboutReturnRoute, setAboutReturnRoute] =
     useState<ScreenRoute>('login');
+  const [customizeReturnRoute, setCustomizeReturnRoute] =
+    useState<ScreenRoute>('role_selection');
   const [navDirection, setNavDirection] = useState<1 | -1>(1);
   const [selectedRole, setSelectedRole] = useState<UserRole>('TOUR_LEADER');
   const [vehicleProfile, setVehicleProfile] = useState<VehicleProfile>(INITIAL_PROFILE);
 
   // Auth & Cloud Room Sync state
   const [authUser, setAuthUser] = useState<User | null>(null);
+  const [authProvider, setAuthProvider] = useState<AuthProviderId>('local');
   const [localUserName, setLocalUserName] = useState<string | null>(null);
+  const [localUserEmail, setLocalUserEmail] = useState<string>('');
   const [authError, setAuthError] = useState<string | null>(null);
+  const [authInfoMessage, setAuthInfoMessage] = useState<string | null>(null);
   const [isSigningIn, setIsSigningIn] = useState(false);
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
+  const [profileSyncMessage, setProfileSyncMessage] = useState<string | null>(null);
   const [isCreatingRoom, setIsCreatingRoom] = useState(false);
   const [isJoiningRoom, setIsJoiningRoom] = useState(false);
 
@@ -647,6 +673,116 @@ export default function App() {
     return () => window.removeEventListener('gmp-quota-exceeded', handleQuota);
   }, []);
 
+  // Restore local/Instagram session on startup if no Firebase user active
+  useEffect(() => {
+    const savedSession = loadLocalSession();
+    if (savedSession) {
+      setLocalUserName(savedSession.fullName);
+      setLocalUserEmail(savedSession.email);
+      setAuthProvider(savedSession.authProvider);
+      const emailProfile = loadProfileByEmail(savedSession.email);
+      if (emailProfile) {
+        setVehicleProfile((prev) => ({
+          ...prev,
+          ...emailProfile,
+          fullName: emailProfile.fullName || savedSession.fullName,
+          email: emailProfile.email || savedSession.email,
+          instagramHandle:
+            emailProfile.instagramHandle || savedSession.instagramHandle || '',
+          authProvider: savedSession.authProvider,
+        }));
+      } else {
+        setVehicleProfile((prev) => ({
+          ...prev,
+          fullName: prev.fullName || savedSession.fullName,
+          email: savedSession.email,
+          instagramHandle: savedSession.instagramHandle || '',
+          authProvider: savedSession.authProvider,
+        }));
+      }
+      setCurrentRoute((prev) => (prev === 'login' ? 'role_selection' : prev));
+    }
+  }, []);
+
+  // Listen for Instagram 3P OAuth popup callback messages
+  useEffect(() => {
+    const handleOAuthMessage = (event: MessageEvent) => {
+      const origin = event.origin || '';
+      if (
+        !origin.endsWith('.run.app') &&
+        !origin.includes('localhost') &&
+        origin !== window.location.origin
+      ) {
+        return;
+      }
+
+      if (event.data?.type === 'OAUTH_AUTH_ERROR') {
+        setIsSigningIn(false);
+        setAuthError(
+          typeof event.data.error === 'string'
+            ? event.data.error
+            : 'Autentikasi Instagram dibatalkan atau gagal.'
+        );
+        return;
+      }
+
+      if (
+        event.data?.type === 'OAUTH_AUTH_SUCCESS' &&
+        event.data?.provider === 'instagram'
+      ) {
+        const igProfile = event.data.profile as
+          | {
+              id?: string;
+              username?: string;
+              fullName?: string;
+              avatarPhotoUrl?: string;
+            }
+          | undefined;
+        const igUsername = (igProfile?.username || '').replace(/^@/, '');
+        const igEmail = igUsername
+          ? `${igUsername.toLowerCase()}@instagram.konvoiku.id`
+          : '';
+        const resolvedName =
+          igProfile?.fullName?.trim() ||
+          (igUsername ? `@${igUsername}` : 'Rider Instagram');
+        const restoredByEmail = loadProfileByEmail(igEmail);
+
+        setIsSigningIn(false);
+        setAuthError(null);
+        setAuthInfoMessage(
+          `Akun Instagram @${igUsername || 'rider'} berhasil terhubung!`
+        );
+        setAuthProvider('instagram');
+        setLocalUserName(resolvedName);
+        setLocalUserEmail(restoredByEmail?.email || igEmail);
+
+        const nextProfile: VehicleProfile = {
+          ...(restoredByEmail || INITIAL_PROFILE),
+          fullName: restoredByEmail?.fullName || resolvedName,
+          email: restoredByEmail?.email || igEmail,
+          authProvider: 'instagram',
+          instagramHandle: igUsername || restoredByEmail?.instagramHandle || '',
+          avatarPhotoUrl:
+            restoredByEmail?.avatarPhotoUrl ||
+            (igProfile?.avatarPhotoUrl ? igProfile.avatarPhotoUrl : undefined),
+        };
+        setVehicleProfile(nextProfile);
+        saveProfileByEmail(nextProfile.email, nextProfile);
+        saveLocalSession({
+          fullName: nextProfile.fullName,
+          email: nextProfile.email || '',
+          authProvider: 'instagram',
+          instagramHandle: igUsername,
+        });
+        setNavDirection(1);
+        setCurrentRoute('customize_profile');
+      }
+    };
+
+    window.addEventListener('message', handleOAuthMessage);
+    return () => window.removeEventListener('message', handleOAuthMessage);
+  }, []);
+
   // Test Firestore connection + Subscribe to Firebase Auth
   useEffect(() => {
     testFirestoreConnection();
@@ -654,22 +790,54 @@ export default function App() {
       setAuthUser(user);
       if (user) {
         setAuthError(null);
+        const rawProviderId = user.providerData?.[0]?.providerId || '';
+        const detectedProvider: AuthProviderId = rawProviderId.includes('facebook')
+          ? 'facebook'
+          : rawProviderId.includes('password')
+            ? 'email'
+            : 'google';
+        setAuthProvider(detectedProvider);
+
+        const normalizedUserEmail = normalizeProfileEmail(user.email);
+        if (normalizedUserEmail) {
+          setLocalUserEmail(normalizedUserEmail);
+        }
+
         setCurrentRoute((prev) => (prev === 'login' ? 'role_selection' : prev));
         try {
-          const savedProfile = await loadUserPrivateProfile(user.uid);
-          if (savedProfile) {
-            setVehicleProfile((prev) => ({
-              ...prev,
-              ...savedProfile,
-              fullName:
-                savedProfile.fullName || prev.fullName || user.displayName || '',
-            }));
-          } else if (user.displayName) {
-            setVehicleProfile((prev) => ({
-              ...prev,
-              fullName: prev.fullName || user.displayName || '',
-            }));
+          const savedCloud = await loadUserPrivateProfile(user.uid);
+          const savedLocalByEmail = loadProfileByEmail(
+            savedCloud?.email || normalizedUserEmail
+          );
+
+          const merged: VehicleProfile = {
+            ...INITIAL_PROFILE,
+            ...(savedLocalByEmail || {}),
+            ...(savedCloud || {}),
+            fullName:
+              savedCloud?.fullName ||
+              savedLocalByEmail?.fullName ||
+              user.displayName ||
+              'Rider KonvoiKu',
+            email:
+              normalizeProfileEmail(savedCloud?.email) ||
+              normalizeProfileEmail(savedLocalByEmail?.email) ||
+              normalizedUserEmail,
+            authProvider:
+              savedCloud?.authProvider && savedCloud.authProvider !== 'local'
+                ? savedCloud.authProvider
+                : detectedProvider,
+          };
+
+          setVehicleProfile(merged);
+          if (merged.email) {
+            saveProfileByEmail(merged.email, merged);
           }
+
+          if (!savedCloud) {
+            saveUserPrivateProfile(user.uid, merged).catch(() => {});
+          }
+
           const cloudTrips = await loadUserTripsFromFirestore(user.uid);
           if (cloudTrips.length > 0) {
             setTripHistory((prev) => {
@@ -937,32 +1105,180 @@ export default function App() {
     if (isSigningIn) return;
     setIsSigningIn(true);
     setAuthError(null);
+    setAuthInfoMessage(null);
     try {
       await signInWithGoogle();
       setLocalUserName(null);
+      saveLocalSession(null);
       setNavDirection(1);
       setCurrentRoute('role_selection');
     } catch (err) {
       console.error('Login Google gagal:', err);
-      const message =
-        err instanceof Error && err.message.includes('popup')
-          ? 'Popup login Google diblokir atau ditutup. Izinkan popup browser atau gunakan Masuk Akun Pengendara di bawah.'
-          : 'Gagal masuk dengan Google. Coba lagi atau gunakan Masuk Akun Pengendara di bawah.';
-      setAuthError(message);
+      setAuthError(mapFirebaseAuthError(err, 'Google'));
     } finally {
       setIsSigningIn(false);
     }
   };
 
-  const handleLocalLogin = (fullName: string) => {
-    const cleanName = fullName.trim();
-    if (!cleanName) return;
+  const handleFacebookSignIn = async () => {
+    if (isSigningIn) return;
+    setIsSigningIn(true);
     setAuthError(null);
+    setAuthInfoMessage(null);
+    try {
+      await signInWithFacebook();
+      setLocalUserName(null);
+      saveLocalSession(null);
+      setNavDirection(1);
+      setCurrentRoute('role_selection');
+    } catch (err) {
+      console.error('Login Facebook gagal:', err);
+      setAuthError(mapFirebaseAuthError(err, 'Facebook'));
+    } finally {
+      setIsSigningIn(false);
+    }
+  };
+
+  const handleInstagramSignIn = async () => {
+    if (isSigningIn) return;
+    setIsSigningIn(true);
+    setAuthError(null);
+    setAuthInfoMessage(null);
+    try {
+      const res = await fetch('/api/auth/instagram/url');
+      if (!res.ok) {
+        throw new Error('Gagal menghubungi server OAuth Instagram.');
+      }
+      const data = (await res.json()) as {
+        configured?: boolean;
+        url?: string;
+        redirectUri?: string;
+        message?: string;
+      };
+
+      if (!data.configured || !data.url) {
+        setIsSigningIn(false);
+        setAuthError(
+          `Instagram OAuth belum aktif (${data.message || 'INSTAGRAM_CLIENT_ID belum diatur'}). Callback URI: ${data.redirectUri || `${window.location.origin}/auth/callback`}`
+        );
+        return;
+      }
+
+      const authWindow = window.open(
+        data.url,
+        'instagram_oauth_popup',
+        'width=540,height=680'
+      );
+      if (!authWindow) {
+        setIsSigningIn(false);
+        setAuthError(
+          'Popup Instagram diblokir browser. Izinkan popup untuk situs ini lalu coba lagi.'
+        );
+      }
+    } catch (err) {
+      setIsSigningIn(false);
+      setAuthError(
+        err instanceof Error
+          ? err.message
+          : 'Gagal membuka otorisasi Instagram.'
+      );
+    }
+  };
+
+  const handleEmailAuth = async (params: {
+    mode: 'signin' | 'signup';
+    fullName: string;
+    email: string;
+    password: string;
+  }) => {
+    if (isSigningIn) return;
+    setIsSigningIn(true);
+    setAuthError(null);
+    setAuthInfoMessage(null);
+    const normEmail = normalizeProfileEmail(params.email);
+
+    try {
+      const user =
+        params.mode === 'signup'
+          ? await signUpWithEmail(params.fullName, normEmail, params.password)
+          : await signInWithEmail(normEmail, params.password);
+
+      setLocalUserName(null);
+      saveLocalSession(null);
+
+      if (params.mode === 'signup') {
+        const seedProfile: VehicleProfile = {
+          ...INITIAL_PROFILE,
+          fullName: params.fullName.trim() || user.displayName || 'Rider KonvoiKu',
+          email: normEmail,
+          authProvider: 'email',
+        };
+        setVehicleProfile(seedProfile);
+        saveProfileByEmail(normEmail, seedProfile);
+        await saveUserPrivateProfile(user.uid, seedProfile).catch(() => {});
+        setCustomizeReturnRoute('role_selection');
+        setNavDirection(1);
+        setCurrentRoute('customize_profile');
+      } else {
+        setNavDirection(1);
+        setCurrentRoute('role_selection');
+      }
+    } catch (err) {
+      console.error('Email auth gagal:', err);
+      setAuthError(mapFirebaseAuthError(err, 'Email'));
+    } finally {
+      setIsSigningIn(false);
+    }
+  };
+
+  const handleForgotPassword = async (email: string) => {
+    setAuthError(null);
+    setAuthInfoMessage(null);
+    try {
+      await sendResetPasswordEmail(email);
+      setAuthInfoMessage(
+        `Tautan atur ulang kata sandi telah dikirim ke ${email.trim()}.`
+      );
+    } catch (err) {
+      setAuthError(mapFirebaseAuthError(err, 'Reset Sandi'));
+    }
+  };
+
+  const handleLocalLogin = (fullName: string, email: string) => {
+    const cleanName = fullName.trim();
+    const normEmail = normalizeProfileEmail(email);
+    if (!cleanName) return;
+
+    setAuthError(null);
+    setAuthInfoMessage(null);
+    setAuthProvider('local');
     setLocalUserName(cleanName);
-    setVehicleProfile((prev) => ({
-      ...prev,
-      fullName: prev.fullName.trim() || cleanName,
-    }));
+    setLocalUserEmail(normEmail);
+
+    const existingEmailProfile = normEmail ? loadProfileByEmail(normEmail) : null;
+    const nextProfile: VehicleProfile = existingEmailProfile
+      ? {
+          ...existingEmailProfile,
+          fullName: existingEmailProfile.fullName || cleanName,
+          email: normEmail,
+          authProvider: 'local',
+        }
+      : {
+          ...vehicleProfile,
+          fullName: cleanName,
+          email: normEmail,
+          authProvider: 'local',
+        };
+
+    setVehicleProfile(nextProfile);
+    if (normEmail) {
+      saveProfileByEmail(normEmail, nextProfile);
+    }
+    saveLocalSession({
+      fullName: nextProfile.fullName,
+      email: normEmail,
+      authProvider: 'local',
+    });
     setNavDirection(1);
     setCurrentRoute('role_selection');
   };
@@ -973,12 +1289,88 @@ export default function App() {
         await signOutFirebase();
       }
       setLocalUserName(null);
+      setLocalUserEmail('');
+      setAuthProvider('local');
+      saveLocalSession(null);
       setAuthError(null);
+      setAuthInfoMessage(null);
+      setProfileSyncMessage(null);
       setActiveRoom(null);
       setNavDirection(-1);
       setCurrentRoute('login');
     } catch (err) {
       console.error('Logout gagal:', err);
+    }
+  };
+
+  const handleSaveCustomizedProfile = async (nextProfile: VehicleProfile) => {
+    setIsSavingProfile(true);
+    setProfileSyncMessage(null);
+    const normEmail = normalizeProfileEmail(
+      nextProfile.email || authUser?.email || localUserEmail
+    );
+    const enrichedProfile: VehicleProfile = {
+      ...nextProfile,
+      email: normEmail,
+      authProvider: nextProfile.authProvider || authProvider,
+    };
+
+    setVehicleProfile(enrichedProfile);
+    if (normEmail) {
+      setLocalUserEmail(normEmail);
+      saveProfileByEmail(normEmail, enrichedProfile);
+    }
+    if (!authUser && localUserName) {
+      setLocalUserName(enrichedProfile.fullName);
+      saveLocalSession({
+        fullName: enrichedProfile.fullName,
+        email: normEmail,
+        authProvider,
+        instagramHandle: enrichedProfile.instagramHandle,
+      });
+    }
+
+    // Update current user card inside active room if already riding
+    setActiveRoom((prev) =>
+      prev
+        ? {
+            ...prev,
+            members: prev.members.map((m) =>
+              m.isCurrentUser
+                ? {
+                    ...m,
+                    fullName: enrichedProfile.fullName || m.fullName,
+                    vehicleType: enrichedProfile.vehicleType,
+                    vehicleDetail:
+                      enrichedProfile.vehicleDetail || m.vehicleDetail,
+                    licensePlate: enrichedProfile.licensePlate || m.licensePlate,
+                    emergencyContact:
+                      enrichedProfile.emergencyContact || m.emergencyContact,
+                    avatarPreset: enrichedProfile.avatarPreset,
+                    avatarPhotoUrl: enrichedProfile.avatarPhotoUrl,
+                  }
+                : m
+            ),
+          }
+        : prev
+    );
+
+    try {
+      if (authUser) {
+        await saveUserPrivateProfile(authUser.uid, enrichedProfile);
+      }
+      setProfileSyncMessage(
+        normEmail
+          ? `Tersimpan & tersinkronisasi dengan ${normEmail}`
+          : 'Profil berhasil disimpan.'
+      );
+    } catch (err) {
+      console.warn('Gagal sinkronisasi ke Firestore:', err);
+      setProfileSyncMessage(
+        'Profil tersimpan lokal di perangkat. Pastikan Firestore & koneksi aktif untuk sinkronisasi cloud.'
+      );
+    } finally {
+      setIsSavingProfile(false);
     }
   };
 
@@ -1072,8 +1464,18 @@ export default function App() {
   const handleUpdateProfile = (patch: Partial<VehicleProfile>) => {
     setVehicleProfile((prev) => {
       const next = { ...prev, ...patch };
+      const normEmail = normalizeProfileEmail(
+        next.email || authUser?.email || localUserEmail
+      );
+      if (normEmail) {
+        saveProfileByEmail(normEmail, { ...next, email: normEmail });
+      }
       if (authUser) {
-        saveUserPrivateProfile(authUser.uid, next).catch((err) =>
+        saveUserPrivateProfile(authUser.uid, {
+          ...next,
+          email: normEmail,
+          authProvider: next.authProvider || authProvider,
+        }).catch((err) =>
           console.warn('Gagal sinkronisasi profil ke Firestore:', err)
         );
       }
@@ -2524,15 +2926,29 @@ export default function App() {
                   >
                     {currentRoute === 'login' && (
                       <LoginView
-                        authUserEmail={authUser?.email ?? null}
-                        authUserName={authUser?.displayName ?? null}
+                        authUserEmail={authUser?.email ?? (localUserEmail || null)}
+                        authUserName={
+                          vehicleProfile.fullName || authUser?.displayName || null
+                        }
+                        authProvider={authProvider}
                         localUserName={localUserName}
                         isSigningIn={isSigningIn}
                         authError={authError}
+                        authInfoMessage={authInfoMessage}
                         initialName={vehicleProfile.fullName}
+                        initialEmail={vehicleProfile.email || localUserEmail}
                         onGoogleSignIn={handleGoogleSignIn}
+                        onFacebookSignIn={handleFacebookSignIn}
+                        onInstagramSignIn={handleInstagramSignIn}
+                        onEmailAuth={handleEmailAuth}
+                        onForgotPassword={handleForgotPassword}
                         onLocalLogin={handleLocalLogin}
                         onContinueSession={() => navigateTo('role_selection', 1)}
+                        onOpenCustomizeProfile={() => {
+                          setCustomizeReturnRoute('login');
+                          setProfileSyncMessage(null);
+                          navigateTo('customize_profile', 1);
+                        }}
                         onOpenAboutApp={() => {
                           setAboutReturnRoute('login');
                           navigateTo('about_app', 1);
@@ -2546,12 +2962,19 @@ export default function App() {
                         destinationName={routeConfig.destinationName}
                         tripHistoryCount={tripHistory.length}
                         latestTripTitle={tripHistory[0]?.tourTitle}
-                        authUserEmail={authUser?.email ?? null}
+                        authUserEmail={authUser?.email ?? (localUserEmail || null)}
                         authUserName={authUser?.displayName ?? null}
+                        authProvider={authProvider}
+                        userProfile={vehicleProfile}
                         localUserName={localUserName}
                         isSigningIn={isSigningIn}
                         onGoogleSignIn={handleGoogleSignIn}
                         onGoogleSignOut={handleGoogleSignOut}
+                        onOpenCustomizeProfile={() => {
+                          setCustomizeReturnRoute('role_selection');
+                          setProfileSyncMessage(null);
+                          navigateTo('customize_profile', 1);
+                        }}
                         onSelectRole={handleSelectRole}
                         onResumeCurrentConvoy={() => {
                           ensureDemoRoom(selectedRole);
@@ -2562,6 +2985,18 @@ export default function App() {
                           setAboutReturnRoute('role_selection');
                           navigateTo('about_app', 1);
                         }}
+                      />
+                    )}
+
+                    {currentRoute === 'customize_profile' && (
+                      <CustomizeProfileView
+                        profile={vehicleProfile}
+                        authProvider={authProvider}
+                        isCloudAuthenticated={Boolean(authUser)}
+                        isSavingProfile={isSavingProfile}
+                        syncStatusMessage={profileSyncMessage}
+                        onSaveAndSyncProfile={handleSaveCustomizedProfile}
+                        onBack={() => navigateTo(customizeReturnRoute, -1)}
                       />
                     )}
 

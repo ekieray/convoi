@@ -3,9 +3,11 @@ package com.konvoiku.touring.data
 import com.google.firebase.FirebaseApp
 import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.UserProfileChangeRequest
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
+import com.konvoiku.touring.model.AuthProviderType
 import com.konvoiku.touring.model.AvatarPreset
 import com.konvoiku.touring.model.ChatMessageType
 import com.konvoiku.touring.model.ConnectionStatus
@@ -58,11 +60,127 @@ class FirestoreConvoyRepository {
 
     fun currentUid(): String? = getAuth()?.currentUser?.uid
 
+    fun currentUserEmail(): String = getAuth()?.currentUser?.email.orEmpty()
+
     suspend fun ensureSignedInUid(): String? {
         val auth = getAuth() ?: return null
         auth.currentUser?.uid?.let { return it }
         return runCatching {
             auth.signInAnonymously().await().user?.uid
+        }.getOrNull()
+    }
+
+    suspend fun signUpWithEmail(
+        fullName: String,
+        email: String,
+        password: String
+    ): Result<String> {
+        val auth = getAuth() ?: return Result.failure(IllegalStateException("Firebase Auth tidak tersedia."))
+        return runCatching {
+            val result = auth.createUserWithEmailAndPassword(email.trim(), password).await()
+            val user = result.user ?: throw IllegalStateException("Gagal membuat akun Firebase.")
+            val cleanName = fullName.trim()
+            if (cleanName.isNotEmpty()) {
+                val req = UserProfileChangeRequest.Builder()
+                    .setDisplayName(cleanName)
+                    .build()
+                runCatching { user.updateProfile(req).await() }
+            }
+            user.uid
+        }
+    }
+
+    suspend fun signInWithEmail(
+        email: String,
+        password: String
+    ): Result<String> {
+        val auth = getAuth() ?: return Result.failure(IllegalStateException("Firebase Auth tidak tersedia."))
+        return runCatching {
+            val result = auth.signInWithEmailAndPassword(email.trim(), password).await()
+            result.user?.uid ?: throw IllegalStateException("Gagal masuk dengan email.")
+        }
+    }
+
+    fun signOutAuth() {
+        runCatching { getAuth()?.signOut() }
+    }
+
+    suspend fun saveUserPrivateProfile(uid: String, profile: VehicleProfile): Boolean {
+        val db = getFirestore() ?: return false
+        return runCatching {
+            val docRef = db.collection("users").document(uid)
+            val snap = docRef.get().await()
+            val safePhoto = profile.avatarPhotoUri
+                ?.takeIf { it.startsWith("http") && it.length <= 120_000 }
+                ?: ""
+
+            if (!snap.exists()) {
+                val createData = hashMapOf(
+                    "uid" to uid,
+                    "email" to profile.email.trim().lowercase().take(160),
+                    "authProvider" to profile.authProvider.id,
+                    "fullName" to profile.fullName.trim().ifBlank { "Rider KonvoiKu" }.take(80),
+                    "clubName" to profile.clubName.trim().take(80),
+                    "homeCity" to profile.homeCity.trim().take(80),
+                    "bio" to profile.bio.trim().take(240),
+                    "instagramHandle" to profile.instagramHandle.trim().take(60),
+                    "avatarPhotoUrl" to safePhoto,
+                    "vehicleType" to profile.vehicleType.name,
+                    "vehicleDetail" to profile.vehicleDetail.trim().take(80),
+                    "licensePlate" to profile.licensePlate.trim().take(24),
+                    "emergencyContact" to profile.emergencyContact.trim().take(40),
+                    "avatarPreset" to profile.avatarPreset.name,
+                    "createdAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+                docRef.set(createData).await()
+            } else {
+                val updateData = hashMapOf<String, Any>(
+                    "email" to profile.email.trim().lowercase().take(160),
+                    "authProvider" to profile.authProvider.id,
+                    "fullName" to profile.fullName.trim().ifBlank { "Rider KonvoiKu" }.take(80),
+                    "clubName" to profile.clubName.trim().take(80),
+                    "homeCity" to profile.homeCity.trim().take(80),
+                    "bio" to profile.bio.trim().take(240),
+                    "instagramHandle" to profile.instagramHandle.trim().take(60),
+                    "avatarPhotoUrl" to safePhoto,
+                    "vehicleType" to profile.vehicleType.name,
+                    "vehicleDetail" to profile.vehicleDetail.trim().take(80),
+                    "licensePlate" to profile.licensePlate.trim().take(24),
+                    "emergencyContact" to profile.emergencyContact.trim().take(40),
+                    "avatarPreset" to profile.avatarPreset.name,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+                docRef.update(updateData).await()
+            }
+            true
+        }.getOrDefault(false)
+    }
+
+    suspend fun loadUserPrivateProfile(uid: String): VehicleProfile? {
+        val db = getFirestore() ?: return null
+        return runCatching {
+            val snap = db.collection("users").document(uid).get().await()
+            if (!snap.exists()) return@runCatching null
+            VehicleProfile(
+                fullName = snap.getString("fullName").orEmpty(),
+                email = snap.getString("email").orEmpty().trim().lowercase(),
+                authProvider = AuthProviderType.fromId(snap.getString("authProvider")),
+                clubName = snap.getString("clubName").orEmpty(),
+                homeCity = snap.getString("homeCity").orEmpty(),
+                bio = snap.getString("bio").orEmpty(),
+                instagramHandle = snap.getString("instagramHandle").orEmpty(),
+                vehicleType = runCatching {
+                    VehicleType.valueOf(snap.getString("vehicleType") ?: "MOBIL")
+                }.getOrDefault(VehicleType.MOBIL),
+                vehicleDetail = snap.getString("vehicleDetail").orEmpty(),
+                licensePlate = snap.getString("licensePlate").orEmpty(),
+                emergencyContact = snap.getString("emergencyContact").orEmpty(),
+                avatarPreset = runCatching {
+                    AvatarPreset.valueOf(snap.getString("avatarPreset") ?: "HELMET_TOURING")
+                }.getOrDefault(AvatarPreset.HELMET_TOURING),
+                avatarPhotoUri = snap.getString("avatarPhotoUrl")?.takeIf { it.isNotBlank() }
+            )
         }.getOrNull()
     }
 

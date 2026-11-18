@@ -1,10 +1,12 @@
 package com.konvoiku.touring.viewmodel
 
 import android.app.Application
+import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.konvoiku.touring.data.FirestoreConvoyRepository
 import com.konvoiku.touring.location.GpsLocationTracker
+import com.konvoiku.touring.model.AuthProviderType
 import com.konvoiku.touring.model.AvatarPreset
 import com.konvoiku.touring.model.ChatMessageType
 import com.konvoiku.touring.model.ConnectionStatus
@@ -24,10 +26,12 @@ import com.konvoiku.touring.model.TourRoom
 import com.konvoiku.touring.model.TripHistoryRecord
 import com.konvoiku.touring.model.TripParticipantSummary
 import com.konvoiku.touring.model.UserRole
+import com.konvoiku.touring.model.VehicleProfile
 import com.konvoiku.touring.model.VehicleType
 import com.konvoiku.touring.model.VisitedCheckpointLog
 import com.konvoiku.touring.util.GeoUtils
 import com.konvoiku.touring.util.LatLngGeo
+import org.json.JSONObject
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -52,6 +56,8 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
 
     private val gpsTracker = GpsLocationTracker(application.applicationContext)
     private val syncRepo = FirestoreConvoyRepository()
+    private val profilePrefs = application.applicationContext
+        .getSharedPreferences("konvoiku_profiles", Context.MODE_PRIVATE)
 
     private var voiceTimerJob: Job? = null
     private var gpsJob: Job? = null
@@ -151,6 +157,7 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
                 isCloudSyncConnected = syncRepo.isAvailable()
             )
         }
+        restoreSessionAndProfile()
         startLiveMapTicker()
         if (gpsTracker.hasLocationPermission()) {
             startGpsTracking()
@@ -295,18 +302,447 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun loginUser(fullName: String, email: String, isGuest: Boolean = false) {
-        val cleanName = fullName.trim().ifBlank { "Pengendara KonvoiKu" }
-        val cleanEmail = email.trim()
+    private fun normalizeEmail(raw: String): String = raw.trim().lowercase(Locale.ROOT)
+
+    private fun saveProfileByEmail(profile: VehicleProfile) {
+        val emailKey = normalizeEmail(profile.email)
+        if (emailKey.isBlank()) return
+        val json = JSONObject().apply {
+            put("fullName", profile.fullName)
+            put("email", emailKey)
+            put("authProvider", profile.authProvider.id)
+            put("clubName", profile.clubName)
+            put("homeCity", profile.homeCity)
+            put("bio", profile.bio)
+            put("instagramHandle", profile.instagramHandle)
+            put("vehicleType", profile.vehicleType.name)
+            put("vehicleDetail", profile.vehicleDetail)
+            put("licensePlate", profile.licensePlate)
+            put("emergencyContact", profile.emergencyContact)
+            put("avatarPreset", profile.avatarPreset.name)
+            put("avatarPhotoUri", profile.avatarPhotoUri.orEmpty())
+        }
+        profilePrefs.edit().putString("profile_$emailKey", json.toString()).apply()
+    }
+
+    private fun loadProfileByEmail(email: String): VehicleProfile? {
+        val emailKey = normalizeEmail(email)
+        if (emailKey.isBlank()) return null
+        val raw = profilePrefs.getString("profile_$emailKey", null) ?: return null
+        return runCatching {
+            val json = JSONObject(raw)
+            VehicleProfile(
+                fullName = json.optString("fullName"),
+                email = json.optString("email", emailKey),
+                authProvider = AuthProviderType.fromId(json.optString("authProvider")),
+                clubName = json.optString("clubName"),
+                homeCity = json.optString("homeCity"),
+                bio = json.optString("bio"),
+                instagramHandle = json.optString("instagramHandle"),
+                vehicleType = runCatching {
+                    VehicleType.valueOf(json.optString("vehicleType", "MOBIL"))
+                }.getOrDefault(VehicleType.MOBIL),
+                vehicleDetail = json.optString("vehicleDetail"),
+                licensePlate = json.optString("licensePlate"),
+                emergencyContact = json.optString("emergencyContact"),
+                avatarPreset = runCatching {
+                    AvatarPreset.valueOf(json.optString("avatarPreset", "HELMET_TOURING"))
+                }.getOrDefault(AvatarPreset.HELMET_TOURING),
+                avatarPhotoUri = json.optString("avatarPhotoUri").takeIf { it.isNotBlank() }
+            )
+        }.getOrNull()
+    }
+
+    private fun saveActiveSession(
+        fullName: String,
+        email: String,
+        provider: AuthProviderType,
+        isGuest: Boolean
+    ) {
+        val json = JSONObject().apply {
+            put("fullName", fullName)
+            put("email", normalizeEmail(email))
+            put("authProvider", provider.id)
+            put("isGuest", isGuest)
+        }
+        profilePrefs.edit().putString("active_session", json.toString()).apply()
+    }
+
+    private fun clearActiveSession() {
+        profilePrefs.edit().remove("active_session").apply()
+    }
+
+    private fun restoreSessionAndProfile() {
+        val sessionRaw = profilePrefs.getString("active_session", null)
+        val firebaseEmail = normalizeEmail(syncRepo.currentUserEmail())
+        val firebaseUid = syncRepo.currentUid()
+
+        if (sessionRaw != null) {
+            runCatching {
+                val json = JSONObject(sessionRaw)
+                val email = normalizeEmail(json.optString("email")).ifBlank { firebaseEmail }
+                val name = json.optString("fullName").ifBlank { "Pengendara KonvoiKu" }
+                val provider = AuthProviderType.fromId(json.optString("authProvider"))
+                val isGuest = json.optBoolean("isGuest", false)
+                val savedProfile = loadProfileByEmail(email)
+                _uiState.update { state ->
+                    val mergedProfile = (savedProfile ?: state.vehicleProfile).copy(
+                        fullName = (savedProfile?.fullName?.ifBlank { name }) ?: name,
+                        email = email,
+                        authProvider = provider
+                    )
+                    state.copy(
+                        isLoggedIn = true,
+                        authUserName = mergedProfile.fullName.ifBlank { name },
+                        authUserEmail = email,
+                        authProvider = provider,
+                        isGuestMode = isGuest,
+                        vehicleProfile = mergedProfile
+                    )
+                }
+            }
+        } else if (firebaseEmail.isNotBlank()) {
+            val savedProfile = loadProfileByEmail(firebaseEmail)
+            _uiState.update { state ->
+                val mergedProfile = (savedProfile ?: state.vehicleProfile).copy(
+                    email = firebaseEmail,
+                    authProvider = AuthProviderType.EMAIL
+                )
+                state.copy(
+                    isLoggedIn = true,
+                    authUserName = mergedProfile.fullName.ifBlank { firebaseEmail.substringBefore("@") },
+                    authUserEmail = firebaseEmail,
+                    authProvider = AuthProviderType.EMAIL,
+                    isGuestMode = false,
+                    vehicleProfile = mergedProfile
+                )
+            }
+        }
+
+        if (firebaseUid != null && firebaseEmail.isNotBlank()) {
+            viewModelScope.launch {
+                val cloudProfile = syncRepo.loadUserPrivateProfile(firebaseUid)
+                if (cloudProfile != null) {
+                    val localProfile = loadProfileByEmail(cloudProfile.email.ifBlank { firebaseEmail })
+                    val merged = mergeProfiles(primary = cloudProfile, fallback = localProfile)
+                    saveProfileByEmail(merged)
+                    _uiState.update { state ->
+                        state.copy(
+                            authUserName = merged.fullName.ifBlank { state.authUserName },
+                            authUserEmail = merged.email.ifBlank { state.authUserEmail },
+                            authProvider = merged.authProvider,
+                            vehicleProfile = merged
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private fun mergeProfiles(primary: VehicleProfile, fallback: VehicleProfile?): VehicleProfile {
+        if (fallback == null) return primary
+        return primary.copy(
+            fullName = primary.fullName.ifBlank { fallback.fullName },
+            email = primary.email.ifBlank { fallback.email },
+            authProvider = if (primary.authProvider != AuthProviderType.LOCAL) primary.authProvider else fallback.authProvider,
+            clubName = primary.clubName.ifBlank { fallback.clubName },
+            homeCity = primary.homeCity.ifBlank { fallback.homeCity },
+            bio = primary.bio.ifBlank { fallback.bio },
+            instagramHandle = primary.instagramHandle.ifBlank { fallback.instagramHandle },
+            vehicleDetail = primary.vehicleDetail.ifBlank { fallback.vehicleDetail },
+            licensePlate = primary.licensePlate.ifBlank { fallback.licensePlate },
+            emergencyContact = primary.emergencyContact.ifBlank { fallback.emergencyContact },
+            avatarPhotoUri = primary.avatarPhotoUri ?: fallback.avatarPhotoUri
+        )
+    }
+
+    fun clearAuthError() {
+        _uiState.update { it.copy(authError = null) }
+    }
+
+    fun clearProfileSyncMessage() {
+        _uiState.update { it.copy(profileSyncMessage = null) }
+    }
+
+    fun signUpWithEmail(
+        fullName: String,
+        email: String,
+        password: String,
+        onSuccess: () -> Unit = {}
+    ) {
+        val cleanName = fullName.trim()
+        val cleanEmail = normalizeEmail(email)
+        if (cleanName.length < 2) {
+            _uiState.update { it.copy(authError = "Nama lengkap minimal 2 karakter.") }
+            return
+        }
+        if (!cleanEmail.contains("@") || !cleanEmail.contains(".")) {
+            _uiState.update { it.copy(authError = "Format email tidak valid.") }
+            return
+        }
+        if (password.length < 6) {
+            _uiState.update { it.copy(authError = "Kata sandi minimal 6 karakter.") }
+            return
+        }
+
+        viewModelScope.launch {
+            _uiState.update { it.copy(isAuthLoading = true, authError = null) }
+            val result = syncRepo.signUpWithEmail(cleanName, cleanEmail, password)
+            if (result.isSuccess) {
+                val uid = result.getOrThrow()
+                val existing = loadProfileByEmail(cleanEmail)
+                val merged = (existing ?: _uiState.value.vehicleProfile).copy(
+                    fullName = cleanName,
+                    email = cleanEmail,
+                    authProvider = AuthProviderType.EMAIL
+                )
+                saveProfileByEmail(merged)
+                saveActiveSession(cleanName, cleanEmail, AuthProviderType.EMAIL, isGuest = false)
+                syncRepo.saveUserPrivateProfile(uid, merged)
+                _uiState.update { state ->
+                    state.copy(
+                        isLoggedIn = true,
+                        authUserName = cleanName,
+                        authUserEmail = cleanEmail,
+                        authProvider = AuthProviderType.EMAIL,
+                        isGuestMode = false,
+                        isAuthLoading = false,
+                        authError = null,
+                        vehicleProfile = merged
+                    )
+                }
+                onSuccess()
+            } else {
+                _uiState.update {
+                    it.copy(
+                        isAuthLoading = false,
+                        authError = mapAuthError(result.exceptionOrNull())
+                    )
+                }
+            }
+        }
+    }
+
+    fun signInWithEmail(
+        email: String,
+        password: String,
+        onSuccess: () -> Unit = {}
+    ) {
+        val cleanEmail = normalizeEmail(email)
+        if (!cleanEmail.contains("@") || !cleanEmail.contains(".")) {
+            _uiState.update { it.copy(authError = "Format email tidak valid.") }
+            return
+        }
+        if (password.isBlank()) {
+            _uiState.update { it.copy(authError = "Masukkan kata sandi akun Anda.") }
+            return
+        }
+
+        viewModelScope.launch {
+            _uiState.update { it.copy(isAuthLoading = true, authError = null) }
+            val result = syncRepo.signInWithEmail(cleanEmail, password)
+            if (result.isSuccess) {
+                val uid = result.getOrThrow()
+                val cloudProfile = syncRepo.loadUserPrivateProfile(uid)
+                val localProfile = loadProfileByEmail(cleanEmail)
+                val baseProfile = when {
+                    cloudProfile != null -> mergeProfiles(cloudProfile, localProfile)
+                    localProfile != null -> localProfile
+                    else -> _uiState.value.vehicleProfile
+                }
+                val resolvedName = baseProfile.fullName.ifBlank { cleanEmail.substringBefore("@") }
+                val syncedProfile = baseProfile.copy(
+                    fullName = resolvedName,
+                    email = cleanEmail,
+                    authProvider = AuthProviderType.EMAIL
+                )
+                saveProfileByEmail(syncedProfile)
+                saveActiveSession(resolvedName, cleanEmail, AuthProviderType.EMAIL, isGuest = false)
+                _uiState.update { state ->
+                    state.copy(
+                        isLoggedIn = true,
+                        authUserName = resolvedName,
+                        authUserEmail = cleanEmail,
+                        authProvider = AuthProviderType.EMAIL,
+                        isGuestMode = false,
+                        isAuthLoading = false,
+                        authError = null,
+                        vehicleProfile = syncedProfile
+                    )
+                }
+                onSuccess()
+            } else {
+                _uiState.update {
+                    it.copy(
+                        isAuthLoading = false,
+                        authError = mapAuthError(result.exceptionOrNull())
+                    )
+                }
+            }
+        }
+    }
+
+    fun loginWithSocialProvider(
+        provider: AuthProviderType,
+        fullName: String,
+        email: String,
+        instagramHandle: String = "",
+        onSuccess: () -> Unit = {}
+    ) {
+        val cleanHandle = instagramHandle.trim().removePrefix("@")
+        val resolvedEmail = normalizeEmail(email).ifBlank {
+            if (provider == AuthProviderType.INSTAGRAM && cleanHandle.isNotBlank()) {
+                "${cleanHandle.lowercase(Locale.ROOT)}@instagram.konvoiku.id"
+            } else {
+                "pengendara.${provider.id}@konvoiku.id"
+            }
+        }
+        val existing = loadProfileByEmail(resolvedEmail)
+        val resolvedName = fullName.trim().ifBlank {
+            existing?.fullName?.ifBlank {
+                if (cleanHandle.isNotBlank()) "@$cleanHandle" else "Rider ${provider.label}"
+            } ?: "Rider ${provider.label}"
+        }
+        val merged = (existing ?: _uiState.value.vehicleProfile).copy(
+            fullName = resolvedName,
+            email = resolvedEmail,
+            authProvider = provider,
+            instagramHandle = cleanHandle.ifBlank { existing?.instagramHandle.orEmpty() }
+        )
+        saveProfileByEmail(merged)
+        saveActiveSession(resolvedName, resolvedEmail, provider, isGuest = false)
+
         _uiState.update { state ->
             state.copy(
                 isLoggedIn = true,
+                authUserName = resolvedName,
+                authUserEmail = resolvedEmail,
+                authProvider = provider,
+                isGuestMode = false,
+                authError = null,
+                vehicleProfile = merged
+            )
+        }
+
+        if (syncRepo.isAvailable()) {
+            viewModelScope.launch {
+                val uid = syncRepo.ensureSignedInUid()
+                if (uid != null) {
+                    syncRepo.saveUserPrivateProfile(uid, merged)
+                }
+            }
+        }
+        onSuccess()
+    }
+
+    fun saveAndSyncCustomizedProfile(profile: VehicleProfile) {
+        val cleanEmail = normalizeEmail(profile.email).ifBlank {
+            normalizeEmail(_uiState.value.authUserEmail)
+        }
+        val cleanName = profile.fullName.trim().ifBlank { "Pengendara KonvoiKu" }
+        val resolvedProvider = if (profile.authProvider == AuthProviderType.LOCAL) {
+            _uiState.value.authProvider
+        } else {
+            profile.authProvider
+        }
+        val cleaned = profile.copy(
+            fullName = cleanName,
+            email = cleanEmail,
+            authProvider = resolvedProvider,
+            licensePlate = profile.licensePlate.trim().uppercase()
+        )
+        saveProfileByEmail(cleaned)
+        saveActiveSession(cleanName, cleanEmail, resolvedProvider, _uiState.value.isGuestMode)
+
+        _uiState.update { state ->
+            val updatedRoom = state.activeRoom?.let { room ->
+                room.copy(
+                    members = room.members.map { m ->
+                        if (m.isCurrentUser) {
+                            m.copy(
+                                fullName = cleanName,
+                                vehicleType = cleaned.vehicleType,
+                                vehicleDetail = cleaned.displayVehicleLabel,
+                                licensePlate = cleaned.licensePlate.ifBlank { m.licensePlate },
+                                emergencyContact = cleaned.emergencyContact.ifBlank { m.emergencyContact },
+                                avatarPreset = cleaned.avatarPreset,
+                                avatarPhotoUri = cleaned.avatarPhotoUri
+                            )
+                        } else m
+                    }
+                )
+            }
+            state.copy(
+                isSavingProfile = syncRepo.isAvailable(),
                 authUserName = cleanName,
                 authUserEmail = cleanEmail,
+                authProvider = resolvedProvider,
+                vehicleProfile = cleaned,
+                activeRoom = updatedRoom,
+                profileSyncMessage = if (!syncRepo.isAvailable()) {
+                    "Profil tersimpan & disinkronkan ke $cleanEmail (penyimpanan lokal)."
+                } else null
+            )
+        }
+
+        if (syncRepo.isAvailable()) {
+            viewModelScope.launch {
+                val uid = syncRepo.ensureSignedInUid()
+                val syncedCloud = if (uid != null) {
+                    syncRepo.saveUserPrivateProfile(uid, cleaned)
+                } else false
+                val targetLabel = cleanEmail.ifBlank { "akun Anda" }
+                _uiState.update {
+                    it.copy(
+                        isSavingProfile = false,
+                        profileSyncMessage = if (syncedCloud) {
+                            "Profil berhasil disimpan & disinkronkan ke cloud ($targetLabel)."
+                        } else {
+                            "Profil tersimpan untuk $targetLabel (perangkat)."
+                        }
+                    )
+                }
+            }
+        }
+    }
+
+    private fun mapAuthError(err: Throwable?): String {
+        val msg = err?.message.orEmpty().lowercase(Locale.ROOT)
+        return when {
+            msg.contains("already in use") || msg.contains("email_exists") ->
+                "Email sudah terdaftar. Silakan pindah ke tab Masuk."
+            msg.contains("wrong password") || msg.contains("invalid_login_credentials") || msg.contains("invalid credential") ->
+                "Email atau kata sandi tidak sesuai."
+            msg.contains("user not found") || msg.contains("no user record") ->
+                "Akun email belum terdaftar. Silakan pilih Daftar terlebih dahulu."
+            msg.contains("weak-password") || msg.contains("at least 6") ->
+                "Kata sandi terlalu lemah (minimal 6 karakter)."
+            msg.contains("network") ->
+                "Koneksi internet bermasalah. Periksa jaringan Anda."
+            else -> err?.message ?: "Autentikasi gagal. Periksa kembali data Anda."
+        }
+    }
+
+    fun loginUser(fullName: String, email: String, isGuest: Boolean = false) {
+        val cleanName = fullName.trim().ifBlank { "Pengendara KonvoiKu" }
+        val cleanEmail = normalizeEmail(email)
+        val savedProfile = loadProfileByEmail(cleanEmail)
+        val merged = (savedProfile ?: _uiState.value.vehicleProfile).copy(
+            fullName = savedProfile?.fullName?.ifBlank { cleanName } ?: cleanName,
+            email = cleanEmail,
+            authProvider = AuthProviderType.LOCAL
+        )
+        saveProfileByEmail(merged)
+        saveActiveSession(merged.fullName, cleanEmail, AuthProviderType.LOCAL, isGuest)
+        _uiState.update { state ->
+            state.copy(
+                isLoggedIn = true,
+                authUserName = merged.fullName,
+                authUserEmail = cleanEmail,
+                authProvider = AuthProviderType.LOCAL,
                 isGuestMode = isGuest,
-                vehicleProfile = state.vehicleProfile.copy(
-                    fullName = state.vehicleProfile.fullName.ifBlank { cleanName }
-                )
+                authError = null,
+                vehicleProfile = merged
             )
         }
     }
@@ -314,12 +750,17 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
     fun logoutUser() {
         roomUnsubscribe?.invoke()
         roomUnsubscribe = null
+        syncRepo.signOutAuth()
+        clearActiveSession()
         _uiState.update { state ->
             state.copy(
                 isLoggedIn = false,
                 authUserName = "",
                 authUserEmail = "",
+                authProvider = AuthProviderType.LOCAL,
                 isGuestMode = false,
+                authError = null,
+                profileSyncMessage = null,
                 activeRoom = null,
                 selectedRole = null,
                 sosState = SosEmergencyState(),

@@ -14,6 +14,7 @@ import {
   X,
 } from 'lucide-react';
 import { UserRole, VehicleProfile, VehicleType } from '../../types/convoy';
+import { compressAvatarImage } from '../../utils/imageCompress';
 import { AVATAR_PRESET_OPTIONS, ConvoyAvatar } from '../ConvoyAvatar';
 
 interface VehicleProfileViewProps {
@@ -36,17 +37,16 @@ export function VehicleProfileView({
   const [showErrors, setShowErrors] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        onUpdateProfile({ avatarPhotoUrl: reader.result });
-      }
-    };
-    reader.readAsDataURL(file);
     e.target.value = '';
+    if (!file) return;
+    try {
+      const compressed = await compressAvatarImage(file);
+      onUpdateProfile({ avatarPhotoUrl: compressed });
+    } catch {
+      // Fallback ignored
+    }
   };
 
   const nameError = showErrors && profile.fullName.trim().length < 2;

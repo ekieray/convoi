@@ -19,6 +19,7 @@ import {
   OperationType,
 } from '../firebase';
 import {
+  AuthProviderId,
   AvatarPreset,
   ChatMessageType,
   ConnectionStatus,
@@ -36,6 +37,107 @@ import {
   VehicleType,
 } from '../types/convoy';
 import { decodePolyline, downsampleRoutePoints, encodePolyline } from '../utils/geo';
+
+const EMAIL_PROFILE_PREFIX = 'konvoiku_email_profile_v1:';
+const ACTIVE_SESSION_KEY = 'konvoiku_active_session_v1';
+
+export interface StoredLocalSession {
+  fullName: string;
+  email: string;
+  authProvider: AuthProviderId;
+  instagramHandle?: string;
+}
+
+export function normalizeProfileEmail(email?: string | null): string {
+  return (email || '').trim().toLowerCase();
+}
+
+export function saveProfileByEmail(
+  email: string | undefined | null,
+  profile: VehicleProfile
+): void {
+  const norm = normalizeProfileEmail(email || profile.email);
+  if (!norm || typeof window === 'undefined') return;
+  try {
+    const payload: VehicleProfile = {
+      ...profile,
+      email: norm,
+      avatarPhotoUrl:
+        profile.avatarPhotoUrl && profile.avatarPhotoUrl.length <= 120000
+          ? profile.avatarPhotoUrl
+          : undefined,
+    };
+    window.localStorage.setItem(
+      `${EMAIL_PROFILE_PREFIX}${norm}`,
+      JSON.stringify(payload)
+    );
+  } catch {
+    // Ignore quota errors on localStorage
+  }
+}
+
+export function loadProfileByEmail(
+  email: string | undefined | null
+): VehicleProfile | null {
+  const norm = normalizeProfileEmail(email);
+  if (!norm || typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(`${EMAIL_PROFILE_PREFIX}${norm}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<VehicleProfile>;
+    return {
+      fullName: String(parsed.fullName || ''),
+      email: normalizeProfileEmail(parsed.email || norm),
+      authProvider: (parsed.authProvider || 'email') as AuthProviderId,
+      clubName: String(parsed.clubName || ''),
+      homeCity: String(parsed.homeCity || ''),
+      bio: String(parsed.bio || ''),
+      instagramHandle: String(parsed.instagramHandle || ''),
+      vehicleType: parsed.vehicleType === 'MOTOR' ? 'MOTOR' : 'MOBIL',
+      vehicleDetail: String(parsed.vehicleDetail || ''),
+      licensePlate: String(parsed.licensePlate || ''),
+      emergencyContact: String(parsed.emergencyContact || ''),
+      avatarPreset: (parsed.avatarPreset || 'HELMET_TOURING') as AvatarPreset,
+      avatarPhotoUrl:
+        typeof parsed.avatarPhotoUrl === 'string' && parsed.avatarPhotoUrl.length > 0
+          ? parsed.avatarPhotoUrl
+          : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function saveLocalSession(session: StoredLocalSession | null): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (!session) {
+      window.localStorage.removeItem(ACTIVE_SESSION_KEY);
+    } else {
+      window.localStorage.setItem(ACTIVE_SESSION_KEY, JSON.stringify(session));
+    }
+  } catch {
+    // Ignore storage error
+  }
+}
+
+export function loadLocalSession(): StoredLocalSession | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(ACTIVE_SESSION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<StoredLocalSession>;
+    if (!parsed.fullName && !parsed.email) return null;
+    return {
+      fullName: String(parsed.fullName || 'Rider KonvoiKu'),
+      email: normalizeProfileEmail(parsed.email),
+      authProvider: (parsed.authProvider || 'local') as AuthProviderId,
+      instagramHandle: parsed.instagramHandle ? String(parsed.instagramHandle) : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
 
 function toClockLabel(ts: unknown, fallback = 'Baru saja'): string {
   if (ts instanceof Timestamp) {
@@ -56,34 +158,58 @@ export interface SyncedRoomSnapshot {
   sosState: SosEmergencyState;
 }
 
+function sanitizeAuthProvider(provider?: string): AuthProviderId {
+  if (
+    provider === 'google' ||
+    provider === 'facebook' ||
+    provider === 'instagram' ||
+    provider === 'email' ||
+    provider === 'local'
+  ) {
+    return provider;
+  }
+  return 'google';
+}
+
 export async function saveUserPrivateProfile(
   uid: string,
   profile: VehicleProfile
 ): Promise<void> {
   const path = `users/${uid}`;
   const docRef = doc(db, 'users', uid);
+  const safePhoto =
+    profile.avatarPhotoUrl && profile.avatarPhotoUrl.length <= 120000
+      ? profile.avatarPhotoUrl
+      : '';
+
+  const mutableFields = {
+    email: normalizeProfileEmail(profile.email).slice(0, 160),
+    authProvider: sanitizeAuthProvider(profile.authProvider),
+    fullName: (profile.fullName.trim() || 'Rider KonvoiKu').slice(0, 80),
+    clubName: (profile.clubName || '').trim().slice(0, 80),
+    homeCity: (profile.homeCity || '').trim().slice(0, 80),
+    bio: (profile.bio || '').trim().slice(0, 240),
+    instagramHandle: (profile.instagramHandle || '').trim().slice(0, 60),
+    avatarPhotoUrl: safePhoto,
+    vehicleType: profile.vehicleType,
+    vehicleDetail: (profile.vehicleDetail.trim() || '').slice(0, 80),
+    licensePlate: (profile.licensePlate.trim() || '').slice(0, 24),
+    emergencyContact: (profile.emergencyContact.trim() || '').slice(0, 40),
+    avatarPreset: (profile.avatarPreset || 'HELMET_TOURING').slice(0, 40),
+  };
+
   try {
     const existingSnap = await getDoc(docRef);
     if (!existingSnap.exists()) {
       await setDoc(docRef, {
         uid,
-        fullName: (profile.fullName.trim() || 'Rider KonvoiKu').slice(0, 80),
-        vehicleType: profile.vehicleType,
-        vehicleDetail: (profile.vehicleDetail.trim() || '').slice(0, 80),
-        licensePlate: (profile.licensePlate.trim() || '').slice(0, 24),
-        emergencyContact: (profile.emergencyContact.trim() || '').slice(0, 40),
-        avatarPreset: profile.avatarPreset || 'HELMET_TOURING',
+        ...mutableFields,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
     } else {
       await updateDoc(docRef, {
-        fullName: (profile.fullName.trim() || 'Rider KonvoiKu').slice(0, 80),
-        vehicleType: profile.vehicleType,
-        vehicleDetail: (profile.vehicleDetail.trim() || '').slice(0, 80),
-        licensePlate: (profile.licensePlate.trim() || '').slice(0, 24),
-        emergencyContact: (profile.emergencyContact.trim() || '').slice(0, 40),
-        avatarPreset: profile.avatarPreset || 'HELMET_TOURING',
+        ...mutableFields,
         updatedAt: serverTimestamp(),
       });
     }
@@ -100,13 +226,25 @@ export async function loadUserPrivateProfile(
     const snap = await getDoc(doc(db, 'users', uid));
     if (!snap.exists()) return null;
     const data = snap.data();
+    const photo = typeof data.avatarPhotoUrl === 'string' && data.avatarPhotoUrl.length > 0
+      ? data.avatarPhotoUrl
+      : undefined;
     return {
       fullName: String(data.fullName || ''),
+      email: normalizeProfileEmail(typeof data.email === 'string' ? data.email : ''),
+      authProvider: sanitizeAuthProvider(
+        typeof data.authProvider === 'string' ? data.authProvider : undefined
+      ),
+      clubName: String(data.clubName || ''),
+      homeCity: String(data.homeCity || ''),
+      bio: String(data.bio || ''),
+      instagramHandle: String(data.instagramHandle || ''),
       vehicleType: (data.vehicleType === 'MOTOR' ? 'MOTOR' : 'MOBIL') as VehicleType,
       vehicleDetail: String(data.vehicleDetail || ''),
       licensePlate: String(data.licensePlate || ''),
       emergencyContact: String(data.emergencyContact || ''),
       avatarPreset: (data.avatarPreset || 'HELMET_TOURING') as AvatarPreset,
+      avatarPhotoUrl: photo,
     };
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, path);

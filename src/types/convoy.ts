@@ -8,9 +8,12 @@ export type MemberConditionStatus = 'AMAN' | 'ISTIRAHAT' | 'MOGOK' | 'SOS';
 
 export type ChatMessageType = 'TEXT' | 'VOICE' | 'SOS_ALERT' | 'SYSTEM';
 
+export type AuthProviderId = 'google' | 'facebook' | 'instagram' | 'email' | 'local';
+
 export type ScreenRoute =
   | 'login'
   | 'role_selection'
+  | 'customize_profile'
   | 'vehicle_profile'
   | 'tour_leader'
   | 'join_tour'
@@ -114,6 +117,12 @@ export interface MapPosition {
 
 export interface VehicleProfile {
   fullName: string;
+  email?: string;
+  authProvider?: AuthProviderId;
+  clubName?: string;
+  homeCity?: string;
+  bio?: string;
+  instagramHandle?: string;
   vehicleType: VehicleType;
   vehicleDetail: string;
   licensePlate: string;

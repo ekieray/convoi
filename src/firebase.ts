@@ -1,10 +1,15 @@
 import { initializeApp } from 'firebase/app';
 import {
+  createUserWithEmailAndPassword,
+  FacebookAuthProvider,
   getAuth,
   GoogleAuthProvider,
   onAuthStateChanged,
+  sendPasswordResetEmail,
+  signInWithEmailAndPassword,
   signInWithPopup,
   signOut,
+  updateProfile,
   User,
 } from 'firebase/auth';
 import {
@@ -24,6 +29,10 @@ export const auth = getAuth(app);
 
 const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
+
+const facebookProvider = new FacebookAuthProvider();
+facebookProvider.addScope('email');
+facebookProvider.addScope('public_profile');
 
 export enum OperationType {
   CREATE = 'create',
@@ -98,6 +107,36 @@ export async function signInWithGoogle(): Promise<User> {
   return cred.user;
 }
 
+export async function signInWithFacebook(): Promise<User> {
+  const cred = await signInWithPopup(auth, facebookProvider);
+  return cred.user;
+}
+
+export async function signUpWithEmail(
+  fullName: string,
+  email: string,
+  password: string
+): Promise<User> {
+  const cred = await createUserWithEmailAndPassword(auth, email.trim(), password);
+  const cleanName = fullName.trim();
+  if (cleanName) {
+    await updateProfile(cred.user, { displayName: cleanName });
+  }
+  return cred.user;
+}
+
+export async function signInWithEmail(
+  email: string,
+  password: string
+): Promise<User> {
+  const cred = await signInWithEmailAndPassword(auth, email.trim(), password);
+  return cred.user;
+}
+
+export async function sendResetPasswordEmail(email: string): Promise<void> {
+  await sendPasswordResetEmail(auth, email.trim());
+}
+
 export async function signOutFirebase(): Promise<void> {
   await signOut(auth);
 }
@@ -106,4 +145,44 @@ export function subscribeToAuthState(
   callback: (user: User | null) => void
 ): () => void {
   return onAuthStateChanged(auth, callback);
+}
+
+export function mapFirebaseAuthError(error: unknown, providerLabel = 'Akun'): string {
+  const code =
+    typeof error === 'object' && error !== null && 'code' in error
+      ? String((error as { code?: unknown }).code || '')
+      : '';
+  const msg = error instanceof Error ? error.message : String(error || '');
+
+  if (code === 'auth/operation-not-allowed') {
+    return `Provider ${providerLabel} belum diaktifkan di Firebase Console (Authentication → Sign-in method).`;
+  }
+  if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+    return `Jendela login ${providerLabel} ditutup sebelum selesai. Silakan coba lagi.`;
+  }
+  if (code === 'auth/popup-blocked') {
+    return `Popup browser diblokir saat membuka login ${providerLabel}. Izinkan popup lalu coba lagi.`;
+  }
+  if (code === 'auth/account-exists-with-different-credential') {
+    return 'Email ini sudah terdaftar menggunakan metode login lain (mis. Google atau Email). Masuk dengan metode tersebut lalu sinkronkan profil.';
+  }
+  if (code === 'auth/email-already-in-use') {
+    return 'Email sudah terdaftar. Silakan pindah ke tab Masuk (Sign In).';
+  }
+  if (code === 'auth/invalid-credential' || code === 'auth/wrong-password' || code === 'auth/user-not-found') {
+    return 'Email atau kata sandi salah. Periksa kembali atau klik Daftar untuk membuat akun baru.';
+  }
+  if (code === 'auth/weak-password') {
+    return 'Kata sandi terlalu lemah. Gunakan minimal 6 karakter.';
+  }
+  if (code === 'auth/invalid-email') {
+    return 'Format alamat email tidak valid.';
+  }
+  if (code === 'auth/too-many-requests') {
+    return 'Terlalu banyak percobaan login. Tunggu beberapa saat lalu coba lagi.';
+  }
+  if (msg.includes('popup')) {
+    return `Popup login ${providerLabel} diblokir atau ditutup. Izinkan popup browser lalu coba lagi.`;
+  }
+  return `Gagal autentikasi ${providerLabel}. Periksa koneksi internet & konfigurasi Firebase.`;
 }

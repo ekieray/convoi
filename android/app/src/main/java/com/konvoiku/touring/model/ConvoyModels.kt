@@ -50,6 +50,19 @@ enum class AvatarPreset(val label: String) {
     STANDARD_USER("Foto Standar")
 }
 
+enum class AuthProviderType(val id: String, val label: String) {
+    GOOGLE("google", "Google"),
+    FACEBOOK("facebook", "Facebook"),
+    INSTAGRAM("instagram", "Instagram"),
+    EMAIL("email", "Email"),
+    LOCAL("local", "Lokal");
+
+    companion object {
+        fun fromId(raw: String?): AuthProviderType =
+            entries.firstOrNull { it.id.equals(raw?.trim(), ignoreCase = true) } ?: LOCAL
+    }
+}
+
 data class RoomMessage(
     val id: String,
     val senderId: String,
@@ -159,6 +172,12 @@ enum class GpsTrackingStatus(val label: String) {
 
 data class VehicleProfile(
     val fullName: String = "",
+    val email: String = "",
+    val authProvider: AuthProviderType = AuthProviderType.LOCAL,
+    val clubName: String = "",
+    val homeCity: String = "",
+    val bio: String = "",
+    val instagramHandle: String = "",
     val vehicleType: VehicleType = VehicleType.MOBIL,
     val vehicleDetail: String = "",
     val licensePlate: String = "",
@@ -491,5 +510,10 @@ data class ConvoyUiState(
     val isLoggedIn: Boolean = false,
     val authUserName: String = "",
     val authUserEmail: String = "",
-    val isGuestMode: Boolean = false
+    val authProvider: AuthProviderType = AuthProviderType.LOCAL,
+    val isGuestMode: Boolean = false,
+    val isAuthLoading: Boolean = false,
+    val authError: String? = null,
+    val isSavingProfile: Boolean = false,
+    val profileSyncMessage: String? = null
 )
