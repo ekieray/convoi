@@ -12,6 +12,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -41,6 +43,7 @@ import androidx.compose.material.icons.rounded.RestartAlt
 import androidx.compose.material.icons.rounded.Route
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.TwoWheeler
+import androidx.compose.material.icons.rounded.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -98,6 +101,7 @@ import com.google.maps.android.compose.Marker
 import com.google.maps.android.compose.MarkerState
 import com.google.maps.android.compose.Polyline
 import com.google.maps.android.compose.rememberCameraPositionState
+import com.konvoiku.touring.BuildConfig
 import com.konvoiku.touring.model.ConvoyMember
 import com.konvoiku.touring.model.ConvoyRouteConfig
 import com.konvoiku.touring.model.RoutePoint
@@ -194,7 +198,9 @@ fun TourLeaderScreen(
                         onClick = onEnterMapPlaceholder,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 20.dp, vertical = 14.dp)
+                            .navigationBarsPadding()
+                            .imePadding()
+                            .padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 26.dp)
                             .height(52.dp),
                         shape = RoundedCornerShape(14.dp),
                         colors = ButtonDefaults.buttonColors(
@@ -522,6 +528,36 @@ fun TourLeaderScreen(
                                                 Marker(state = endState, title = "Tujuan: ${routeConfig.destinationName}")
                                             }
                                         }
+
+                                        if (BuildConfig.MAPS_API_KEY.isBlank()) {
+                                            Surface(
+                                                shape = RoundedCornerShape(10.dp),
+                                                color = Color(0xF0FEF3C7),
+                                                border = BorderStroke(1.dp, Color(0xFFF59E0B)),
+                                                modifier = Modifier
+                                                    .align(Alignment.BottomCenter)
+                                                    .padding(8.dp)
+                                            ) {
+                                                Row(
+                                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Rounded.Warning,
+                                                        contentDescription = null,
+                                                        tint = Color(0xFFB45309),
+                                                        modifier = Modifier.size(14.dp)
+                                                    )
+                                                    Text(
+                                                        text = "MAPS_API_KEY kosong di APK — set di GitHub Secrets agar tile Google Maps tampil.",
+                                                        fontSize = 10.sp,
+                                                        color = Color(0xFF78350F),
+                                                        fontWeight = FontWeight.Medium
+                                                    )
+                                                }
+                                            }
+                                        }
                                     }
 
                                     Text(
@@ -766,6 +802,8 @@ fun TourLeaderScreen(
                         }
                     }
                 }
+
+                item { Spacer(modifier = Modifier.height(28.dp)) }
             } else if (activeRoom != null) {
                 item {
                     Spacer(modifier = Modifier.height(6.dp))
@@ -1231,6 +1269,36 @@ private fun DestinationMapPickerDialog(
                                 fontSize = 11.sp,
                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
                             )
+                        }
+
+                        if (BuildConfig.MAPS_API_KEY.isBlank()) {
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = Color(0xF0FEF3C7),
+                                border = BorderStroke(1.dp, Color(0xFFF59E0B)),
+                                modifier = Modifier
+                                    .align(Alignment.BottomStart)
+                                    .padding(14.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Warning,
+                                        contentDescription = null,
+                                        tint = Color(0xFFB45309),
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Text(
+                                        text = "API Key Google Maps kosong di APK (tambahkan secret MAPS_API_KEY di GitHub Actions).",
+                                        fontSize = 10.sp,
+                                        color = Color(0xFF78350F),
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                }
+                            }
                         }
                     }
 

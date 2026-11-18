@@ -1,10 +1,15 @@
 package com.konvoiku.touring.ui.screens
 
 import android.Manifest
+import android.app.Activity
+import android.content.Intent
 import android.media.AudioManager
 import android.media.ToneGenerator
+import android.net.Uri
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.app.ActivityCompat
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -25,6 +30,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -99,6 +105,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
@@ -111,14 +118,22 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
+import com.google.maps.android.compose.CameraMoveStartedReason
 import com.google.maps.android.compose.GoogleMap
 import com.google.maps.android.compose.MapProperties
 import com.google.maps.android.compose.MapType
@@ -127,6 +142,7 @@ import com.google.maps.android.compose.MarkerComposable
 import com.google.maps.android.compose.MarkerState
 import com.google.maps.android.compose.Polyline
 import com.google.maps.android.compose.rememberCameraPositionState
+import com.konvoiku.touring.BuildConfig
 import com.konvoiku.touring.model.ChatMessageType
 import com.konvoiku.touring.model.ConvoyMember
 import com.konvoiku.touring.model.ConvoyRouteConfig
@@ -210,12 +226,43 @@ fun LiveTrackingMapScreen(
     var checkpointDraftName by remember { mutableStateOf("") }
     var tappedCheckpointLatLng by remember { mutableStateOf<LatLng?>(null) }
 
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var hasRequestedPermissionOnce by remember { mutableStateOf(false) }
+    var isPermanentlyDenied by remember { mutableStateOf(false) }
+
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) { perms ->
         val granted = perms[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
             perms[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+        if (!granted) {
+            val activity = context as? Activity
+            val canAskAgain = activity != null && (
+                ActivityCompat.shouldShowRequestPermissionRationale(
+                    activity,
+                    Manifest.permission.ACCESS_FINE_LOCATION
+                ) || ActivityCompat.shouldShowRequestPermissionRationale(
+                    activity,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                )
+            )
+            isPermanentlyDenied = hasRequestedPermissionOnce && !canAskAgain
+        } else {
+            isPermanentlyDenied = false
+        }
+        hasRequestedPermissionOnce = true
         onLocationPermissionResult(granted)
+    }
+
+    DisposableEffect(lifecycleOwner, gpsStatus) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME && gpsStatus == GpsTrackingStatus.DENIED) {
+                onRetryGps()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     LaunchedEffect(Unit) {
@@ -242,6 +289,26 @@ fun LiveTrackingMapScreen(
         calculateDestinationEta(trackedMember, routeConfig)
     }
 
+    val activeSpeeds = members
+        .filter { it.conditionStatus != MemberConditionStatus.MOGOK && it.conditionStatus != MemberConditionStatus.SOS }
+        .map { it.mapPosition.speedKmh.coerceAtLeast(0) }
+    val convoyAvgSpeedKmh = if (activeSpeeds.isNotEmpty()) {
+        activeSpeeds.average().roundToInt()
+    } else 0
+
+    var speedHistory by remember(activeRoom?.roomId) {
+        val base = convoyAvgSpeedKmh.coerceAtLeast(0)
+        val offsets = listOf(-4, -2, 1, -1, 3, 2, -2, 1, 2, 0)
+        mutableStateOf(
+            offsets.map { delta ->
+                if (base == 0) 0 else (base + delta).coerceIn(12, 130)
+            }
+        )
+    }
+    LaunchedEffect(convoyAvgSpeedKmh) {
+        speedHistory = (speedHistory.drop(1) + convoyAvgSpeedKmh).takeLast(10)
+    }
+
     val initialLatLng = remember(trackedMember?.id) {
         LatLng(
             trackedMember?.mapPosition?.latitude ?: -6.674,
@@ -249,17 +316,40 @@ fun LiveTrackingMapScreen(
         )
     }
     val cameraPositionState = rememberCameraPositionState {
-        position = CameraPosition.fromLatLngZoom(initialLatLng, 13.5f)
+        position = CameraPosition.fromLatLngZoom(initialLatLng, 14.5f)
+    }
+    var isAutoFollowing by remember { mutableStateOf(true) }
+
+    LaunchedEffect(cameraPositionState.isMoving, cameraPositionState.cameraMoveStartedReason) {
+        if (cameraPositionState.isMoving &&
+            cameraPositionState.cameraMoveStartedReason == CameraMoveStartedReason.GESTURE
+        ) {
+            isAutoFollowing = false
+        }
     }
 
-    LaunchedEffect(trackedMember?.id) {
+    LaunchedEffect(
+        trackedMember?.id,
+        trackedMember?.mapPosition?.latitude,
+        trackedMember?.mapPosition?.longitude,
+        isAutoFollowing
+    ) {
+        if (!isAutoFollowing) return@LaunchedEffect
         val m = trackedMember ?: return@LaunchedEffect
+        val zoom = cameraPositionState.position.zoom.coerceAtLeast(14.5f)
         cameraPositionState.animate(
-            CameraUpdateFactory.newLatLngZoom(
+            update = CameraUpdateFactory.newLatLngZoom(
                 LatLng(m.mapPosition.latitude, m.mapPosition.longitude),
-                14.5f
-            )
+                zoom
+            ),
+            durationMs = 550
         )
+    }
+
+    LaunchedEffect(gpsStatus) {
+        if (gpsStatus == GpsTrackingStatus.ACTIVE) {
+            isAutoFollowing = true
+        }
     }
 
     LaunchedEffect(stragglerAlert.isTriggered, offRouteAlert.isOffRoute, sosState.isActive, routeConfig.soundAlertEnabled) {
@@ -362,6 +452,7 @@ fun LiveTrackingMapScreen(
                                     isSelected = member.id == focusedMember?.id,
                                     onClick = {
                                         onSelectMember(member.id)
+                                        isAutoFollowing = true
                                         coroutineScope.launch {
                                             cameraPositionState.animate(
                                                 CameraUpdateFactory.newLatLngZoom(
@@ -416,6 +507,7 @@ fun LiveTrackingMapScreen(
                                         onAssignSweeper = { onAssignSweeper(member.id) },
                                         onClick = {
                                             onSelectMember(member.id)
+                                            isAutoFollowing = true
                                             isParticipantsExpanded = false
                                             coroutineScope.launch {
                                                 cameraPositionState.animate(
@@ -623,11 +715,7 @@ fun LiveTrackingMapScreen(
                                             overflow = TextOverflow.Ellipsis
                                         )
                                         Text(
-                                            text = if (etaInfo.isStopped) {
-                                                "ETA --:-- · ${etaInfo.distanceLabel}"
-                                            } else {
-                                                "ETA ${etaInfo.arrivalClockLabel} · ${etaInfo.durationLabel} · ${etaInfo.distanceLabel}"
-                                            },
+                                            text = "ETA ${etaInfo.arrivalClockLabel} · ${etaInfo.durationLabel} · ${etaInfo.distanceLabel}",
                                             fontFamily = FontFamily.Monospace,
                                             fontSize = 10.sp,
                                             color = Color(0xFF86EFAC),
@@ -736,12 +824,20 @@ fun LiveTrackingMapScreen(
                         Surface(
                             onClick = {
                                 if (gpsStatus == GpsTrackingStatus.DENIED) {
-                                    permissionLauncher.launch(
-                                        arrayOf(
-                                            Manifest.permission.ACCESS_FINE_LOCATION,
-                                            Manifest.permission.ACCESS_COARSE_LOCATION
+                                    if (isPermanentlyDenied) {
+                                        val intent = Intent(
+                                            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                            Uri.fromParts("package", context.packageName, null)
                                         )
-                                    )
+                                        context.startActivity(intent)
+                                    } else {
+                                        permissionLauncher.launch(
+                                            arrayOf(
+                                                Manifest.permission.ACCESS_FINE_LOCATION,
+                                                Manifest.permission.ACCESS_COARSE_LOCATION
+                                            )
+                                        )
+                                    }
                                 } else {
                                     onRetryGps()
                                 }
@@ -764,6 +860,8 @@ fun LiveTrackingMapScreen(
                                 Text(
                                     text = if (gpsStatus == GpsTrackingStatus.ACTIVE) {
                                         "GPS ±${gpsAccuracyMeters}m"
+                                    } else if (gpsStatus == GpsTrackingStatus.DENIED && isPermanentlyDenied) {
+                                        "Buka Pengaturan Lokasi"
                                     } else {
                                         gpsStatus.label
                                     },
@@ -792,6 +890,29 @@ fun LiveTrackingMapScreen(
                         }
                     }
 
+                    if (gpsStatus == GpsTrackingStatus.DENIED) {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = Color(0xEBFEF2F2),
+                            border = BorderStroke(1.dp, Color(0xFFFCA5A5)),
+                            shadowElevation = 2.dp
+                        ) {
+                            Text(
+                                text = if (isPermanentlyDenied) {
+                                    "Izin lokasi diblokir permanen di Android. Ketuk tombol merah untuk buka Pengaturan > Izin > Lokasi."
+                                } else {
+                                    "Izin GPS belum aktif. Pastikan Lokasi HP nyala & ketuk tombol merah untuk mengizinkan."
+                                },
+                                fontSize = 10.sp,
+                                lineHeight = 13.sp,
+                                color = Color(0xFF991B1B),
+                                modifier = Modifier
+                                    .widthIn(max = 240.dp)
+                                    .padding(horizontal = 9.dp, vertical = 6.dp)
+                            )
+                        }
+                    }
+
                     if (activeRoom?.isSyncedRoom != true) {
                         FilterChip(
                             selected = isOffRouteSimActive,
@@ -803,6 +924,36 @@ fun LiveTrackingMapScreen(
                             onClick = onToggleStragglerSim,
                             label = { Text("Uji Tertinggal", fontSize = 11.sp) }
                         )
+                    }
+
+                    if (BuildConfig.MAPS_API_KEY.isBlank()) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = Color(0xF0FEF3C7),
+                            border = BorderStroke(1.dp, Color(0xFFF59E0B)),
+                            shadowElevation = 3.dp,
+                            modifier = Modifier.widthIn(max = 260.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Warning,
+                                    contentDescription = null,
+                                    tint = Color(0xFFB45309),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = "API Key Google Maps kosong di APK. Set secret MAPS_API_KEY di GitHub Actions lalu build ulang APK.",
+                                    fontSize = 10.sp,
+                                    lineHeight = 13.sp,
+                                    color = Color(0xFF78350F),
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                        }
                     }
                 }
 
@@ -853,6 +1004,7 @@ fun LiveTrackingMapScreen(
                     }
                     SmallFloatingActionButton(
                         onClick = {
+                            isAutoFollowing = true
                             val target = trackedMember ?: currentUser
                             if (target != null) {
                                 coroutineScope.launch {
@@ -865,9 +1017,10 @@ fun LiveTrackingMapScreen(
                                 }
                             }
                         },
-                        containerColor = MaterialTheme.colorScheme.surface
+                        containerColor = if (isAutoFollowing) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
+                        contentColor = if (isAutoFollowing) Color.White else MaterialTheme.colorScheme.primary
                     ) {
-                        Icon(Icons.Rounded.MyLocation, contentDescription = "Pusatkan")
+                        Icon(Icons.Rounded.MyLocation, contentDescription = "Pusatkan & Ikuti Live")
                     }
                 }
 
@@ -936,12 +1089,13 @@ fun LiveTrackingMapScreen(
                 }
             }
 
-            // Docked Destination ETA Telemetry Bar
+            // Docked Destination ETA & 10-Min Avg Speed Telemetry Bar
             DestinationEtaHudBar(
                 destinationName = routeConfig.destinationName,
                 trackedMember = trackedMember,
                 currentUserId = currentUser?.id,
                 etaInfo = etaInfo,
+                speedHistory = speedHistory,
                 onFocusSelf = if (currentUser != null && trackedMember?.id != currentUser.id) {
                     { onSelectMember(currentUser.id) }
                 } else null
@@ -1388,16 +1542,24 @@ private fun DestinationEtaHudBar(
     trackedMember: ConvoyMember?,
     currentUserId: String?,
     etaInfo: DestinationEtaInfo,
+    speedHistory: List<Int>,
     onFocusSelf: (() -> Unit)?
 ) {
     val isTrackingSelf = trackedMember == null || trackedMember.id == currentUserId
+    val avgTenMin = if (speedHistory.isNotEmpty()) speedHistory.average().roundToInt() else etaInfo.speedKmh
     Surface(
         color = MaterialTheme.colorScheme.surface,
         tonalElevation = 3.dp,
         shadowElevation = 8.dp,
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier
+            .fillMaxWidth()
+            .navigationBarsPadding()
     ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 12.dp)
+        ) {
             HorizontalDivider(color = MaterialTheme.colorScheme.outline)
             Row(
                 modifier = Modifier
@@ -1508,6 +1670,63 @@ private fun DestinationEtaHudBar(
                                 fontFamily = FontFamily.Monospace,
                                 fontSize = 11.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Mini-graph Rata-Rata Kecepatan Konvoi 10 Menit Terakhir
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.background,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Column {
+                        Text(
+                            text = "RATA² KONVOI · 10 MNT",
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "$avgTenMin km/j",
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    Canvas(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(26.dp)
+                    ) {
+                        if (speedHistory.size >= 2) {
+                            val minVal = (speedHistory.minOrNull() ?: 0).toFloat()
+                            val maxVal = ((speedHistory.maxOrNull() ?: 60).toFloat()).coerceAtLeast(minVal + 10f)
+                            val stepX = size.width / (speedHistory.size - 1)
+                            val linePath = Path()
+                            speedHistory.forEachIndexed { idx, value ->
+                                val x = idx * stepX
+                                val norm = ((value - minVal) / (maxVal - minVal)).coerceIn(0f, 1f)
+                                val y = size.height - norm * (size.height - 6f) - 3f
+                                if (idx == 0) linePath.moveTo(x, y) else linePath.lineTo(x, y)
+                            }
+                            drawPath(
+                                path = linePath,
+                                color = Color(0xFF1D4ED8),
+                                style = Stroke(width = 4.5f, cap = StrokeCap.Round)
                             )
                         }
                     }

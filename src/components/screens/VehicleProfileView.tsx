@@ -368,11 +368,11 @@ export function VehicleProfileView({
         </button>
       </div>
 
-      {/* Sticky Bottom CTA */}
-      <div className="sticky bottom-0 px-5 py-3.5 bg-white dark:bg-[#141C24] border-t border-[#E2E8F0] dark:border-[#334155]">
+      {/* Sticky Bottom CTA with extra clearance above mobile navigation bar */}
+      <div className="sticky bottom-0 mt-auto px-5 pt-3.5 pb-[calc(2rem+env(safe-area-inset-bottom))] mb-2 bg-white dark:bg-[#141C24] border-t border-[#E2E8F0] dark:border-[#334155]">
         <button
           type="submit"
-          className="w-full min-h-[48px] px-4 py-3 rounded-[14px] bg-[#EA580C] hover:bg-[#C2410C] active:scale-[0.98] text-white text-sm font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer"
+          className="w-full min-h-[48px] px-4 py-3 rounded-[14px] bg-[#EA580C] hover:bg-[#C2410C] active:scale-[0.98] text-white text-sm font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer shadow-sm"
         >
           <span className="whitespace-nowrap">
             {selectedRole === 'TOUR_LEADER'

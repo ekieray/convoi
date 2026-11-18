@@ -1919,7 +1919,7 @@ export default function App() {
   };
 
   const handleRouteComputed = useCallback(
-    (distanceMeters: number, _durationMillis: number, path: LatLngPoint[]) => {
+    (distanceMeters: number, durationMillis: number, path: LatLngPoint[]) => {
       if (path.length < 2 || distanceMeters <= 0) return;
       const sampled = downsampleRoutePoints(path, 60);
       const currentCfg = routeConfigRef.current;
@@ -1932,6 +1932,8 @@ export default function App() {
         ...currentCfg,
         waypoints: sampled,
         totalRouteMeters: distanceMeters,
+        estimatedDurationMillis:
+          durationMillis > 0 ? durationMillis : currentCfg.estimatedDurationMillis,
       };
       setRouteConfig(nextConfig);
 
@@ -2660,6 +2662,7 @@ export default function App() {
                         darkMode={darkMode}
                         gpsStatus={gps.status}
                         gpsAccuracyMeters={gps.lastFix?.accuracyMeters}
+                        gpsErrorMessage={gps.errorMessage}
                         onRetryGps={gps.retryGps}
                         onRouteComputed={handleRouteComputed}
                         onSelectMember={setSelectedMemberId}

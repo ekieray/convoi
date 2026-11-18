@@ -81,6 +81,7 @@ export interface ConvoyRouteConfig {
   waypoints: RoutePoint[];
   checkpoints: RestCheckpoint[];
   totalRouteMeters: number;
+  estimatedDurationMillis?: number;
   offRouteToleranceMeters: number;
   maxStragglerDistanceMeters: number;
   soundAlertEnabled: boolean;

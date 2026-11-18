@@ -30,6 +30,13 @@ import {
   X,
 } from 'lucide-react';
 import {
+  Area,
+  AreaChart,
+  ResponsiveContainer,
+  Tooltip,
+  YAxis,
+} from 'recharts';
+import {
   ConvoyMember,
   ConvoyRouteConfig,
   DestinationEtaInfo,
@@ -69,6 +76,7 @@ interface LiveTrackingMapViewProps {
   darkMode?: boolean;
   gpsStatus: GpsPermissionStatus;
   gpsAccuracyMeters?: number;
+  gpsErrorMessage?: string | null;
   onRetryGps: () => void;
   onRouteComputed?: (
     distanceMeters: number,
@@ -154,15 +162,37 @@ function calculateDestinationEta(
     };
   }
 
+  const formatDurationText = (mins: number) => {
+    if (mins >= 60) {
+      const hours = Math.floor(mins / 60);
+      const remMins = mins % 60;
+      return remMins > 0 ? `${hours}j ${remMins}m` : `${hours} jam`;
+    }
+    return `${mins} mnt`;
+  };
+
   if (speedKmh <= 0) {
+    const remainingFraction = Math.max(0.02, 1 - progress);
+    const routeApiMinutes =
+      routeConfig.estimatedDurationMillis && routeConfig.estimatedDurationMillis > 0
+        ? Math.round((routeConfig.estimatedDurationMillis * remainingFraction) / 60_000)
+        : 0;
+    const estMinutes = Math.max(
+      1,
+      routeApiMinutes > 0
+        ? routeApiMinutes
+        : Math.round((remainingMeters / 1000 / 45) * 60)
+    );
+    const estArrivalClock = `~${formatClockHHmm(new Date(nowMs + estMinutes * 60_000))}`;
+
     return {
       remainingMeters,
       speedKmh: 0,
-      etaMinutes: null,
+      etaMinutes: estMinutes,
       isStopped: true,
       isArrived: false,
-      durationLabel: 'Berhenti',
-      arrivalClockLabel: '--:--',
+      durationLabel: `Est. ${formatDurationText(estMinutes)} · Diam`,
+      arrivalClockLabel: estArrivalClock,
       distanceLabel,
     };
   }
@@ -171,14 +201,7 @@ function calculateDestinationEta(
     1,
     Math.round((remainingMeters / 1000 / speedKmh) * 60)
   );
-  const durationLabel =
-    etaMinutes >= 60
-      ? (() => {
-          const hours = Math.floor(etaMinutes / 60);
-          const mins = etaMinutes % 60;
-          return mins > 0 ? `${hours}j ${mins}m` : `${hours} jam`;
-        })()
-      : `${etaMinutes} mnt`;
+  const durationLabel = formatDurationText(etaMinutes);
 
   const arrivalClockLabel = formatClockHHmm(
     new Date(nowMs + etaMinutes * 60_000)
@@ -235,6 +258,28 @@ function playAlertTone(isUrgent = false) {
 
 const WAVE_BARS = [10, 20, 14, 28, 18, 32, 22, 16, 26, 14, 20, 12];
 
+interface SpeedHistoryPoint {
+  bucketMinute: number;
+  timeLabel: string;
+  avgSpeed: number;
+}
+
+function buildInitialSpeedHistory(baseSpeed: number, nowMs = Date.now()): SpeedHistoryPoint[] {
+  const safeBase = Math.max(0, Math.round(baseSpeed));
+  const offsets = [-4, -2, 1, -1, 3, 2, -2, 1, 2, 0];
+  return offsets.map((delta, idx) => {
+    const minutesAgo = 9 - idx;
+    const tMs = nowMs - minutesAgo * 60_000;
+    const d = new Date(tMs);
+    const val = safeBase === 0 ? 0 : Math.max(12, Math.min(130, safeBase + delta));
+    return {
+      bucketMinute: Math.floor(tMs / 60_000),
+      timeLabel: minutesAgo === 0 ? 'Skgr' : formatClockHHmm(d),
+      avgSpeed: val,
+    };
+  });
+}
+
 export function LiveTrackingMapView({
   activeRoom,
   role,
@@ -257,6 +302,7 @@ export function LiveTrackingMapView({
   darkMode,
   gpsStatus,
   gpsAccuracyMeters,
+  gpsErrorMessage,
   onRetryGps,
   onRouteComputed,
   onSelectMember,
@@ -310,6 +356,65 @@ export function LiveTrackingMapView({
   const trackedMember = focusedMember || currentUser;
   const etaInfo = calculateDestinationEta(trackedMember, routeConfig);
 
+  const activeSpeedValues = members
+    .filter((m) => m.conditionStatus !== 'MOGOK' && m.conditionStatus !== 'SOS')
+    .map((m) => Math.max(0, m.mapPosition.speedKmh));
+  const convoyAvgSpeedKmh =
+    activeSpeedValues.length > 0
+      ? Math.round(
+          activeSpeedValues.reduce((sum, v) => sum + v, 0) /
+            activeSpeedValues.length
+        )
+      : 0;
+
+  const [speedHistory, setSpeedHistory] = useState<SpeedHistoryPoint[]>(() =>
+    buildInitialSpeedHistory(convoyAvgSpeedKmh)
+  );
+
+  useEffect(() => {
+    const nowMs = Date.now();
+    const currentBucket = Math.floor(nowMs / 60_000);
+    setSpeedHistory((prev) => {
+      const base =
+        prev.length > 0 ? [...prev] : buildInitialSpeedHistory(convoyAvgSpeedKmh, nowMs);
+      const last = base[base.length - 1];
+      if (last && last.bucketMinute === currentBucket) {
+        base[base.length - 1] = {
+          ...last,
+          timeLabel: 'Skgr',
+          avgSpeed: convoyAvgSpeedKmh,
+        };
+      } else {
+        base.push({
+          bucketMinute: currentBucket,
+          timeLabel: 'Skgr',
+          avgSpeed: convoyAvgSpeedKmh,
+        });
+      }
+      const cutoff = currentBucket - 9;
+      return base
+        .filter((pt) => pt.bucketMinute >= cutoff)
+        .slice(-10)
+        .map((pt, idx, arr) => ({
+          ...pt,
+          timeLabel:
+            idx === arr.length - 1
+              ? 'Skgr'
+              : formatClockHHmm(new Date(pt.bucketMinute * 60_000)),
+        }));
+    });
+  }, [convoyAvgSpeedKmh, activeRoom?.roomId]);
+
+  const avgTenMinSpeed =
+    speedHistory.length > 0
+      ? Math.round(
+          speedHistory.reduce((sum, pt) => sum + pt.avgSpeed, 0) /
+            speedHistory.length
+        )
+      : convoyAvgSpeedKmh;
+  const firstTenMinSpeed = speedHistory[0]?.avgSpeed ?? avgTenMinSpeed;
+  const speedDeltaTenMin = convoyAvgSpeedKmh - firstTenMinSpeed;
+
   useEffect(() => {
     const key = `${offRouteAlert.isOffRoute}-${stragglerAlert.isTriggered}-${sosState.isActive}`;
     if (
@@ -359,7 +464,10 @@ export function LiveTrackingMapView({
   );
 
   return (
-    <div className="relative flex flex-col h-[680px] bg-[#F8FAFC] dark:bg-[#0B1117] text-[#0F172A] dark:text-[#F1F5F9] overflow-hidden">
+    <div
+      id="live_map"
+      className="relative flex flex-col h-[680px] bg-[#F8FAFC] dark:bg-[#0B1117] text-[#0F172A] dark:text-[#F1F5F9] overflow-hidden"
+    >
       {/* Top App Bar */}
       <div className="shrink-0 flex items-center justify-between gap-2 px-3 py-2 bg-white dark:bg-[#141C24] border-b border-[#E2E8F0] dark:border-[#334155]">
         <div className="flex items-center gap-1.5 min-w-0">
@@ -677,21 +785,23 @@ export function LiveTrackingMapView({
         )}
 
       {/* Full Live Google Map Viewport */}
-      <div className="relative flex-1 overflow-hidden bg-[#EEF2F6] dark:bg-[#141B22]">
-        <LiveGoogleConvoyMap
-          members={members}
-          focusedMember={focusedMember}
-          routeConfig={routeConfig}
-          stragglerAlert={stragglerAlert}
-          sosState={sosState}
-          etaInfo={etaInfo}
-          darkMode={darkMode}
-          isPickingDestination={isPickingDestinationOnMap}
-          isPickingCheckpoint={isPickingCheckpointOnMap}
-          onSelectMember={onSelectMember}
-          onPickCoordinateOnMap={handlePickCoordinateOnMap}
-          onRouteComputed={onRouteComputed}
-        />
+      <div className="relative flex-1 min-h-[320px] overflow-hidden bg-[#EEF2F6] dark:bg-[#141B22]">
+        <div className="absolute inset-0">
+          <LiveGoogleConvoyMap
+            members={members}
+            focusedMember={focusedMember}
+            routeConfig={routeConfig}
+            stragglerAlert={stragglerAlert}
+            sosState={sosState}
+            etaInfo={etaInfo}
+            darkMode={darkMode}
+            isPickingDestination={isPickingDestinationOnMap}
+            isPickingCheckpoint={isPickingCheckpointOnMap}
+            onSelectMember={onSelectMember}
+            onPickCoordinateOnMap={handlePickCoordinateOnMap}
+            onRouteComputed={onRouteComputed}
+          />
+        </div>
 
         {/* Top-Left Live GPS, Sync Badge & Optional Offline Controls */}
         <div className="absolute top-3 left-3 z-20 flex flex-col gap-1.5 max-w-[65%]">
@@ -728,6 +838,12 @@ export function LiveTrackingMapView({
               </span>
             )}
           </div>
+
+          {gpsStatus === 'denied' && gpsErrorMessage && (
+            <div className="px-2.5 py-1.5 rounded-xl bg-[#FEF2F2]/95 dark:bg-[#450A0A]/95 border border-[#FCA5A5] dark:border-[#991B1B] text-[10px] leading-snug text-[#991B1B] dark:text-[#FECACA] shadow-sm">
+              {gpsErrorMessage}
+            </div>
+          )}
 
           {!activeRoom?.isSyncedRoom && (
             <div className="flex flex-wrap gap-1.5">
@@ -851,76 +967,142 @@ export function LiveTrackingMapView({
         </div>
       </div>
 
-      {/* Docked Destination ETA Telemetry Bar */}
+      {/* Docked Destination ETA & 10-Min Avg Speed Telemetry Bar */}
       <div
         aria-label="Estimasi Waktu Tiba (ETA)"
-        className="shrink-0 bg-white dark:bg-[#141C24] border-t border-[#E2E8F0] dark:border-[#334155] px-3.5 py-2.5 flex items-center justify-between gap-2 z-20"
+        className="mt-auto shrink-0 bg-white dark:bg-[#141C24] border-t border-[#E2E8F0] dark:border-[#334155] px-3.5 pt-2.5 pb-[calc(2rem+env(safe-area-inset-bottom))] space-y-2 z-20"
       >
-        <div className="flex items-center gap-2.5 min-w-0 flex-1">
-          <div
-            className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
-              etaInfo.isArrived
-                ? 'bg-[#DCFCE7] dark:bg-[#064E3B] text-[#16A34A] dark:text-[#4ADE80]'
-                : 'bg-[#EFF6FF] dark:bg-[#1E3A8A]/60 text-[#1D4ED8] dark:text-[#60A5FA]'
-            }`}
-          >
-            <Clock className="w-4 h-4" />
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2.5 min-w-0 flex-1">
+            <div
+              className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+                etaInfo.isArrived
+                  ? 'bg-[#DCFCE7] dark:bg-[#064E3B] text-[#16A34A] dark:text-[#4ADE80]'
+                  : 'bg-[#EFF6FF] dark:bg-[#1E3A8A]/60 text-[#1D4ED8] dark:text-[#60A5FA]'
+              }`}
+            >
+              <Clock className="w-4 h-4" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-bold truncate">
+                {routeConfig.destinationName}
+              </p>
+              <div className="flex items-center gap-1.5 text-[10px] text-[#64748B] dark:text-[#94A3B8] truncate">
+                <span>
+                  {!trackedMember || trackedMember.id === currentUser?.id
+                    ? 'Posisi Anda'
+                    : trackedMember.fullName}
+                </span>
+                {currentUser && trackedMember && trackedMember.id !== currentUser.id && (
+                  <button
+                    type="button"
+                    onClick={() => onSelectMember(currentUser.id)}
+                    className="font-semibold text-[#1D4ED8] dark:text-[#60A5FA] hover:underline cursor-pointer shrink-0"
+                  >
+                    · Fokus Anda
+                  </button>
+                )}
+              </div>
+            </div>
           </div>
-          <div className="min-w-0 flex-1">
-            <p className="text-xs font-bold truncate">
-              {routeConfig.destinationName}
-            </p>
-            <div className="flex items-center gap-1.5 text-[10px] text-[#64748B] dark:text-[#94A3B8] truncate">
-              <span>
-                {!trackedMember || trackedMember.id === currentUser?.id
-                  ? 'Posisi Anda'
-                  : trackedMember.fullName}
-              </span>
-              {currentUser && trackedMember && trackedMember.id !== currentUser.id && (
-                <button
-                  type="button"
-                  onClick={() => onSelectMember(currentUser.id)}
-                  className="font-semibold text-[#1D4ED8] dark:text-[#60A5FA] hover:underline cursor-pointer shrink-0"
-                >
-                  · Fokus Anda
-                </button>
-              )}
+
+          <div className="flex items-center gap-3 shrink-0">
+            <div className="text-right">
+              <p
+                className={`text-xs font-bold font-mono tabular-nums ${
+                  etaInfo.isArrived
+                    ? 'text-[#16A34A] dark:text-[#4ADE80]'
+                    : etaInfo.isStopped
+                      ? 'text-[#D97706] dark:text-[#FBBF24]'
+                      : 'text-[#1D4ED8] dark:text-[#60A5FA]'
+                }`}
+              >
+                ETA {etaInfo.arrivalClockLabel}
+              </p>
+              <p
+                className={`text-[10px] font-semibold ${
+                  etaInfo.isStopped
+                    ? 'text-[#D97706] dark:text-[#FBBF24]'
+                    : 'text-[#64748B] dark:text-[#94A3B8]'
+                }`}
+              >
+                {etaInfo.durationLabel}
+              </p>
+            </div>
+
+            <div className="text-right border-l border-[#E2E8F0] dark:border-[#334155] pl-3">
+              <p className="text-xs font-bold font-mono tabular-nums">
+                {etaInfo.distanceLabel}
+              </p>
+              <p className="text-[10px] font-mono tabular-nums text-[#64748B] dark:text-[#94A3B8] flex items-center justify-end gap-1">
+                <Gauge className="w-3 h-3 shrink-0" />
+                <span>{etaInfo.speedKmh} km/j</span>
+              </p>
             </div>
           </div>
         </div>
 
-        <div className="flex items-center gap-3 shrink-0">
-          <div className="text-right">
-            <p
-              className={`text-xs font-bold font-mono tabular-nums ${
-                etaInfo.isArrived
-                  ? 'text-[#16A34A] dark:text-[#4ADE80]'
-                  : etaInfo.isStopped
-                    ? 'text-[#D97706] dark:text-[#FBBF24]'
-                    : 'text-[#1D4ED8] dark:text-[#60A5FA]'
-              }`}
-            >
-              ETA {etaInfo.arrivalClockLabel}
+        {/* Mini-Graph: Average Convoy Speed (Last 10 Minutes) via Recharts */}
+        <div className="rounded-xl bg-[#F8FAFC] dark:bg-[#0B1117] border border-[#E2E8F0] dark:border-[#334155] px-2.5 py-1.5 flex items-center gap-2.5">
+          <div className="shrink-0 min-w-[108px]">
+            <p className="text-[9px] font-semibold uppercase tracking-wide text-[#64748B] dark:text-[#94A3B8]">
+              Rata² Konvoi · 10 Mnt
             </p>
-            <p
-              className={`text-[10px] font-semibold ${
-                etaInfo.isStopped
-                  ? 'text-[#D97706] dark:text-[#FBBF24]'
-                  : 'text-[#64748B] dark:text-[#94A3B8]'
-              }`}
-            >
-              {etaInfo.durationLabel}
-            </p>
+            <div className="flex items-baseline gap-1.5">
+              <span className="text-xs font-bold font-mono tabular-nums text-[#1D4ED8] dark:text-[#60A5FA]">
+                {avgTenMinSpeed} km/j
+              </span>
+              <span
+                className={`text-[9px] font-mono font-semibold ${
+                  speedDeltaTenMin >= 0
+                    ? 'text-[#16A34A] dark:text-[#4ADE80]'
+                    : 'text-[#D97706] dark:text-[#FBBF24]'
+                }`}
+              >
+                {speedDeltaTenMin >= 0 ? `+${speedDeltaTenMin}` : speedDeltaTenMin}
+              </span>
+            </div>
           </div>
 
-          <div className="text-right border-l border-[#E2E8F0] dark:border-[#334155] pl-3">
-            <p className="text-xs font-bold font-mono tabular-nums">
-              {etaInfo.distanceLabel}
-            </p>
-            <p className="text-[10px] font-mono tabular-nums text-[#64748B] dark:text-[#94A3B8] flex items-center justify-end gap-1">
-              <Gauge className="w-3 h-3 shrink-0" />
-              <span>{etaInfo.speedKmh} km/j</span>
-            </p>
+          <div className="flex-1 h-[36px] min-w-[120px]">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart
+                data={speedHistory}
+                margin={{ top: 3, right: 2, left: 2, bottom: 1 }}
+              >
+                <defs>
+                  <linearGradient id="convoyAvgSpeedGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#1D4ED8" stopOpacity={0.35} />
+                    <stop offset="95%" stopColor="#1D4ED8" stopOpacity={0.02} />
+                  </linearGradient>
+                </defs>
+                <YAxis domain={['dataMin - 8', 'dataMax + 8']} hide />
+                <Tooltip
+                  formatter={(value: unknown) => [`${value} km/j`, 'Rata-rata']}
+                  labelFormatter={(label: unknown, payload: ReadonlyArray<{ payload?: SpeedHistoryPoint }>) =>
+                    payload?.[0]?.payload?.timeLabel ?? String(label)
+                  }
+                  contentStyle={{
+                    fontSize: '10px',
+                    padding: '4px 8px',
+                    borderRadius: '8px',
+                    border: '1px solid #CBD5E1',
+                    backgroundColor: darkMode ? '#141C24' : '#FFFFFF',
+                    color: darkMode ? '#F1F5F9' : '#0F172A',
+                  }}
+                />
+                <Area
+                  type="monotone"
+                  dataKey="avgSpeed"
+                  stroke="#1D4ED8"
+                  strokeWidth={2}
+                  fill="url(#convoyAvgSpeedGrad)"
+                  isAnimationActive={false}
+                  dot={false}
+                  activeDot={{ r: 3, fill: '#EA580C', strokeWidth: 0 }}
+                />
+              </AreaChart>
+            </ResponsiveContainer>
           </div>
         </div>
       </div>

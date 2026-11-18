@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   AdvancedMarker,
+  APILoadingStatus,
   Map as GoogleMap,
+  useApiLoadingStatus,
   useMap,
   useMapsLibrary,
 } from '@vis.gl/react-google-maps';
@@ -182,26 +184,50 @@ function ConvoyRouteOverlay({ waypoints, onRouteComputed }: RouteOverlayProps) {
 function MapCameraSync({
   focusedMember,
   waypoints,
+  isAutoFollowing,
   followTrigger,
   fitAllTrigger,
+  onUserDrag,
 }: {
   focusedMember: ConvoyMember | null;
   waypoints: RoutePoint[];
+  isAutoFollowing: boolean;
   followTrigger: number;
   fitAllTrigger: number;
+  onUserDrag: () => void;
 }) {
   const map = useMap();
+  const onUserDragRef = useRef(onUserDrag);
+  onUserDragRef.current = onUserDrag;
 
   useEffect(() => {
-    if (!map || !focusedMember || followTrigger === 0) return;
+    if (!map) return;
+    const listener = map.addListener('dragstart', () => {
+      onUserDragRef.current();
+    });
+    return () => {
+      listener.remove();
+    };
+  }, [map]);
+
+  useEffect(() => {
+    if (!map || !focusedMember) return;
+    if (!isAutoFollowing && followTrigger === 0) return;
     map.panTo({
       lat: focusedMember.mapPosition.latitude,
       lng: focusedMember.mapPosition.longitude,
     });
-    if ((map.getZoom() ?? 12) < 14) {
+    if (followTrigger > 0 && (map.getZoom() ?? 12) < 14) {
       map.setZoom(15);
     }
-  }, [map, focusedMember?.id, followTrigger]);
+  }, [
+    map,
+    focusedMember?.id,
+    focusedMember?.mapPosition.latitude,
+    focusedMember?.mapPosition.longitude,
+    isAutoFollowing,
+    followTrigger,
+  ]);
 
   useEffect(() => {
     if (!map || fitAllTrigger === 0 || !window.google?.maps?.LatLngBounds) return;
@@ -228,11 +254,13 @@ function MapCameraSync({
 
 function ZoomControlsOverlay({
   mapType,
+  isAutoFollowing,
   onToggleMapType,
   onCenterFocused,
   onFitRoute,
 }: {
   mapType: 'roadmap' | 'hybrid';
+  isAutoFollowing: boolean;
   onToggleMapType: () => void;
   onCenterFocused: () => void;
   onFitRoute: () => void;
@@ -279,9 +307,13 @@ function ZoomControlsOverlay({
       <button
         type="button"
         onClick={onCenterFocused}
-        aria-label="Fokus ke Peserta"
-        title="Fokus Peserta Aktif"
-        className="w-9 h-9 rounded-xl bg-white dark:bg-[#141C24] border border-[#E2E8F0] dark:border-[#334155] shadow-sm flex items-center justify-center text-[#1D4ED8] dark:text-[#60A5FA] cursor-pointer"
+        aria-label="Fokus ke Peserta & Ikuti Live"
+        title={isAutoFollowing ? 'Mengikuti Live (Ketuk untuk pusatkan)' : 'Ikuti Peserta Live'}
+        className={`w-9 h-9 rounded-xl border shadow-sm flex items-center justify-center cursor-pointer transition-colors ${
+          isAutoFollowing
+            ? 'bg-[#1D4ED8] text-white border-[#1E40AF]'
+            : 'bg-white dark:bg-[#141C24] border-[#E2E8F0] dark:border-[#334155] text-[#1D4ED8] dark:text-[#60A5FA]'
+        }`}
       >
         <LocateFixed className="w-4 h-4" />
       </button>
@@ -313,8 +345,10 @@ export function LiveGoogleConvoyMap({
   onRouteComputed,
 }: LiveGoogleConvoyMapProps) {
   const [mapType, setMapType] = useState<'roadmap' | 'hybrid'>('roadmap');
+  const [isAutoFollowing, setIsAutoFollowing] = useState(true);
   const [followTrigger, setFollowTrigger] = useState(0);
   const [fitAllTrigger, setFitAllTrigger] = useState(1);
+  const loadingStatus = useApiLoadingStatus();
 
   const apiKey = (import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string) || '';
   const waypoints = routeConfig.waypoints;
@@ -336,6 +370,21 @@ export function LiveGoogleConvoyMap({
         <p className="text-xs font-bold">Google Maps API Key Belum Aktif</p>
         <p className="text-[11px] text-[#64748B] dark:text-[#94A3B8] max-w-xs">
           Konfigurasi kunci Google Maps diperlukan agar peta Google Maps live dan rute jalan nyata tampil di perangkat Anda.
+        </p>
+      </div>
+    );
+  }
+
+  if (
+    loadingStatus === APILoadingStatus.FAILED ||
+    loadingStatus === APILoadingStatus.AUTH_FAILURE
+  ) {
+    return (
+      <div className="w-full h-full flex flex-col items-center justify-center bg-[#E9EFF5] dark:bg-[#141B22] p-6 text-center space-y-2">
+        <AlertTriangle className="w-7 h-7 text-[#DC2626]" />
+        <p className="text-xs font-bold">Gagal Memuat Google Maps</p>
+        <p className="text-[11px] text-[#64748B] dark:text-[#94A3B8] max-w-xs">
+          Periksa koneksi internet, kuota Google Maps Platform, atau pembatasan domain pada API Key Anda.
         </p>
       </div>
     );
@@ -373,17 +422,26 @@ export function LiveGoogleConvoyMap({
         <MapCameraSync
           focusedMember={focusedMember}
           waypoints={waypoints}
+          isAutoFollowing={isAutoFollowing}
           followTrigger={followTrigger}
           fitAllTrigger={fitAllTrigger}
+          onUserDrag={() => setIsAutoFollowing(false)}
         />
 
         <ZoomControlsOverlay
           mapType={mapType}
+          isAutoFollowing={isAutoFollowing}
           onToggleMapType={() =>
             setMapType((m) => (m === 'roadmap' ? 'hybrid' : 'roadmap'))
           }
-          onCenterFocused={() => setFollowTrigger((n) => n + 1)}
-          onFitRoute={() => setFitAllTrigger((n) => n + 1)}
+          onCenterFocused={() => {
+            setIsAutoFollowing(true);
+            setFollowTrigger((n) => n + 1);
+          }}
+          onFitRoute={() => {
+            setIsAutoFollowing(false);
+            setFitAllTrigger((n) => n + 1);
+          }}
         />
 
         {/* Rest Area Checkpoint Markers */}
@@ -416,9 +474,7 @@ export function LiveGoogleConvoyMap({
                   Tujuan: {routeConfig.destinationName}
                 </p>
                 <p className="text-[9px] font-mono text-[#86EFAC] whitespace-nowrap">
-                  {etaInfo.isStopped
-                    ? `ETA --:-- · ${etaInfo.distanceLabel}`
-                    : `ETA ${etaInfo.arrivalClockLabel} · ${etaInfo.durationLabel} · ${etaInfo.distanceLabel}`}
+                  {`ETA ${etaInfo.arrivalClockLabel} · ${etaInfo.durationLabel} · ${etaInfo.distanceLabel}`}
                 </p>
               </div>
               <span className="mt-1 w-7 h-7 rounded-full bg-[#16A34A] border-2 border-white shadow-md flex items-center justify-center text-white">
@@ -459,6 +515,7 @@ export function LiveGoogleConvoyMap({
               zIndex={isSosBeacon ? 60 : isSelected ? 50 : 30}
               onClick={() => {
                 onSelectMember(member.id);
+                setIsAutoFollowing(true);
                 setFollowTrigger((n) => n + 1);
               }}
             >

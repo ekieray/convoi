@@ -1,4 +1,9 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import {
+  AdvancedMarker,
+  Map as GoogleMap,
+  useMap,
+} from '@vis.gl/react-google-maps';
 import {
   ArrowLeft,
   ArrowRight,
@@ -64,6 +69,50 @@ const STEP_LABELS = [
   { num: 4, label: 'Jarak' },
 ];
 
+function StepRouteMapOverlay({ waypoints }: { waypoints: RoutePoint[] }) {
+  const map = useMap();
+  const polylineRef = useRef<google.maps.Polyline | null>(null);
+  const lastBoundsKeyRef = useRef<string>('');
+
+  useEffect(() => {
+    if (!map || !window.google?.maps?.Polyline) return;
+    if (polylineRef.current) {
+      polylineRef.current.setMap(null);
+      polylineRef.current = null;
+    }
+    if (waypoints.length >= 2) {
+      polylineRef.current = new google.maps.Polyline({
+        path: waypoints.map((pt) => ({ lat: pt.latitude, lng: pt.longitude })),
+        strokeColor: '#1D4ED8',
+        strokeWeight: 5,
+        strokeOpacity: 0.92,
+        map,
+      });
+    }
+
+    const start = waypoints[0];
+    const end = waypoints[waypoints.length - 1];
+    const boundsKey = start && end
+      ? `${start.latitude.toFixed(4)},${start.longitude.toFixed(4)}->${end.latitude.toFixed(4)},${end.longitude.toFixed(4)}`
+      : '';
+    if (boundsKey && boundsKey !== lastBoundsKeyRef.current && window.google?.maps?.LatLngBounds) {
+      lastBoundsKeyRef.current = boundsKey;
+      const bounds = new google.maps.LatLngBounds();
+      waypoints.forEach((w) => bounds.extend({ lat: w.latitude, lng: w.longitude }));
+      map.fitBounds(bounds, 36);
+    }
+
+    return () => {
+      if (polylineRef.current) {
+        polylineRef.current.setMap(null);
+        polylineRef.current = null;
+      }
+    };
+  }, [map, waypoints]);
+
+  return null;
+}
+
 export function TourLeaderView({
   activeRoom,
   routeConfig,
@@ -95,7 +144,7 @@ export function TourLeaderView({
   );
   const [checkpointDraft, setCheckpointDraft] = useState('');
   const [copiedType, setCopiedType] = useState<'id' | 'link' | null>(null);
-  const routeCanvasRef = useRef<HTMLDivElement | null>(null);
+  const apiKey = (import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string) || '';
 
   const handleCopy = async (text: string, type: 'id' | 'link') => {
     try {
@@ -107,16 +156,12 @@ export function TourLeaderView({
     setTimeout(() => setCopiedType(null), 1800);
   };
 
-  const handleCanvasTap = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!routeCanvasRef.current) return;
-    const rect = routeCanvasRef.current.getBoundingClientRect();
-    const nx = Math.max(0.1, Math.min(0.9, (e.clientX - rect.left) / rect.width));
-    const ny = Math.max(0.1, Math.min(0.9, (e.clientY - rect.top) / rect.height));
+  const handleStepMapClick = (lat: number, lng: number) => {
     const newPt: RoutePoint = {
-      xFraction: nx,
-      yFraction: ny,
-      latitude: -6.71 + (1 - ny) * 0.08,
-      longitude: 106.85 + nx * 0.16,
+      xFraction: 0.5,
+      yFraction: 0.5,
+      latitude: lat,
+      longitude: lng,
     };
     const pts = routeConfig.waypoints;
     const updated =
@@ -130,10 +175,6 @@ export function TourLeaderView({
     0.5,
     Math.min(5.0, routeConfig.maxStragglerDistanceMeters / 1000)
   );
-
-  const polylinePts = routeConfig.waypoints
-    .map((p) => `${p.xFraction * 320},${p.yFraction * 190}`)
-    .join(' ');
 
   return (
     <div className="flex flex-col min-h-full bg-[#F8FAFC] dark:bg-[#0B1117] text-[#0F172A] dark:text-[#F1F5F9]">
@@ -333,86 +374,69 @@ export function TourLeaderView({
                   </div>
 
                   <p className="text-xs text-[#475569] dark:text-[#CBD5E1]">
-                    Ketuk kanvas peta di bawah untuk menggambar titik belok jalur baru menuju{' '}
+                    Ketuk Google Map di bawah untuk menambahkan titik belok jalur baru menuju{' '}
                     {routeConfig.destinationName}.
                   </p>
 
-                  <div
-                    ref={routeCanvasRef}
-                    onClick={handleCanvasTap}
-                    className="relative w-full h-[190px] rounded-[16px] bg-[#EEF2F6] dark:bg-[#141B22] border border-[#CBD5E1] dark:border-[#334155] overflow-hidden cursor-crosshair select-none"
-                  >
-                    <svg
-                      className="w-full h-full"
-                      viewBox="0 0 320 190"
-                      preserveAspectRatio="none"
-                    >
-                      <defs>
-                        <pattern
-                          id="stepperGrid"
-                          width="28"
-                          height="28"
-                          patternUnits="userSpaceOnUse"
-                        >
-                          <path
-                            d="M 28 0 L 0 0 0 28"
-                            fill="none"
-                            stroke="currentColor"
-                            className="text-[#DCE3EC] dark:text-[#212B36]"
-                            strokeWidth="1"
-                          />
-                        </pattern>
-                      </defs>
-                      <rect width="320" height="190" fill="url(#stepperGrid)" />
-                      {routeConfig.waypoints.length >= 2 && (
-                        <>
-                          <polyline
-                            points={polylinePts}
-                            fill="none"
-                            stroke="#FFFFFF"
-                            strokeWidth="11"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                          />
-                          <polyline
-                            points={polylinePts}
-                            fill="none"
-                            stroke="#1D4ED8"
-                            strokeWidth="4.5"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                          />
-                        </>
-                      )}
-                      {routeConfig.waypoints.map((pt, idx) => {
-                        const fill =
-                          idx === 0
-                            ? '#EA580C'
-                            : idx === routeConfig.waypoints.length - 1
-                              ? '#16A34A'
-                              : '#1D4ED8';
-                        return (
-                          <g key={`${idx}-${pt.xFraction}`}>
-                            <circle
-                              cx={pt.xFraction * 320}
-                              cy={pt.yFraction * 190}
-                              r="7"
-                              fill="#FFFFFF"
-                            />
-                            <circle
-                              cx={pt.xFraction * 320}
-                              cy={pt.yFraction * 190}
-                              r="4.5"
-                              fill={fill}
-                            />
-                          </g>
-                        );
-                      })}
-                    </svg>
+                  <div className="relative w-full h-[220px] rounded-[16px] bg-[#EEF2F6] dark:bg-[#141B22] border border-[#CBD5E1] dark:border-[#334155] overflow-hidden">
+                    {apiKey ? (
+                      <GoogleMap
+                        mapId="DEMO_MAP_ID"
+                        internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
+                        defaultCenter={
+                          routeConfig.waypoints[0]
+                            ? {
+                                lat: routeConfig.waypoints[0].latitude,
+                                lng: routeConfig.waypoints[0].longitude,
+                              }
+                            : { lat: -6.674, lng: 106.925 }
+                        }
+                        defaultZoom={11}
+                        gestureHandling="greedy"
+                        disableDefaultUI
+                        colorScheme={darkMode ? 'DARK' : 'LIGHT'}
+                        style={{ width: '100%', height: '100%' }}
+                        onClick={(ev) => {
+                          const ll = ev.detail.latLng;
+                          if (ll) handleStepMapClick(ll.lat, ll.lng);
+                        }}
+                      >
+                        <StepRouteMapOverlay waypoints={routeConfig.waypoints} />
+                        {routeConfig.waypoints.map((pt, idx) => {
+                          const isStart = idx === 0;
+                          const isEnd = idx === routeConfig.waypoints.length - 1;
+                          return (
+                            <AdvancedMarker
+                              key={`${idx}-${pt.latitude.toFixed(4)}-${pt.longitude.toFixed(4)}`}
+                              position={{ lat: pt.latitude, lng: pt.longitude }}
+                              zIndex={isStart || isEnd ? 20 : 10}
+                            >
+                              {isStart ? (
+                                <span className="px-2 py-0.5 rounded-full bg-[#EA580C] text-white text-[10px] font-bold border-2 border-white shadow">
+                                  Start
+                                </span>
+                              ) : isEnd ? (
+                                <span className="px-2 py-0.5 rounded-full bg-[#16A34A] text-white text-[10px] font-bold border-2 border-white shadow">
+                                  Tujuan
+                                </span>
+                              ) : (
+                                <span className="w-5 h-5 rounded-full bg-[#1D4ED8] text-white text-[9px] font-bold border-2 border-white shadow flex items-center justify-center">
+                                  {idx}
+                                </span>
+                              )}
+                            </AdvancedMarker>
+                          );
+                        })}
+                      </GoogleMap>
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center p-4 text-center text-xs text-[#64748B]">
+                        Google Maps API Key belum tersedia untuk editor jalur live.
+                      </div>
+                    )}
                   </div>
 
                   <p className="text-[11px] text-[#64748B] dark:text-[#94A3B8]">
-                    {routeConfig.waypoints.length} titik jalur aktif · Oranye = Start, Hijau = Tujuan
+                    {routeConfig.waypoints.length} titik jalur aktif di Google Maps · Oranye = Start, Hijau = Tujuan
                   </p>
                 </>
               )}
@@ -789,7 +813,7 @@ export function TourLeaderView({
 
       {/* Bottom CTA when viewing created room */}
       {!showSetupStepper && activeRoom && (
-        <div className="sticky bottom-0 px-4 py-3.5 bg-white dark:bg-[#141C24] border-t border-[#E2E8F0] dark:border-[#334155]">
+        <div className="sticky bottom-0 mt-auto px-4 pt-3.5 pb-[calc(2rem+env(safe-area-inset-bottom))] mb-2 bg-white dark:bg-[#141C24] border-t border-[#E2E8F0] dark:border-[#334155]">
           <button
             type="button"
             onClick={onEnterMapPlaceholder}

@@ -248,15 +248,27 @@ fun calculateDestinationEta(
         )
     }
 
+    fun formatDuration(mins: Int): String = if (mins >= 60) {
+        val hours = mins / 60
+        val rem = mins % 60
+        if (rem > 0) "${hours}j ${rem}m" else "$hours jam"
+    } else {
+        "$mins mnt"
+    }
+
     if (speedKmh <= 0) {
+        val estMinutes = ((remainingMeters / 1000.0 / 45.0) * 60.0)
+            .roundToInt()
+            .coerceAtLeast(1)
+        val estClock = "~${formatter.format(Date(nowMillis + estMinutes * 60_000L))}"
         return DestinationEtaInfo(
             remainingMeters = remainingMeters,
             speedKmh = 0,
-            etaMinutes = null,
+            etaMinutes = estMinutes,
             isStopped = true,
             isArrived = false,
-            durationLabel = "Berhenti",
-            arrivalClockLabel = "--:--",
+            durationLabel = "Est. ${formatDuration(estMinutes)} · Diam",
+            arrivalClockLabel = estClock,
             distanceLabel = distanceLabel
         )
     }
@@ -265,13 +277,7 @@ fun calculateDestinationEta(
         .roundToInt()
         .coerceAtLeast(1)
 
-    val durationLabel = if (etaMinutes >= 60) {
-        val hours = etaMinutes / 60
-        val mins = etaMinutes % 60
-        if (mins > 0) "${hours}j ${mins}m" else "$hours jam"
-    } else {
-        "$etaMinutes mnt"
-    }
+    val durationLabel = formatDuration(etaMinutes)
 
     val arrivalClockLabel = formatter.format(Date(nowMillis + etaMinutes * 60_000L))
 

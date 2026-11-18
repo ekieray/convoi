@@ -170,16 +170,18 @@ export function JoinTourView({
         </div>
 
         {/* Submit CTA */}
-        <button
-          type="submit"
-          disabled={isJoining}
-          className="w-full min-h-[48px] px-4 py-3 rounded-[14px] bg-[#EA580C] hover:bg-[#C2410C] disabled:opacity-60 active:scale-[0.98] text-white text-sm font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer"
-        >
-          <LogIn className="w-4 h-4 shrink-0" />
-          <span className="whitespace-nowrap">
-            {isJoining ? 'Menghubungkan Room...' : 'Masuk Konvoi'}
-          </span>
-        </button>
+        <div className="mt-auto pt-2 pb-[calc(1.75rem+env(safe-area-inset-bottom))]">
+          <button
+            type="submit"
+            disabled={isJoining}
+            className="w-full min-h-[48px] px-4 py-3 rounded-[14px] bg-[#EA580C] hover:bg-[#C2410C] disabled:opacity-60 active:scale-[0.98] text-white text-sm font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer"
+          >
+            <LogIn className="w-4 h-4 shrink-0" />
+            <span className="whitespace-nowrap">
+              {isJoining ? 'Menghubungkan Room...' : 'Masuk Konvoi'}
+            </span>
+          </button>
+        </div>
       </div>
     </form>
   );

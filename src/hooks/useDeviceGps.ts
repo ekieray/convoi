@@ -111,9 +111,16 @@ export function useDeviceGps({ enabled, onFix }: UseDeviceGpsOptions) {
     const handleError = (err: GeolocationPositionError) => {
       if (err.code === err.PERMISSION_DENIED) {
         setStatus('denied');
-        setErrorMessage(
-          'Izin lokasi GPS ditolak. Aktifkan izin lokasi browser untuk pelacakan GPS nyata.'
-        );
+        const msg = (err.message || '').toLowerCase();
+        if (msg.includes('permissions policy') || msg.includes('disallowed')) {
+          setErrorMessage(
+            'Akses GPS diblokir oleh izin iframe/preview. Refresh preview setelah izin aktif atau buka di tab browser penuh.'
+          );
+        } else {
+          setErrorMessage(
+            'Izin lokasi ditolak oleh browser/HP. Aktifkan izin Lokasi di ikon gembok/pengaturan browser lalu tekan Coba Lagi.'
+          );
+        }
       } else if (err.code === err.POSITION_UNAVAILABLE) {
         setStatus('unavailable');
         setErrorMessage('Sinyal satelit GPS sedang tidak tersedia.');
