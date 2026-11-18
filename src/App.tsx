@@ -240,7 +240,7 @@ function createInitialMessages(roomCode: string): RoomMessage[] {
       senderName: 'Budi',
       senderVehicle: 'Avanza Hitam',
       type: 'TEXT',
-      textContent: 'Rombongan siap, jalur resmi sudah ditetapkan di Google Maps.',
+      textContent: 'Rombongan siap, jalur resmi sudah ditetapkan di TomTom Maps.',
       timestampLabel: currentClock(),
       senderAvatarPreset: 'RIDER_CAPTAIN',
     },
@@ -676,11 +676,11 @@ export default function App() {
     document.documentElement.classList.toggle('dark', darkMode);
   }, [darkMode]);
 
-  // Listen for Google Maps Platform quota exhaustion (Case A)
+  // Listen for TomTom Trial quota limit
   useEffect(() => {
     const handleQuota = () => setMapsQuotaExceeded(true);
-    window.addEventListener('gmp-quota-exceeded', handleQuota);
-    return () => window.removeEventListener('gmp-quota-exceeded', handleQuota);
+    window.addEventListener('tomtom-quota-exceeded', handleQuota);
+    return () => window.removeEventListener('tomtom-quota-exceeded', handleQuota);
   }, []);
 
   // Restore local/Instagram session on startup if no Firebase user active
@@ -2765,7 +2765,7 @@ export default function App() {
 
   return (
     <div className="relative min-h-screen bg-[#F1F5FA] dark:bg-[#0A0F16] text-[#0F172A] dark:text-[#F1F5F9] flex flex-col transition-colors">
-      {/* Mandatory Case A Google Maps Quota Banner */}
+      {/* TomTom Trial Quota Banner */}
       {mapsQuotaExceeded && (
         <div
           role="alert"
@@ -2773,16 +2773,7 @@ export default function App() {
         >
           <AlertTriangle className="w-4 h-4 shrink-0" />
           <p className="text-center">
-            Google Maps Platform quota reached. If you are the app owner, visit{' '}
-            <a
-              href="https://developers.google.com/maps/ai/ai-studio?utm_campaign=gmp_mcp_codeassist_v1_aistudio#quota_exceeded_errors"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="underline font-bold hover:text-amber-200"
-            >
-              maps developer site
-            </a>{' '}
-            for instructions to update your account.
+            Kuota harian TomTom API Trial telah tercapai. Peta tetap menampilkan jalur dasar, atau perbarui ke TomTom API berbayar.
           </p>
         </div>
       )}
@@ -2898,10 +2889,10 @@ export default function App() {
         <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
           <div>
             <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-balance">
-              KonvoiKu — GPS Live, Sinkronisasi Room & Google Maps Real-Time
+              KonvoiKu — GPS Live, Sinkronisasi Room & TomTom Maps Real-Time
             </h1>
             <p className="mt-1 text-sm text-[#475569] dark:text-[#94A3B8]">
-              Material Design 3 · Live Device GPS · Cloud Room Sync · Google Maps & Routes API · PTT & SOS
+              Material Design 3 · Live Device GPS · Cloud Room Sync · TomTom Maps & Routing API · PTT & SOS
             </p>
           </div>
 

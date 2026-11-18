@@ -13,11 +13,13 @@ import tripSummaryCardRendererKt from '../../android/app/src/main/java/com/konvo
 import touringAtmosphereKt from '../../android/app/src/main/java/com/konvoiku/touring/ui/components/TouringAtmosphereBackground.kt?raw';
 import navGraphKt from '../../android/app/src/main/java/com/konvoiku/touring/ui/navigation/ConvoyNavGraph.kt?raw';
 import convoyAvatarKt from '../../android/app/src/main/java/com/konvoiku/touring/ui/components/ConvoyAvatar.kt?raw';
+import tomTomConvoyMapKt from '../../android/app/src/main/java/com/konvoiku/touring/ui/components/TomTomConvoyMap.kt?raw';
 import viewModelKt from '../../android/app/src/main/java/com/konvoiku/touring/viewmodel/ConvoyViewModel.kt?raw';
 import modelsKt from '../../android/app/src/main/java/com/konvoiku/touring/model/ConvoyModels.kt?raw';
 import geoUtilsKt from '../../android/app/src/main/java/com/konvoiku/touring/util/GeoUtils.kt?raw';
 import gpsLocationTrackerKt from '../../android/app/src/main/java/com/konvoiku/touring/location/GpsLocationTracker.kt?raw';
 import firestoreConvoyRepositoryKt from '../../android/app/src/main/java/com/konvoiku/touring/data/FirestoreConvoyRepository.kt?raw';
+import tomTomApiServiceKt from '../../android/app/src/main/java/com/konvoiku/touring/data/TomTomApiService.kt?raw';
 import themeKt from '../../android/app/src/main/java/com/konvoiku/touring/ui/theme/Theme.kt?raw';
 import mainActivityKt from '../../android/app/src/main/java/com/konvoiku/touring/MainActivity.kt?raw';
 import settingsGradleKts from '../../android/settings.gradle.kts?raw';
@@ -149,6 +151,14 @@ export const KOTLIN_SOURCE_FILES: KotlinSourceFile[] = [
     code: convoyAvatarKt,
   },
   {
+    id: 'tomtom_convoy_map',
+    name: 'TomTomConvoyMap.kt',
+    path: 'app/src/main/java/com/konvoiku/touring/ui/components/TomTomConvoyMap.kt',
+    category: 'Layar Compose',
+    linkedRoute: 'live_map',
+    code: tomTomConvoyMapKt,
+  },
+  {
     id: 'touring_atmosphere',
     name: 'TouringAtmosphereBackground.kt',
     path: 'app/src/main/java/com/konvoiku/touring/ui/components/TouringAtmosphereBackground.kt',
@@ -197,6 +207,13 @@ export const KOTLIN_SOURCE_FILES: KotlinSourceFile[] = [
     path: 'app/src/main/java/com/konvoiku/touring/data/FirestoreConvoyRepository.kt',
     category: 'Navigasi & State',
     code: firestoreConvoyRepositoryKt,
+  },
+  {
+    id: 'tomtom_api_service',
+    name: 'TomTomApiService.kt',
+    path: 'app/src/main/java/com/konvoiku/touring/data/TomTomApiService.kt',
+    category: 'Navigasi & State',
+    code: tomTomApiServiceKt,
   },
   {
     id: 'theme',

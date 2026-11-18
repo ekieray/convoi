@@ -1,9 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import {
-  AdvancedMarker,
-  Map as GoogleMap,
-  useMap,
-} from '@vis.gl/react-google-maps';
+import L from 'leaflet';
 import {
   ArrowLeft,
   ArrowRight,
@@ -30,7 +26,8 @@ import {
   TourRoom,
 } from '../../types/convoy';
 import { ConvoyAvatar } from '../ConvoyAvatar';
-import { GoogleMapRoutePickerModal } from '../map/GoogleMapRoutePicker';
+import { TomTomRoutePickerModal } from '../map/TomTomRoutePicker';
+import { getTomTomTileUrl } from '../../services/tomtomMapService';
 import { LatLngPoint } from '../../utils/geo';
 
 interface TourLeaderViewProps {
@@ -69,48 +66,117 @@ const STEP_LABELS = [
   { num: 4, label: 'Jarak' },
 ];
 
-function StepRouteMapOverlay({ waypoints }: { waypoints: RoutePoint[] }) {
-  const map = useMap();
-  const polylineRef = useRef<google.maps.Polyline | null>(null);
+function TomTomStepRouteMap({
+  waypoints,
+  darkMode = false,
+  onMapClick,
+}: {
+  waypoints: RoutePoint[];
+  darkMode?: boolean;
+  onMapClick: (lat: number, lng: number) => void;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const mapRef = useRef<L.Map | null>(null);
+  const tileRef = useRef<L.TileLayer | null>(null);
+  const layerGroupRef = useRef<L.LayerGroup | null>(null);
   const lastBoundsKeyRef = useRef<string>('');
+  const onMapClickRef = useRef(onMapClick);
+  onMapClickRef.current = onMapClick;
 
   useEffect(() => {
-    if (!map || !window.google?.maps?.Polyline) return;
-    if (polylineRef.current) {
-      polylineRef.current.setMap(null);
-      polylineRef.current = null;
-    }
+    const el = containerRef.current;
+    if (!el || mapRef.current) return;
+
+    const first = waypoints[0];
+    const center: [number, number] = first
+      ? [first.latitude, first.longitude]
+      : [-6.674, 106.925];
+
+    const map = L.map(el, {
+      center,
+      zoom: 11,
+      zoomControl: false,
+      attributionControl: false,
+    });
+
+    layerGroupRef.current = L.layerGroup().addTo(map);
+    map.on('click', (ev: L.LeafletMouseEvent) => {
+      onMapClickRef.current(ev.latlng.lat, ev.latlng.lng);
+    });
+
+    mapRef.current = map;
+    const ro = new ResizeObserver(() => map.invalidateSize({ animate: false }));
+    ro.observe(el);
+
+    return () => {
+      ro.disconnect();
+      map.remove();
+      mapRef.current = null;
+      tileRef.current = null;
+      layerGroupRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (tileRef.current) map.removeLayer(tileRef.current);
+    tileRef.current = L.tileLayer(
+      getTomTomTileUrl('basic', darkMode ? 'night' : 'main'),
+      { maxZoom: 19, tileSize: 256 }
+    ).addTo(map);
+  }, [darkMode]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    const group = layerGroupRef.current;
+    if (!map || !group) return;
+
+    group.clearLayers();
     if (waypoints.length >= 2) {
-      polylineRef.current = new google.maps.Polyline({
-        path: waypoints.map((pt) => ({ lat: pt.latitude, lng: pt.longitude })),
-        strokeColor: '#1D4ED8',
-        strokeWeight: 5,
-        strokeOpacity: 0.92,
-        map,
-      });
+      L.polyline(
+        waypoints.map((pt) => [pt.latitude, pt.longitude] as [number, number]),
+        { color: '#1D4ED8', weight: 5, opacity: 0.92 }
+      ).addTo(group);
     }
+
+    waypoints.forEach((pt, idx) => {
+      const isStart = idx === 0;
+      const isEnd = idx === waypoints.length - 1;
+      const html = isStart
+        ? `<span style="transform:translate(-50%,-50%);display:inline-block;padding:2px 8px;border-radius:9999px;background:#EA580C;color:#fff;font-size:10px;font-weight:700;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.3);">Start</span>`
+        : isEnd
+          ? `<span style="transform:translate(-50%,-50%);display:inline-block;padding:2px 8px;border-radius:9999px;background:#16A34A;color:#fff;font-size:10px;font-weight:700;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.3);">Tujuan</span>`
+          : `<span style="transform:translate(-50%,-50%);width:20px;height:20px;border-radius:9999px;background:#1D4ED8;color:#fff;font-size:9px;font-weight:700;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.3);display:flex;align-items:center;justify-content:center;">${idx}</span>`;
+      L.marker([pt.latitude, pt.longitude], {
+        icon: L.divIcon({
+          className: '',
+          iconSize: [0, 0],
+          iconAnchor: [0, 0],
+          html,
+        }),
+        interactive: false,
+      }).addTo(group);
+    });
 
     const start = waypoints[0];
     const end = waypoints[waypoints.length - 1];
-    const boundsKey = start && end
-      ? `${start.latitude.toFixed(4)},${start.longitude.toFixed(4)}->${end.latitude.toFixed(4)},${end.longitude.toFixed(4)}`
-      : '';
-    if (boundsKey && boundsKey !== lastBoundsKeyRef.current && window.google?.maps?.LatLngBounds) {
+    const boundsKey =
+      start && end
+        ? `${start.latitude.toFixed(4)},${start.longitude.toFixed(4)}->${end.latitude.toFixed(4)},${end.longitude.toFixed(4)}`
+        : '';
+    if (boundsKey && boundsKey !== lastBoundsKeyRef.current) {
       lastBoundsKeyRef.current = boundsKey;
-      const bounds = new google.maps.LatLngBounds();
-      waypoints.forEach((w) => bounds.extend({ lat: w.latitude, lng: w.longitude }));
-      map.fitBounds(bounds, 36);
-    }
-
-    return () => {
-      if (polylineRef.current) {
-        polylineRef.current.setMap(null);
-        polylineRef.current = null;
+      const bounds = L.latLngBounds(
+        waypoints.map((w) => [w.latitude, w.longitude] as [number, number])
+      );
+      if (bounds.isValid()) {
+        map.fitBounds(bounds, { padding: [32, 32], maxZoom: 14 });
       }
-    };
-  }, [map, waypoints]);
+    }
+  }, [waypoints]);
 
-  return null;
+  return <div ref={containerRef} className="w-full h-full cursor-crosshair" />;
 }
 
 export function TourLeaderView({
@@ -144,7 +210,6 @@ export function TourLeaderView({
   );
   const [checkpointDraft, setCheckpointDraft] = useState('');
   const [copiedType, setCopiedType] = useState<'id' | 'link' | null>(null);
-  const apiKey = (import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string) || '';
 
   const handleCopy = async (text: string, type: 'id' | 'link') => {
     try {
@@ -374,69 +439,20 @@ export function TourLeaderView({
                   </div>
 
                   <p className="text-xs text-[#475569] dark:text-[#CBD5E1]">
-                    Ketuk Google Map di bawah untuk menambahkan titik belok jalur baru menuju{' '}
+                    Ketuk peta TomTom di bawah untuk menambahkan titik belok jalur baru menuju{' '}
                     {routeConfig.destinationName}.
                   </p>
 
                   <div className="relative w-full h-[220px] rounded-[16px] bg-[#EEF2F6] dark:bg-[#141B22] border border-[#CBD5E1] dark:border-[#334155] overflow-hidden">
-                    {apiKey ? (
-                      <GoogleMap
-                        mapId="DEMO_MAP_ID"
-                        internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
-                        defaultCenter={
-                          routeConfig.waypoints[0]
-                            ? {
-                                lat: routeConfig.waypoints[0].latitude,
-                                lng: routeConfig.waypoints[0].longitude,
-                              }
-                            : { lat: -6.674, lng: 106.925 }
-                        }
-                        defaultZoom={11}
-                        gestureHandling="greedy"
-                        disableDefaultUI
-                        colorScheme={darkMode ? 'DARK' : 'LIGHT'}
-                        style={{ width: '100%', height: '100%' }}
-                        onClick={(ev) => {
-                          const ll = ev.detail.latLng;
-                          if (ll) handleStepMapClick(ll.lat, ll.lng);
-                        }}
-                      >
-                        <StepRouteMapOverlay waypoints={routeConfig.waypoints} />
-                        {routeConfig.waypoints.map((pt, idx) => {
-                          const isStart = idx === 0;
-                          const isEnd = idx === routeConfig.waypoints.length - 1;
-                          return (
-                            <AdvancedMarker
-                              key={`${idx}-${pt.latitude.toFixed(4)}-${pt.longitude.toFixed(4)}`}
-                              position={{ lat: pt.latitude, lng: pt.longitude }}
-                              zIndex={isStart || isEnd ? 20 : 10}
-                            >
-                              {isStart ? (
-                                <span className="px-2 py-0.5 rounded-full bg-[#EA580C] text-white text-[10px] font-bold border-2 border-white shadow">
-                                  Start
-                                </span>
-                              ) : isEnd ? (
-                                <span className="px-2 py-0.5 rounded-full bg-[#16A34A] text-white text-[10px] font-bold border-2 border-white shadow">
-                                  Tujuan
-                                </span>
-                              ) : (
-                                <span className="w-5 h-5 rounded-full bg-[#1D4ED8] text-white text-[9px] font-bold border-2 border-white shadow flex items-center justify-center">
-                                  {idx}
-                                </span>
-                              )}
-                            </AdvancedMarker>
-                          );
-                        })}
-                      </GoogleMap>
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center p-4 text-center text-xs text-[#64748B]">
-                        Google Maps API Key belum tersedia untuk editor jalur live.
-                      </div>
-                    )}
+                    <TomTomStepRouteMap
+                      waypoints={routeConfig.waypoints}
+                      darkMode={darkMode}
+                      onMapClick={handleStepMapClick}
+                    />
                   </div>
 
                   <p className="text-[11px] text-[#64748B] dark:text-[#94A3B8]">
-                    {routeConfig.waypoints.length} titik jalur aktif di Google Maps · Oranye = Start, Hijau = Tujuan
+                    {routeConfig.waypoints.length} titik jalur aktif di TomTom Maps · Oranye = Start, Hijau = Tujuan
                   </p>
                 </>
               )}
@@ -826,7 +842,7 @@ export function TourLeaderView({
       )}
 
       {showDestinationPicker && (
-        <GoogleMapRoutePickerModal
+        <TomTomRoutePickerModal
           initialPoint={
             routeConfig.waypoints[routeConfig.waypoints.length - 1] || {
               xFraction: 0.86,

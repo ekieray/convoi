@@ -16,12 +16,12 @@ val localProps = Properties().apply {
         file.inputStream().use { load(it) }
     }
 }
-val mapsApiKey: String = listOf("MAPS_API_KEY", "GOOGLE_MAPS_API_KEY", "VITE_GOOGLE_MAPS_API_KEY", "MPS_API_KEY")
+val tomtomApiKey: String = listOf("TOMTOM_API_KEY", "MAPS_API_KEY", "MPS_API_KEY")
     .firstNotNullOfOrNull { key ->
         localProps.getProperty(key)?.trim()?.takeIf { it.isNotEmpty() }
             ?: System.getenv(key)?.trim()?.takeIf { it.isNotEmpty() }
     }
-    ?: ""
+    ?: "fxxBdOwiITup2btha0dFUl6IOxczJm4f"
 
 android {
     namespace = "com.konvoiku.touring"
@@ -39,8 +39,7 @@ android {
             useSupportLibrary = true
         }
 
-        manifestPlaceholders["MAPS_API_KEY"] = mapsApiKey
-        buildConfigField("String", "MAPS_API_KEY", "\"$mapsApiKey\"")
+        buildConfigField("String", "TOMTOM_API_KEY", "\"$tomtomApiKey\"")
     }
 
     buildTypes {
@@ -101,9 +100,8 @@ dependencies {
     // Navigation Compose
     implementation(libs.androidx.navigation.compose)
 
-    // Google Maps Compose, Maps SDK & Fused Location GPS
-    implementation(libs.maps.compose)
-    implementation(libs.play.services.maps)
+    // TomTom Tile Map Engine (osmdroid) & Fused Location GPS
+    implementation(libs.osmdroid.android)
     implementation(libs.play.services.location)
 
     // Firebase Firestore & Auth (Sinkronisasi Room Konvoi)

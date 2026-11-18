@@ -72,11 +72,11 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -89,18 +89,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.google.android.gms.maps.CameraUpdateFactory
-import com.google.android.gms.maps.model.CameraPosition
-import com.google.android.gms.maps.model.LatLng
-import com.google.maps.android.compose.GoogleMap
-import com.google.maps.android.compose.MapProperties
-import com.google.maps.android.compose.MapType
-import com.google.maps.android.compose.MapUiSettings
-import com.google.maps.android.compose.Marker
-import com.google.maps.android.compose.MarkerState
-import com.google.maps.android.compose.Polyline
-import com.google.maps.android.compose.rememberCameraPositionState
-import com.konvoiku.touring.BuildConfig
+import com.konvoiku.touring.data.TomTomApiService
+import com.konvoiku.touring.data.TomTomPlaceResult
 import com.konvoiku.touring.model.ConvoyMember
 import com.konvoiku.touring.model.ConvoyRouteConfig
 import com.konvoiku.touring.model.RoutePoint
@@ -108,10 +98,14 @@ import com.konvoiku.touring.model.TourRoom
 import com.konvoiku.touring.model.UserRole
 import com.konvoiku.touring.model.VehicleType
 import com.konvoiku.touring.ui.components.ConvoyAvatar
+import com.konvoiku.touring.ui.components.TomTomConvoyMap
+import com.konvoiku.touring.ui.components.TomTomMapPin
+import com.konvoiku.touring.ui.components.TomTomMapStyle
+import com.konvoiku.touring.ui.components.rememberTomTomMapController
 import com.konvoiku.touring.util.GeoUtils
 import com.konvoiku.touring.util.LatLngGeo
 import com.konvoiku.touring.viewmodel.ConvoyViewModel
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -457,18 +451,23 @@ fun TourLeaderScreen(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
 
-                                    val routePreviewCenter = remember(routeConfig.waypoints) {
-                                        val pts = routeConfig.waypoints
-                                        if (pts.isNotEmpty()) {
-                                            val avgLat = pts.map { it.latitude }.average()
-                                            val avgLng = pts.map { it.longitude }.average()
-                                            LatLng(avgLat, avgLng)
-                                        } else {
-                                            LatLng(-6.674, 106.925)
+                                    val previewLat = if (routeConfig.waypoints.isNotEmpty()) {
+                                        routeConfig.waypoints.map { it.latitude }.average()
+                                    } else -6.674
+                                    val previewLng = if (routeConfig.waypoints.isNotEmpty()) {
+                                        routeConfig.waypoints.map { it.longitude }.average()
+                                    } else 106.925
+                                    val routeEditorController = rememberTomTomMapController()
+                                    val editorPins = remember(routeConfig.waypoints) {
+                                        buildList<TomTomMapPin> {
+                                            routeConfig.waypoints.forEachIndexed { idx, pt ->
+                                                when (idx) {
+                                                    0 -> add(TomTomMapPin.WaypointBadgePin(pt.latitude, pt.longitude, "Start", 0xFFEA580C.toInt()))
+                                                    routeConfig.waypoints.lastIndex -> add(TomTomMapPin.WaypointBadgePin(pt.latitude, pt.longitude, "Tujuan", 0xFF16A34A.toInt()))
+                                                    else -> add(TomTomMapPin.WaypointBadgePin(pt.latitude, pt.longitude, "$idx", 0xFF1D4ED8.toInt()))
+                                                }
+                                            }
                                         }
-                                    }
-                                    val routeEditorCameraState = rememberCameraPositionState {
-                                        position = CameraPosition.fromLatLngZoom(routePreviewCenter, 11.5f)
                                     }
 
                                     Box(
@@ -478,20 +477,20 @@ fun TourLeaderScreen(
                                             .clip(RoundedCornerShape(16.dp))
                                             .background(Color(0xFFEEF2F6))
                                     ) {
-                                        GoogleMap(
+                                        TomTomConvoyMap(
                                             modifier = Modifier.fillMaxSize(),
-                                            cameraPositionState = routeEditorCameraState,
-                                            properties = MapProperties(mapType = MapType.NORMAL),
-                                            uiSettings = MapUiSettings(
-                                                zoomControlsEnabled = true,
-                                                compassEnabled = true
-                                            ),
-                                            onMapClick = { latLng ->
+                                            controller = routeEditorController,
+                                            initialLat = previewLat,
+                                            initialLng = previewLng,
+                                            initialZoom = 11.5,
+                                            polylinePoints = routeConfig.waypoints,
+                                            pins = editorPins,
+                                            onMapTap = { lat, lng ->
                                                 val newPt = RoutePoint(
                                                     xFraction = 0.5f,
                                                     yFraction = 0.5f,
-                                                    latitude = latLng.latitude,
-                                                    longitude = latLng.longitude
+                                                    latitude = lat,
+                                                    longitude = lng
                                                 )
                                                 val current = routeConfig.waypoints
                                                 val updated = if (current.size >= 2) {
@@ -501,67 +500,11 @@ fun TourLeaderScreen(
                                                 }
                                                 onUpdateWaypoints(updated, null)
                                             }
-                                        ) {
-                                            val polyPoints = routeConfig.waypoints.map {
-                                                LatLng(it.latitude, it.longitude)
-                                            }
-                                            if (polyPoints.size >= 2) {
-                                                Polyline(points = polyPoints, color = Color.White, width = 14f)
-                                                Polyline(points = polyPoints, color = Color(0xFF1D4ED8), width = 8f)
-                                            }
-                                            routeConfig.waypoints.firstOrNull()?.let { startPt ->
-                                                val startState = remember {
-                                                    MarkerState(position = LatLng(startPt.latitude, startPt.longitude))
-                                                }
-                                                SideEffect {
-                                                    startState.position = LatLng(startPt.latitude, startPt.longitude)
-                                                }
-                                                Marker(state = startState, title = "Start Konvoi")
-                                            }
-                                            routeConfig.waypoints.lastOrNull()?.let { endPt ->
-                                                val endState = remember {
-                                                    MarkerState(position = LatLng(endPt.latitude, endPt.longitude))
-                                                }
-                                                SideEffect {
-                                                    endState.position = LatLng(endPt.latitude, endPt.longitude)
-                                                }
-                                                Marker(state = endState, title = "Tujuan: ${routeConfig.destinationName}")
-                                            }
-                                        }
-
-                                        if (BuildConfig.MAPS_API_KEY.isBlank()) {
-                                            Surface(
-                                                shape = RoundedCornerShape(10.dp),
-                                                color = Color(0xF0FEF3C7),
-                                                border = BorderStroke(1.dp, Color(0xFFF59E0B)),
-                                                modifier = Modifier
-                                                    .align(Alignment.BottomCenter)
-                                                    .padding(8.dp)
-                                            ) {
-                                                Row(
-                                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                                    verticalAlignment = Alignment.CenterVertically,
-                                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                                ) {
-                                                    Icon(
-                                                        imageVector = Icons.Rounded.Warning,
-                                                        contentDescription = null,
-                                                        tint = Color(0xFFB45309),
-                                                        modifier = Modifier.size(14.dp)
-                                                    )
-                                                    Text(
-                                                        text = "MAPS_API_KEY kosong di APK — set di GitHub Secrets agar tile Google Maps tampil.",
-                                                        fontSize = 10.sp,
-                                                        color = Color(0xFF78350F),
-                                                        fontWeight = FontWeight.Medium
-                                                    )
-                                                }
-                                            }
-                                        }
+                                        )
                                     }
 
                                     Text(
-                                        text = "${routeConfig.waypoints.size} titik jalur aktif di Google Maps · Ketuk peta untuk tambah belokan",
+                                        text = "${routeConfig.waypoints.size} titik jalur aktif di TomTom Maps · Ketuk peta untuk tambah belokan",
                                         style = MaterialTheme.typography.bodyMedium,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -1045,41 +988,29 @@ private fun DestinationMapPickerDialog(
     onDismiss: () -> Unit,
     onConfirm: (latitude: Double, longitude: Double, placeName: String, addressLabel: String) -> Unit
 ) {
-    val coroutineScope = rememberCoroutineScope()
-    var pinLatLng by remember { mutableStateOf(LatLng(initialLat, initialLng)) }
+    var pinLatLng by remember { mutableStateOf(LatLngGeo(initialLat, initialLng)) }
     var placeName by remember { mutableStateOf(initialName) }
-    var mapType by remember { mutableStateOf(MapType.NORMAL) }
-
-    val cameraPositionState = rememberCameraPositionState {
-        position = CameraPosition.fromLatLngZoom(LatLng(initialLat, initialLng), 12.5f)
+    var resolvedAddress by remember {
+        mutableStateOf(String.format(Locale.US, "Koordinat TomTom · %.4f, %.4f", initialLat, initialLng))
     }
+    var mapStyle by remember { mutableStateOf(TomTomMapStyle.ROAD) }
+    var searchQuery by remember { mutableStateOf("") }
+    var searchResults by remember { mutableStateOf<List<TomTomPlaceResult>>(emptyList()) }
+    var isSearching by remember { mutableStateOf(false) }
 
-    val markerState = remember { MarkerState(position = LatLng(initialLat, initialLng)) }
-    SideEffect {
-        markerState.position = pinLatLng
-    }
+    val mapController = rememberTomTomMapController()
 
-    val nearestLandmark = remember(pinLatLng) {
-        REGIONAL_LANDMARKS.minByOrNull { lm ->
-            GeoUtils.haversineMeters(
-                LatLngGeo(lm.latitude, lm.longitude),
-                LatLngGeo(pinLatLng.latitude, pinLatLng.longitude)
-            )
+    LaunchedEffect(searchQuery) {
+        val q = searchQuery.trim()
+        if (q.length < 2) {
+            searchResults = emptyList()
+            isSearching = false
+            return@LaunchedEffect
         }
-    }
-    val resolvedAddress = remember(pinLatLng, nearestLandmark) {
-        val distMeters = nearestLandmark?.let {
-            GeoUtils.haversineMeters(
-                LatLngGeo(it.latitude, it.longitude),
-                LatLngGeo(pinLatLng.latitude, pinLatLng.longitude)
-            )
-        } ?: Double.MAX_VALUE
-        val base = if (distMeters < 15_000.0 && nearestLandmark != null) {
-            nearestLandmark.address
-        } else {
-            "Koordinat Google Maps"
-        }
-        String.format(Locale.US, "%s · %.4f, %.4f", base, pinLatLng.latitude, pinLatLng.longitude)
+        isSearching = true
+        delay(320)
+        searchResults = TomTomApiService.searchPlaces(q)
+        isSearching = false
     }
 
     BackHandler(onBack = onDismiss)
@@ -1088,287 +1019,302 @@ private fun DestinationMapPickerDialog(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background
     ) {
-            Scaffold(
-                topBar = {
-                    TopAppBar(
-                        title = {
-                            Column {
-                                Text("Pilih Tujuan Akhir di Google Maps", style = MaterialTheme.typography.titleMedium)
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = {
+                        Column {
+                            Text("Pilih Tujuan Akhir di TomTom Maps", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                text = "Cari tempat atau ketuk lokasi di peta",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = onDismiss) {
+                            Icon(Icons.Rounded.Close, contentDescription = "Tutup Peta")
+                        }
+                    },
+                    actions = {
+                        TextButton(
+                            onClick = {
+                                mapStyle = if (mapStyle == TomTomMapStyle.ROAD) TomTomMapStyle.SATELLITE else TomTomMapStyle.ROAD
+                            }
+                        ) {
+                            Text(if (mapStyle == TomTomMapStyle.ROAD) "Satelit" else "Peta")
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.surface
+                    )
+                )
+            }
+        ) { innerPadding ->
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+            ) {
+                // TomTom Places Search Field
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    placeholder = { Text("Cari lokasi di TomTom (mis. Puncak, Lembang)...", fontSize = 12.sp) },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 6.dp)
+                )
+
+                if (isSearching || searchResults.isNotEmpty()) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        shadowElevation = 4.dp,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp)
+                    ) {
+                        Column {
+                            if (isSearching) {
                                 Text(
-                                    text = "Ketuk lokasi di peta atau pilih cepat titik touring",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    text = "Mencari di TomTom...",
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(12.dp)
+                                )
+                            } else {
+                                searchResults.take(4).forEach { result ->
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                pinLatLng = LatLngGeo(result.latitude, result.longitude)
+                                                placeName = result.name
+                                                resolvedAddress = result.address
+                                                searchQuery = ""
+                                                searchResults = emptyList()
+                                                mapController.animateTo(result.latitude, result.longitude, 14.0)
+                                            }
+                                            .padding(horizontal = 12.dp, vertical = 9.dp)
+                                    ) {
+                                        Text(result.name, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        Text(result.address, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    }
+                                    HorizontalDivider()
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Quick Jump Landmark Chips
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(REGIONAL_LANDMARKS) { lm ->
+                        FilterChip(
+                            selected = placeName == lm.name,
+                            onClick = {
+                                pinLatLng = LatLngGeo(lm.latitude, lm.longitude)
+                                placeName = lm.name
+                                resolvedAddress = String.format(Locale.US, "%s · %.4f, %.4f", lm.address, lm.latitude, lm.longitude)
+                                mapController.animateTo(lm.latitude, lm.longitude, 13.5)
+                            },
+                            label = { Text(lm.name, fontSize = 11.sp) }
+                        )
+                    }
+                }
+
+                val pickerPins = remember(pinLatLng, placeName, userGpsLat, userGpsLng) {
+                    buildList<TomTomMapPin> {
+                        if (userGpsLat != null && userGpsLng != null) {
+                            add(TomTomMapPin.SimpleDotPin(userGpsLat, userGpsLng, 0xFFEA580C.toInt()))
+                        }
+                        add(
+                            TomTomMapPin.DestinationPin(
+                                latitude = pinLatLng.latitude,
+                                longitude = pinLatLng.longitude,
+                                title = placeName.ifBlank { "Titik Tujuan Konvoi" },
+                                subtitle = String.format(Locale.US, "%.4f, %.4f", pinLatLng.latitude, pinLatLng.longitude)
+                            )
+                        )
+                    }
+                }
+
+                var pendingLookupKey by remember { mutableStateOf<Pair<Double, Double>?>(null) }
+                LaunchedEffect(pendingLookupKey) {
+                    val coords = pendingLookupKey ?: return@LaunchedEffect
+                    val res = TomTomApiService.reverseGeocode(coords.first, coords.second)
+                    placeName = res.name
+                    resolvedAddress = res.address
+                }
+
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .background(Color(0xFFE9EFF5))
+                ) {
+                    TomTomConvoyMap(
+                        modifier = Modifier.fillMaxSize(),
+                        controller = mapController,
+                        initialLat = initialLat,
+                        initialLng = initialLng,
+                        initialZoom = 12.5,
+                        mapStyle = mapStyle,
+                        pins = pickerPins,
+                        onMapTap = { lat, lng ->
+                            pinLatLng = LatLngGeo(lat, lng)
+                            val closest = REGIONAL_LANDMARKS.minByOrNull { lm ->
+                                GeoUtils.haversineMeters(
+                                    LatLngGeo(lm.latitude, lm.longitude),
+                                    LatLngGeo(lat, lng)
                                 )
                             }
-                        },
-                        navigationIcon = {
-                            IconButton(onClick = onDismiss) {
-                                Icon(Icons.Rounded.Close, contentDescription = "Tutup Peta")
+                            val closestDist = closest?.let {
+                                GeoUtils.haversineMeters(LatLngGeo(it.latitude, it.longitude), LatLngGeo(lat, lng))
+                            } ?: Double.MAX_VALUE
+                            if (closest != null && closestDist < 2500.0) {
+                                placeName = closest.name
+                                resolvedAddress = String.format(Locale.US, "%s · %.4f, %.4f", closest.address, lat, lng)
+                            } else {
+                                placeName = String.format(Locale.US, "Titik Tujuan (%.4f, %.4f)", lat, lng)
+                                resolvedAddress = String.format(Locale.US, "Mencari nama jalan... · %.4f, %.4f", lat, lng)
+                                pendingLookupKey = lat to lng
                             }
-                        },
-                        actions = {
-                            TextButton(
-                                onClick = {
-                                    mapType = if (mapType == MapType.NORMAL) MapType.HYBRID else MapType.NORMAL
-                                }
-                            ) {
-                                Text(if (mapType == MapType.NORMAL) "Satelit" else "Peta")
-                            }
-                        },
-                        colors = TopAppBarDefaults.topAppBarColors(
-                            containerColor = MaterialTheme.colorScheme.surface
-                        )
+                        }
                     )
-                }
-            ) { innerPadding ->
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(innerPadding)
-                ) {
-                    // Quick Jump Landmark Chips
-                    LazyRow(
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        items(REGIONAL_LANDMARKS) { lm ->
-                            FilterChip(
-                                selected = placeName == lm.name,
-                                onClick = {
-                                    val target = LatLng(lm.latitude, lm.longitude)
-                                    pinLatLng = target
-                                    placeName = lm.name
-                                    coroutineScope.launch {
-                                        cameraPositionState.animate(
-                                            CameraUpdateFactory.newLatLngZoom(target, 13.5f)
-                                        )
-                                    }
-                                },
-                                label = { Text(lm.name, fontSize = 11.sp) }
-                            )
-                        }
-                    }
 
-                    Box(
+                    // Zoom & GPS Controls
+                    Column(
                         modifier = Modifier
-                            .weight(1f)
-                            .fillMaxWidth()
-                            .background(Color(0xFFE9EFF5))
+                            .align(Alignment.TopEnd)
+                            .padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        GoogleMap(
-                            modifier = Modifier.fillMaxSize(),
-                            cameraPositionState = cameraPositionState,
-                            properties = MapProperties(
-                                mapType = mapType,
-                                isMyLocationEnabled = userGpsLat != null && userGpsLng != null
-                            ),
-                            uiSettings = MapUiSettings(
-                                zoomControlsEnabled = false,
-                                myLocationButtonEnabled = false,
-                                compassEnabled = true
-                            ),
-                            onMapClick = { tapped ->
-                                pinLatLng = tapped
-                                val closest = REGIONAL_LANDMARKS.minByOrNull { lm ->
-                                    GeoUtils.haversineMeters(
-                                        LatLngGeo(lm.latitude, lm.longitude),
-                                        LatLngGeo(tapped.latitude, tapped.longitude)
-                                    )
-                                }
-                                if (closest != null) {
-                                    val meters = GeoUtils.haversineMeters(
-                                        LatLngGeo(closest.latitude, closest.longitude),
-                                        LatLngGeo(tapped.latitude, tapped.longitude)
-                                    )
-                                    placeName = if (meters < 2500.0) {
-                                        closest.name
-                                    } else {
-                                        String.format(
-                                            Locale.US,
-                                            "Titik Tujuan (%.4f, %.4f)",
-                                            tapped.latitude,
-                                            tapped.longitude
-                                        )
-                                    }
-                                }
-                            }
+                        SmallFloatingActionButton(
+                            onClick = { mapController.zoomIn() },
+                            containerColor = MaterialTheme.colorScheme.surface,
+                            elevation = FloatingActionButtonDefaults.elevation(4.dp)
                         ) {
-                            Marker(
-                                state = markerState,
-                                title = placeName.ifBlank { "Titik Tujuan Konvoi" },
-                                snippet = String.format(Locale.US, "%.4f, %.4f", pinLatLng.latitude, pinLatLng.longitude)
-                            )
+                            Icon(Icons.Rounded.Add, contentDescription = "Perbesar Peta")
                         }
-
-                        // Zoom & GPS Controls
-                        Column(
-                            modifier = Modifier
-                                .align(Alignment.TopEnd)
-                                .padding(14.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        SmallFloatingActionButton(
+                            onClick = { mapController.zoomOut() },
+                            containerColor = MaterialTheme.colorScheme.surface,
+                            elevation = FloatingActionButtonDefaults.elevation(4.dp)
                         ) {
-                            SmallFloatingActionButton(
-                                onClick = {
-                                    coroutineScope.launch {
-                                        cameraPositionState.animate(CameraUpdateFactory.zoomIn())
-                                    }
-                                },
-                                containerColor = MaterialTheme.colorScheme.surface,
-                                elevation = FloatingActionButtonDefaults.elevation(4.dp)
-                            ) {
-                                Icon(Icons.Rounded.Add, contentDescription = "Perbesar Peta")
-                            }
-                            SmallFloatingActionButton(
-                                onClick = {
-                                    coroutineScope.launch {
-                                        cameraPositionState.animate(CameraUpdateFactory.zoomOut())
-                                    }
-                                },
-                                containerColor = MaterialTheme.colorScheme.surface,
-                                elevation = FloatingActionButtonDefaults.elevation(4.dp)
-                            ) {
-                                Icon(Icons.Rounded.Remove, contentDescription = "Perkecil Peta")
-                            }
-                            SmallFloatingActionButton(
-                                onClick = {
-                                    val target = if (userGpsLat != null && userGpsLng != null) {
-                                        LatLng(userGpsLat, userGpsLng)
-                                    } else {
-                                        pinLatLng
-                                    }
-                                    coroutineScope.launch {
-                                        cameraPositionState.animate(
-                                            CameraUpdateFactory.newLatLngZoom(target, 14f)
-                                        )
-                                    }
-                                },
-                                containerColor = MaterialTheme.colorScheme.surface,
-                                elevation = FloatingActionButtonDefaults.elevation(4.dp)
-                            ) {
-                                Icon(Icons.Rounded.MyLocation, contentDescription = "Fokus Lokasi")
-                            }
+                            Icon(Icons.Rounded.Remove, contentDescription = "Perkecil Peta")
                         }
-
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = Color(0xCC0F172A),
-                            modifier = Modifier
-                                .align(Alignment.TopStart)
-                                .padding(14.dp)
-                        ) {
-                            Text(
-                                text = String.format(
-                                    Locale.US,
-                                    "Pin: %.4f, %.4f · Ketuk peta",
-                                    pinLatLng.latitude,
-                                    pinLatLng.longitude
-                                ),
-                                color = Color.White,
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 11.sp,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                            )
-                        }
-
-                        if (BuildConfig.MAPS_API_KEY.isBlank()) {
-                            Surface(
-                                shape = RoundedCornerShape(10.dp),
-                                color = Color(0xF0FEF3C7),
-                                border = BorderStroke(1.dp, Color(0xFFF59E0B)),
-                                modifier = Modifier
-                                    .align(Alignment.BottomStart)
-                                    .padding(14.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.Warning,
-                                        contentDescription = null,
-                                        tint = Color(0xFFB45309),
-                                        modifier = Modifier.size(14.dp)
-                                    )
-                                    Text(
-                                        text = "API Key Google Maps kosong di APK (tambahkan secret MAPS_API_KEY di GitHub Actions).",
-                                        fontSize = 10.sp,
-                                        color = Color(0xFF78350F),
-                                        fontWeight = FontWeight.Medium
-                                    )
+                        SmallFloatingActionButton(
+                            onClick = {
+                                if (userGpsLat != null && userGpsLng != null) {
+                                    mapController.animateTo(userGpsLat, userGpsLng, 14.0)
+                                } else {
+                                    mapController.animateTo(pinLatLng.latitude, pinLatLng.longitude, 14.0)
                                 }
-                            }
+                            },
+                            containerColor = MaterialTheme.colorScheme.surface,
+                            elevation = FloatingActionButtonDefaults.elevation(4.dp)
+                        ) {
+                            Icon(Icons.Rounded.MyLocation, contentDescription = "Fokus Lokasi")
                         }
                     }
 
-                    // Bottom Confirmation Sheet
                     Surface(
-                        color = MaterialTheme.colorScheme.surface,
-                        shadowElevation = 10.dp,
-                        shape = RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp),
-                        modifier = Modifier.fillMaxWidth()
+                        shape = RoundedCornerShape(10.dp),
+                        color = Color(0xCC0F172A),
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(14.dp)
                     ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .navigationBarsPadding()
-                                .imePadding()
-                                .padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 24.dp),
-                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        Text(
+                            text = String.format(
+                                Locale.US,
+                                "Pin: %.4f, %.4f · Ketuk peta",
+                                pinLatLng.latitude,
+                                pinLatLng.longitude
+                            ),
+                            color = Color.White,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                        )
+                    }
+                }
+
+                // Bottom Confirmation Sheet
+                Surface(
+                    color = MaterialTheme.colorScheme.surface,
+                    shadowElevation = 10.dp,
+                    shape = RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .navigationBarsPadding()
+                            .imePadding()
+                            .padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 24.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = placeName,
+                            onValueChange = { placeName = it },
+                            label = { Text("Nama Lokasi Tujuan") },
+                            singleLine = true,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        Text(
+                            text = resolvedAddress,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            OutlinedTextField(
-                                value = placeName,
-                                onValueChange = { placeName = it },
-                                label = { Text("Nama Lokasi Tujuan") },
-                                singleLine = true,
-                                shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier.fillMaxWidth()
-                            )
-
-                            Text(
-                                text = resolvedAddress,
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            OutlinedButton(
+                                onClick = onDismiss,
+                                modifier = Modifier.weight(1f).height(48.dp),
+                                shape = RoundedCornerShape(14.dp)
                             ) {
-                                OutlinedButton(
-                                    onClick = onDismiss,
-                                    modifier = Modifier.weight(1f).height(48.dp),
-                                    shape = RoundedCornerShape(14.dp)
-                                ) {
-                                    Text("Batal")
-                                }
-                                Button(
-                                    onClick = {
-                                        onConfirm(
-                                            pinLatLng.latitude,
-                                            pinLatLng.longitude,
-                                            placeName.trim().ifBlank { "Titik Tujuan Google Maps" },
-                                            resolvedAddress
-                                        )
-                                    },
-                                    modifier = Modifier.weight(1.6f).height(48.dp),
-                                    shape = RoundedCornerShape(14.dp),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = MaterialTheme.colorScheme.secondary,
-                                        contentColor = Color.White
+                                Text("Batal")
+                            }
+                            Button(
+                                onClick = {
+                                    onConfirm(
+                                        pinLatLng.latitude,
+                                        pinLatLng.longitude,
+                                        placeName.trim().ifBlank { "Titik Tujuan TomTom" },
+                                        resolvedAddress
                                     )
-                                ) {
-                                    Icon(Icons.Rounded.Check, contentDescription = null, modifier = Modifier.size(18.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text("Gunakan Lokasi Ini", fontWeight = FontWeight.SemiBold)
-                                }
+                                },
+                                modifier = Modifier.weight(1.6f).height(48.dp),
+                                shape = RoundedCornerShape(14.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.secondary,
+                                    contentColor = Color.White
+                                )
+                            ) {
+                                Icon(Icons.Rounded.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Gunakan Lokasi Ini", fontWeight = FontWeight.SemiBold)
                             }
                         }
                     }
                 }
             }
+        }
     }
 }
 

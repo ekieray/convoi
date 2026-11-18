@@ -113,7 +113,7 @@ export function RoleSelectionView({
           {/* Atmospheric Touring Header */}
           <TouringHeroBanner
             title="Dashboard Konvoi Touring"
-            subtitle="Koordinasi perjalanan mobil dan motor secara real-time dengan GPS, Google Maps & Sinkronisasi Room."
+            subtitle="Koordinasi perjalanan mobil dan motor secara real-time dengan GPS, TomTom Maps & Sinkronisasi Room."
           />
 
           {/* Backend Maintenance & Announcement Banners */}

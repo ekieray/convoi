@@ -634,7 +634,7 @@ fun LoginScreen(
                                 modifier = Modifier.size(18.dp)
                             )
                             Text(
-                                text = "Pantau posisi seluruh anggota secara live di Google Maps.",
+                                text = "Pantau posisi seluruh anggota secara live di TomTom Maps.",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )

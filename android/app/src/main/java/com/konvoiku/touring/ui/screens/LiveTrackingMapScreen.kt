@@ -131,19 +131,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import com.google.android.gms.maps.CameraUpdateFactory
-import com.google.android.gms.maps.model.CameraPosition
-import com.google.android.gms.maps.model.LatLng
-import com.google.maps.android.compose.CameraMoveStartedReason
-import com.google.maps.android.compose.GoogleMap
-import com.google.maps.android.compose.MapProperties
-import com.google.maps.android.compose.MapType
-import com.google.maps.android.compose.MapUiSettings
-import com.google.maps.android.compose.MarkerComposable
-import com.google.maps.android.compose.MarkerState
-import com.google.maps.android.compose.Polyline
-import com.google.maps.android.compose.rememberCameraPositionState
-import com.konvoiku.touring.BuildConfig
+import com.konvoiku.touring.data.TomTomApiService
 import com.konvoiku.touring.model.ChatMessageType
 import com.konvoiku.touring.model.ConvoyMember
 import com.konvoiku.touring.model.ConvoyRouteConfig
@@ -153,6 +141,7 @@ import com.konvoiku.touring.model.MemberConditionStatus
 import com.konvoiku.touring.model.OffRouteAlertState
 import com.konvoiku.touring.model.RestCheckpoint
 import com.konvoiku.touring.model.RoomMessage
+import com.konvoiku.touring.model.RoutePoint
 import com.konvoiku.touring.model.SosEmergencyState
 import com.konvoiku.touring.model.StragglerAlertState
 import com.konvoiku.touring.model.TourRoom
@@ -160,8 +149,12 @@ import com.konvoiku.touring.model.UserRole
 import com.konvoiku.touring.model.VehicleType
 import com.konvoiku.touring.model.calculateDestinationEta
 import com.konvoiku.touring.ui.components.ConvoyAvatar
+import com.konvoiku.touring.ui.components.TomTomConvoyMap
+import com.konvoiku.touring.ui.components.TomTomMapPin
+import com.konvoiku.touring.ui.components.TomTomMapStyle
+import com.konvoiku.touring.ui.components.rememberTomTomMapController
+import com.konvoiku.touring.util.LatLngGeo
 import com.konvoiku.touring.viewmodel.ConvoyViewModel
-import kotlinx.coroutines.launch
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -215,8 +208,8 @@ fun LiveTrackingMapScreen(
     onFinishAndSaveTrip: () -> Unit,
     onExitRoom: () -> Unit
 ) {
-    val coroutineScope = rememberCoroutineScope()
-    var mapType by remember { mutableStateOf(MapType.NORMAL) }
+    var mapStyle by remember { mutableStateOf(TomTomMapStyle.ROAD) }
+    var showTraffic by remember { mutableStateOf(true) }
     var isParticipantsExpanded by remember { mutableStateOf(false) }
     var showChatSheet by remember { mutableStateOf(false) }
     var showLeaderSettingsSheet by remember { mutableStateOf(false) }
@@ -225,7 +218,7 @@ fun LiveTrackingMapScreen(
     var chatInputText by remember { mutableStateOf("") }
 
     var checkpointDraftName by remember { mutableStateOf("") }
-    var tappedCheckpointLatLng by remember { mutableStateOf<LatLng?>(null) }
+    var tappedCheckpointLatLng by remember { mutableStateOf<LatLngGeo?>(null) }
 
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -310,22 +303,28 @@ fun LiveTrackingMapScreen(
         speedHistory = (speedHistory.drop(1) + convoyAvgSpeedKmh).takeLast(10)
     }
 
-    val initialLatLng = remember(trackedMember?.id) {
-        LatLng(
-            trackedMember?.mapPosition?.latitude ?: -6.674,
-            trackedMember?.mapPosition?.longitude ?: 106.925
-        )
-    }
-    val cameraPositionState = rememberCameraPositionState {
-        position = CameraPosition.fromLatLngZoom(initialLatLng, 14.5f)
-    }
+    val initialLat = trackedMember?.mapPosition?.latitude ?: -6.674
+    val initialLng = trackedMember?.mapPosition?.longitude ?: 106.925
+    val mapController = rememberTomTomMapController()
     var isAutoFollowing by remember { mutableStateOf(true) }
 
-    LaunchedEffect(cameraPositionState.isMoving, cameraPositionState.cameraMoveStartedReason) {
-        if (cameraPositionState.isMoving &&
-            cameraPositionState.cameraMoveStartedReason == CameraMoveStartedReason.GESTURE
-        ) {
-            isAutoFollowing = false
+    var tomTomRoadPath by remember(routeConfig.waypoints) {
+        mutableStateOf(routeConfig.waypoints)
+    }
+
+    LaunchedEffect(routeConfig.waypoints) {
+        if (routeConfig.waypoints.size >= 2) {
+            val res = TomTomApiService.calculateRoute(routeConfig.waypoints)
+            if (res != null && res.path.size >= 2) {
+                tomTomRoadPath = res.path.map {
+                    RoutePoint(
+                        xFraction = 0.5f,
+                        yFraction = 0.5f,
+                        latitude = it.latitude,
+                        longitude = it.longitude
+                    )
+                }
+            }
         }
     }
 
@@ -337,14 +336,8 @@ fun LiveTrackingMapScreen(
     ) {
         if (!isAutoFollowing) return@LaunchedEffect
         val m = trackedMember ?: return@LaunchedEffect
-        val zoom = cameraPositionState.position.zoom.coerceAtLeast(14.5f)
-        cameraPositionState.animate(
-            update = CameraUpdateFactory.newLatLngZoom(
-                LatLng(m.mapPosition.latitude, m.mapPosition.longitude),
-                zoom
-            ),
-            durationMs = 550
-        )
+        val targetZoom = mapController.currentZoom.coerceAtLeast(14.5)
+        mapController.animateTo(m.mapPosition.latitude, m.mapPosition.longitude, targetZoom)
     }
 
     LaunchedEffect(gpsStatus) {
@@ -454,14 +447,11 @@ fun LiveTrackingMapScreen(
                                     onClick = {
                                         onSelectMember(member.id)
                                         isAutoFollowing = true
-                                        coroutineScope.launch {
-                                            cameraPositionState.animate(
-                                                CameraUpdateFactory.newLatLngZoom(
-                                                    LatLng(member.mapPosition.latitude, member.mapPosition.longitude),
-                                                    15f
-                                                )
-                                            )
-                                        }
+                                        mapController.animateTo(
+                                            member.mapPosition.latitude,
+                                            member.mapPosition.longitude,
+                                            15.0
+                                        )
                                     }
                                 )
                             }
@@ -510,14 +500,11 @@ fun LiveTrackingMapScreen(
                                             onSelectMember(member.id)
                                             isAutoFollowing = true
                                             isParticipantsExpanded = false
-                                            coroutineScope.launch {
-                                                cameraPositionState.animate(
-                                                    CameraUpdateFactory.newLatLngZoom(
-                                                        LatLng(member.mapPosition.latitude, member.mapPosition.longitude),
-                                                        15f
-                                                    )
-                                                )
-                                            }
+                                            mapController.animateTo(
+                                                member.mapPosition.latitude,
+                                                member.mapPosition.longitude,
+                                                15.0
+                                            )
                                         }
                                     )
                                 }
@@ -610,172 +597,84 @@ fun LiveTrackingMapScreen(
                 }
             }
 
-            // Real Live Google Maps Viewport (maps-compose)
+            // Real Live TomTom Maps Viewport (osmdroid + TomTom Tiles & Routing)
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
             ) {
                 val waypoints = routeConfig.waypoints
-                val routeLatLngs = remember(waypoints) {
-                    waypoints.map { LatLng(it.latitude, it.longitude) }
+                val destPoint = waypoints.lastOrNull()
+                val mapPins = remember(
+                    members,
+                    focusedMember?.id,
+                    routeConfig.checkpoints,
+                    routeConfig.destinationName,
+                    routeConfig.offRouteToleranceMeters,
+                    etaInfo.arrivalClockLabel,
+                    etaInfo.durationLabel,
+                    etaInfo.distanceLabel,
+                    sosState.isActive,
+                    sosState.senderId,
+                    stragglerAlert.isTriggered,
+                    stragglerAlert.trailingMember?.id
+                ) {
+                    buildList<TomTomMapPin> {
+                        routeConfig.checkpoints.forEach { cp ->
+                            add(TomTomMapPin.CheckpointPin(cp))
+                        }
+                        if (destPoint != null) {
+                            add(
+                                TomTomMapPin.DestinationPin(
+                                    latitude = destPoint.latitude,
+                                    longitude = destPoint.longitude,
+                                    title = "Tujuan: ${routeConfig.destinationName}",
+                                    subtitle = "ETA ${etaInfo.arrivalClockLabel} · ${etaInfo.durationLabel} · ${etaInfo.distanceLabel}"
+                                )
+                            )
+                        }
+                        members.forEach { member ->
+                            add(
+                                TomTomMapPin.MemberPin(
+                                    member = member,
+                                    isSelected = member.id == focusedMember?.id,
+                                    isOffRoute = member.offRouteMeters > routeConfig.offRouteToleranceMeters,
+                                    isStraggler = stragglerAlert.isTriggered && stragglerAlert.trailingMember?.id == member.id,
+                                    isSosBeacon = member.conditionStatus == MemberConditionStatus.SOS || (sosState.isActive && sosState.senderId == member.id)
+                                )
+                            )
+                        }
+                    }
                 }
 
-                GoogleMap(
+                TomTomConvoyMap(
                     modifier = Modifier.fillMaxSize(),
-                    cameraPositionState = cameraPositionState,
-                    properties = MapProperties(
-                        mapType = mapType,
-                        isMyLocationEnabled = gpsStatus == GpsTrackingStatus.ACTIVE,
-                        isTrafficEnabled = true
-                    ),
-                    uiSettings = MapUiSettings(
-                        zoomControlsEnabled = false,
-                        myLocationButtonEnabled = false,
-                        compassEnabled = true
-                    ),
-                    onMapClick = { latLng ->
+                    controller = mapController,
+                    initialLat = initialLat,
+                    initialLng = initialLng,
+                    initialZoom = 14.5,
+                    mapStyle = mapStyle,
+                    showTraffic = showTraffic,
+                    polylinePoints = tomTomRoadPath,
+                    pins = mapPins,
+                    onUserDrag = { isAutoFollowing = false },
+                    onMemberPinClick = { memberId ->
+                        onSelectMember(memberId)
+                        isAutoFollowing = true
+                    },
+                    onMapTap = { lat, lng ->
                         if (isPickingDestinationOnMap) {
-                            onPickCustomDestinationLatLng(latLng.latitude, latLng.longitude)
+                            onPickCustomDestinationLatLng(lat, lng)
                         } else if (isPickingCheckpointOnMap) {
                             if (pendingCheckpointName.isNotBlank()) {
-                                onConfirmAddCheckpointLatLng(
-                                    pendingCheckpointName,
-                                    latLng.latitude,
-                                    latLng.longitude
-                                )
+                                onConfirmAddCheckpointLatLng(pendingCheckpointName, lat, lng)
                                 checkpointDraftName = ""
                             } else {
-                                tappedCheckpointLatLng = latLng
+                                tappedCheckpointLatLng = LatLngGeo(lat, lng)
                             }
                         }
                     }
-                ) {
-                    if (routeLatLngs.size >= 2) {
-                        Polyline(
-                            points = routeLatLngs,
-                            color = Color.White,
-                            width = 16f
-                        )
-                        Polyline(
-                            points = routeLatLngs,
-                            color = Color(0xFF1D4ED8),
-                            width = 9f
-                        )
-                    }
-
-                    // Rest Area / Checkpoint Markers
-                    routeConfig.checkpoints.forEach { checkpoint ->
-                        val cpState = remember(checkpoint.id) {
-                            MarkerState(position = LatLng(checkpoint.latitude, checkpoint.longitude))
-                        }
-                        SideEffect {
-                            cpState.position = LatLng(checkpoint.latitude, checkpoint.longitude)
-                        }
-                        MarkerComposable(
-                            keys = arrayOf(checkpoint.id, checkpoint.name),
-                            state = cpState,
-                            anchor = Offset(0.5f, 1.0f)
-                        ) {
-                            RestCheckpointMapMarker(checkpoint = checkpoint)
-                        }
-                    }
-
-                    // Destination Flag Marker with Live ETA Badge
-                    val destPoint = waypoints.lastOrNull()
-                    if (destPoint != null) {
-                        val destState = remember {
-                            MarkerState(position = LatLng(destPoint.latitude, destPoint.longitude))
-                        }
-                        SideEffect {
-                            destState.position = LatLng(destPoint.latitude, destPoint.longitude)
-                        }
-                        MarkerComposable(
-                            keys = arrayOf(
-                                routeConfig.destinationName,
-                                etaInfo.arrivalClockLabel,
-                                etaInfo.distanceLabel
-                            ),
-                            state = destState,
-                            anchor = Offset(0.5f, 1.0f)
-                        ) {
-                            Column(
-                                modifier = Modifier.width(184.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
-                                Surface(shape = RoundedCornerShape(10.dp), color = Color(0xFF0F172A), shadowElevation = 4.dp) {
-                                    Column(
-                                        horizontalAlignment = Alignment.CenterHorizontally,
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                    ) {
-                                        Text(
-                                            text = "Tujuan: ${routeConfig.destinationName}",
-                                            style = MaterialTheme.typography.bodyMedium.copy(fontSize = 11.sp, fontWeight = FontWeight.SemiBold),
-                                            color = Color.White,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        Text(
-                                            text = "ETA ${etaInfo.arrivalClockLabel} · ${etaInfo.durationLabel} · ${etaInfo.distanceLabel}",
-                                            fontFamily = FontFamily.Monospace,
-                                            fontSize = 10.sp,
-                                            color = Color(0xFF86EFAC),
-                                            maxLines = 1
-                                        )
-                                    }
-                                }
-                                Spacer(modifier = Modifier.height(3.dp))
-                                Surface(
-                                    shape = CircleShape,
-                                    color = Color(0xFF16A34A),
-                                    border = BorderStroke(2.dp, Color.White),
-                                    modifier = Modifier.size(30.dp)
-                                ) {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        Icon(Icons.Rounded.Flag, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Convoy Member Live Markers
-                    members.forEach { member ->
-                        val memberState = remember(member.id) {
-                            MarkerState(
-                                position = LatLng(member.mapPosition.latitude, member.mapPosition.longitude)
-                            )
-                        }
-                        SideEffect {
-                            memberState.position = LatLng(member.mapPosition.latitude, member.mapPosition.longitude)
-                        }
-                        MarkerComposable(
-                            keys = arrayOf(
-                                member.id,
-                                member.mapPosition.latitude,
-                                member.mapPosition.longitude,
-                                member.id == focusedMember?.id,
-                                member.conditionStatus,
-                                member.isSweeper
-                            ),
-                            state = memberState,
-                            anchor = Offset(0.5f, 0.85f),
-                            onClick = {
-                                onSelectMember(member.id)
-                                true
-                            }
-                        ) {
-                            ConvoyMapMarker(
-                                member = member,
-                                isSelected = member.id == focusedMember?.id,
-                                isOffRoute = member.offRouteMeters > routeConfig.offRouteToleranceMeters,
-                                isStraggler = stragglerAlert.isTriggered && stragglerAlert.trailingMember?.id == member.id,
-                                isSosBeacon = member.conditionStatus == MemberConditionStatus.SOS || (sosState.isActive && sosState.senderId == member.id),
-                                onClick = { onSelectMember(member.id) }
-                            )
-                        }
-                    }
-                }
+                )
 
                 // Map Tap Picking Hint
                 if (isPickingDestinationOnMap || isPickingCheckpointOnMap) {
@@ -794,9 +693,9 @@ fun LiveTrackingMapScreen(
                             Text(
                                 text = if (isPickingCheckpointOnMap) {
                                     if (pendingCheckpointName.isNotBlank()) "Ketuk peta untuk menaruh: $pendingCheckpointName"
-                                    else "Ketuk Google Map untuk lokasi Titik Istirahat"
+                                    else "Ketuk Peta TomTom untuk lokasi Titik Istirahat"
                                 } else {
-                                    "Ketuk Google Map untuk menetapkan Titik Tujuan baru"
+                                    "Ketuk Peta TomTom untuk menetapkan Titik Tujuan baru"
                                 },
                                 color = Color.White,
                                 style = MaterialTheme.typography.bodyMedium,
@@ -927,35 +826,6 @@ fun LiveTrackingMapScreen(
                         )
                     }
 
-                    if (BuildConfig.MAPS_API_KEY.isBlank()) {
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = Color(0xF0FEF3C7),
-                            border = BorderStroke(1.dp, Color(0xFFF59E0B)),
-                            shadowElevation = 3.dp,
-                            modifier = Modifier.widthIn(max = 260.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Rounded.Warning,
-                                    contentDescription = null,
-                                    tint = Color(0xFFB45309),
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Text(
-                                    text = "API Key Google Maps kosong di APK. Set secret MAPS_API_KEY di GitHub Actions lalu build ulang APK.",
-                                    fontSize = 10.sp,
-                                    lineHeight = 13.sp,
-                                    color = Color(0xFF78350F),
-                                    fontWeight = FontWeight.Medium
-                                )
-                            }
-                        }
-                    }
                 }
 
                 // Top-Right Layer, Zoom & Center Controls
@@ -967,12 +837,19 @@ fun LiveTrackingMapScreen(
                 ) {
                     SmallFloatingActionButton(
                         onClick = {
-                            mapType = if (mapType == MapType.NORMAL) MapType.HYBRID else MapType.NORMAL
+                            mapStyle = if (mapStyle == TomTomMapStyle.ROAD) TomTomMapStyle.SATELLITE else TomTomMapStyle.ROAD
                         },
-                        containerColor = MaterialTheme.colorScheme.surface,
-                        contentColor = MaterialTheme.colorScheme.primary
+                        containerColor = if (mapStyle == TomTomMapStyle.SATELLITE) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
+                        contentColor = if (mapStyle == TomTomMapStyle.SATELLITE) Color.White else MaterialTheme.colorScheme.primary
                     ) {
                         Icon(Icons.Rounded.Layers, contentDescription = "Ubah Lapisan Peta")
+                    }
+                    SmallFloatingActionButton(
+                        onClick = { showTraffic = !showTraffic },
+                        containerColor = if (showTraffic) Color(0xFF0F766E) else MaterialTheme.colorScheme.surface,
+                        contentColor = if (showTraffic) Color.White else MaterialTheme.colorScheme.primary
+                    ) {
+                        Icon(Icons.Rounded.Route, contentDescription = "Lalu Lintas Live")
                     }
                     if (activeRoom?.isSyncedRoom != true) {
                         SmallFloatingActionButton(
@@ -984,21 +861,13 @@ fun LiveTrackingMapScreen(
                         }
                     }
                     SmallFloatingActionButton(
-                        onClick = {
-                            coroutineScope.launch {
-                                cameraPositionState.animate(CameraUpdateFactory.zoomIn())
-                            }
-                        },
+                        onClick = { mapController.zoomIn() },
                         containerColor = MaterialTheme.colorScheme.surface
                     ) {
                         Icon(Icons.Rounded.Add, contentDescription = "Perbesar")
                     }
                     SmallFloatingActionButton(
-                        onClick = {
-                            coroutineScope.launch {
-                                cameraPositionState.animate(CameraUpdateFactory.zoomOut())
-                            }
-                        },
+                        onClick = { mapController.zoomOut() },
                         containerColor = MaterialTheme.colorScheme.surface
                     ) {
                         Icon(Icons.Rounded.Remove, contentDescription = "Perkecil")
@@ -1008,14 +877,11 @@ fun LiveTrackingMapScreen(
                             isAutoFollowing = true
                             val target = trackedMember ?: currentUser
                             if (target != null) {
-                                coroutineScope.launch {
-                                    cameraPositionState.animate(
-                                        CameraUpdateFactory.newLatLngZoom(
-                                            LatLng(target.mapPosition.latitude, target.mapPosition.longitude),
-                                            15f
-                                        )
-                                    )
-                                }
+                                mapController.animateTo(
+                                    target.mapPosition.latitude,
+                                    target.mapPosition.longitude,
+                                    15.0
+                                )
                             }
                         },
                         containerColor = if (isAutoFollowing) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,

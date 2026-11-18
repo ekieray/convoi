@@ -39,8 +39,241 @@ async function startServer() {
   app.set('trust proxy', true);
   app.use(express.json());
 
+  const DEFAULT_TOMTOM_TRIAL_KEY = 'fxxBdOwiITup2btha0dFUl6IOxczJm4f';
+  const getTomTomApiKey = (): string =>
+    process.env.TOMTOM_API_KEY?.trim() || DEFAULT_TOMTOM_TRIAL_KEY;
+
   app.get('/api/health', (_req: Request, res: Response) => {
     res.json({ ok: true, service: 'konvoiku' });
+  });
+
+  app.get('/api/tomtom/status', (_req: Request, res: Response) => {
+    res.json({
+      configured: Boolean(getTomTomApiKey()),
+      provider: 'tomtom',
+      mode: process.env.TOMTOM_API_KEY?.trim() ? 'env' : 'trial',
+    });
+  });
+
+  // Proxy TomTom Raster Map, Satellite, Labels & Traffic Flow tiles
+  app.get('/api/tomtom/tile/:layer/:style/:z/:x/:y', async (req: Request, res: Response) => {
+    const { layer, style, z, x, y } = req.params;
+    const allowedLayers = new Set(['basic', 'sat', 'labels', 'traffic']);
+    const allowedStyles = new Set(['main', 'night', 'relative0']);
+    if (
+      !allowedLayers.has(layer) ||
+      !allowedStyles.has(style) ||
+      !/^\d+$/.test(z) ||
+      !/^\d+$/.test(x) ||
+      !/^\d+$/.test(y)
+    ) {
+      res.status(400).send('Invalid tile parameters');
+      return;
+    }
+
+    const apiKey = getTomTomApiKey();
+    let targetUrl = '';
+    if (layer === 'traffic') {
+      targetUrl = `https://api.tomtom.com/traffic/map/4/tile/flow/${style}/${z}/${x}/${y}.png?key=${encodeURIComponent(apiKey)}&tileSize=256`;
+    } else if (layer === 'sat') {
+      targetUrl = `https://api.tomtom.com/map/1/tile/sat/main/${z}/${x}/${y}.jpg?key=${encodeURIComponent(apiKey)}&tileSize=256`;
+    } else {
+      targetUrl = `https://api.tomtom.com/map/1/tile/${layer}/${style}/${z}/${x}/${y}.png?key=${encodeURIComponent(apiKey)}&tileSize=256`;
+    }
+
+    try {
+      const upstream = await fetch(targetUrl);
+      if (!upstream.ok) {
+        res.status(upstream.status).send('TomTom tile unavailable');
+        return;
+      }
+      const contentType =
+        upstream.headers.get('content-type') ||
+        (layer === 'sat' ? 'image/jpeg' : 'image/png');
+      const buf = Buffer.from(await upstream.arrayBuffer());
+      res.setHeader('Content-Type', contentType);
+      res.setHeader(
+        'Cache-Control',
+        layer === 'traffic' ? 'public, max-age=60' : 'public, max-age=3600'
+      );
+      res.send(buf);
+    } catch {
+      res.status(502).send('Failed to fetch TomTom tile');
+    }
+  });
+
+  // Proxy TomTom Routing API (supports motorcycle/car & live traffic ETA)
+  app.get('/api/tomtom/route', async (req: Request, res: Response) => {
+    const points = typeof req.query.points === 'string' ? req.query.points.trim() : '';
+    const travelMode =
+      req.query.travelMode === 'car' ? 'car' : 'motorcycle';
+
+    if (!points || !/^-?\d+(\.\d+)?,-?\d+(\.\d+)?(:-?\d+(\.\d+)?,-?\d+(\.\d+)?)+$/.test(points)) {
+      res.status(400).json({ error: 'Format parameter points tidak valid.' });
+      return;
+    }
+
+    const apiKey = getTomTomApiKey();
+    const url = `https://api.tomtom.com/routing/1/calculateRoute/${encodeURIComponent(points)}/json?key=${encodeURIComponent(apiKey)}&traffic=true&travelMode=${travelMode}&routeType=fastest`;
+
+    try {
+      const upstream = await fetch(url);
+      if (upstream.status === 403 || upstream.status === 429) {
+        res.status(429).json({
+          quotaExceeded: true,
+          error: 'Kuota harian TomTom API Trial tercapai.',
+        });
+        return;
+      }
+      if (!upstream.ok) {
+        res.status(upstream.status).json({ error: 'Gagal menghitung rute TomTom.' });
+        return;
+      }
+
+      const data = (await upstream.json()) as {
+        routes?: Array<{
+          summary?: {
+            lengthInMeters?: number;
+            travelTimeInSeconds?: number;
+            trafficDelayInSeconds?: number;
+          };
+          legs?: Array<{
+            points?: Array<{ latitude: number; longitude: number }>;
+          }>;
+        }>;
+      };
+
+      const route = data.routes?.[0];
+      if (!route) {
+        res.status(404).json({ error: 'Rute tidak ditemukan.' });
+        return;
+      }
+
+      const pathPoints: Array<{ lat: number; lng: number }> = [];
+      for (const leg of route.legs ?? []) {
+        for (const pt of leg.points ?? []) {
+          if (Number.isFinite(pt.latitude) && Number.isFinite(pt.longitude)) {
+            pathPoints.push({ lat: pt.latitude, lng: pt.longitude });
+          }
+        }
+      }
+
+      res.json({
+        distanceMeters: Number(route.summary?.lengthInMeters ?? 0),
+        durationMillis: Number(route.summary?.travelTimeInSeconds ?? 0) * 1000,
+        trafficDelaySeconds: Number(route.summary?.trafficDelayInSeconds ?? 0),
+        path: pathPoints,
+      });
+    } catch {
+      res.status(502).json({ error: 'Tidak dapat menghubungi TomTom Routing API.' });
+    }
+  });
+
+  // Proxy TomTom Fuzzy Place Search (Indonesia prioritized)
+  app.get('/api/tomtom/search', async (req: Request, res: Response) => {
+    const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    if (q.length < 2) {
+      res.json({ results: [] });
+      return;
+    }
+
+    const apiKey = getTomTomApiKey();
+    const url = `https://api.tomtom.com/search/2/search/${encodeURIComponent(q)}.json?key=${encodeURIComponent(apiKey)}&countrySet=ID&limit=6&language=id-ID`;
+
+    try {
+      const upstream = await fetch(url);
+      if (upstream.status === 403 || upstream.status === 429) {
+        res.status(429).json({ quotaExceeded: true, results: [] });
+        return;
+      }
+      if (!upstream.ok) {
+        res.status(upstream.status).json({ results: [] });
+        return;
+      }
+      const data = (await upstream.json()) as {
+        results?: Array<{
+          id?: string;
+          poi?: { name?: string };
+          address?: { freeformAddress?: string; municipality?: string };
+          position?: { lat?: number; lon?: number };
+        }>;
+      };
+
+      const results = (data.results ?? [])
+        .filter((item) => item.position?.lat != null && item.position?.lon != null)
+        .map((item, idx) => {
+          const lat = Number(item.position!.lat);
+          const lng = Number(item.position!.lon);
+          const address =
+            item.address?.freeformAddress ||
+            item.address?.municipality ||
+            `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+          const name = item.poi?.name || address.split(',')[0] || 'Lokasi Dipilih';
+          return {
+            id: item.id || `${idx}-${lat}-${lng}`,
+            name,
+            address,
+            lat,
+            lng,
+          };
+        });
+
+      res.json({ results });
+    } catch {
+      res.status(502).json({ results: [] });
+    }
+  });
+
+  // Proxy TomTom Reverse Geocoding
+  app.get('/api/tomtom/reverse', async (req: Request, res: Response) => {
+    const lat = Number(req.query.lat);
+    const lng = Number(req.query.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      res.status(400).json({ error: 'Koordinat tidak valid.' });
+      return;
+    }
+
+    const apiKey = getTomTomApiKey();
+    const url = `https://api.tomtom.com/search/2/reverseGeocode/${lat},${lng}.json?key=${encodeURIComponent(apiKey)}&language=id-ID`;
+
+    try {
+      const upstream = await fetch(url);
+      if (!upstream.ok) {
+        res.status(upstream.status).json({
+          name: `Titik Peta (${lat.toFixed(3)}, ${lng.toFixed(3)})`,
+          address: `Koordinat GPS ${lat.toFixed(5)}, ${lng.toFixed(5)}`,
+        });
+        return;
+      }
+      const data = (await upstream.json()) as {
+        addresses?: Array<{
+          address?: {
+            streetName?: string;
+            street?: string;
+            municipalitySecondarySubdivision?: string;
+            municipality?: string;
+            freeformAddress?: string;
+          };
+        }>;
+      };
+      const addr = data.addresses?.[0]?.address;
+      const street = addr?.streetName || addr?.street || '';
+      const area =
+        addr?.municipalitySecondarySubdivision || addr?.municipality || '';
+      const name =
+        [street, area].filter(Boolean).join(', ') ||
+        `Titik Peta (${lat.toFixed(3)}, ${lng.toFixed(3)})`;
+      const address =
+        addr?.freeformAddress ||
+        `${name} · ${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+
+      res.json({ name, address });
+    } catch {
+      res.json({
+        name: `Titik Peta (${lat.toFixed(3)}, ${lng.toFixed(3)})`,
+        address: `Koordinat GPS ${lat.toFixed(5)}, ${lng.toFixed(5)}`,
+      });
+    }
   });
 
   app.get('/api/auth/instagram/url', (req: Request, res: Response) => {

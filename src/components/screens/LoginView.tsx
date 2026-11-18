@@ -587,7 +587,7 @@ export function LoginView({
           <div className="rounded-[18px] bg-white dark:bg-[#131B26] border border-[#E2E8F0] dark:border-[#2D3A4F] p-3.5 space-y-2">
             <div className="flex items-center gap-2.5 text-xs text-[#475569] dark:text-[#CBD5E1]">
               <MapPin className="w-4 h-4 text-[#1D4ED8] dark:text-[#60A5FA] shrink-0" />
-              <span>Pantau posisi seluruh anggota secara live di Google Maps.</span>
+              <span>Pantau posisi seluruh anggota secara live di TomTom Maps.</span>
             </div>
             <div className="flex items-center gap-2.5 text-xs text-[#475569] dark:text-[#CBD5E1]">
               <ShieldCheck className="w-4 h-4 text-[#EA580C] dark:text-[#FB923C] shrink-0" />

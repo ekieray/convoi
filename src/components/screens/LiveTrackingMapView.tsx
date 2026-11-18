@@ -50,7 +50,7 @@ import {
   UserRole,
 } from '../../types/convoy';
 import { ConvoyAvatar } from '../ConvoyAvatar';
-import { LiveGoogleConvoyMap } from '../map/LiveGoogleConvoyMap';
+import { LiveTomTomConvoyMap } from '../map/LiveTomTomConvoyMap';
 import { GpsPermissionStatus } from '../../hooks/useDeviceGps';
 import { LatLngPoint } from '../../utils/geo';
 
@@ -784,10 +784,10 @@ export function LiveTrackingMapView({
           </div>
         )}
 
-      {/* Full Live Google Map Viewport */}
+      {/* Full Live TomTom Map Viewport */}
       <div className="relative flex-1 min-h-[320px] overflow-hidden bg-[#EEF2F6] dark:bg-[#141B22]">
         <div className="absolute inset-0">
-          <LiveGoogleConvoyMap
+          <LiveTomTomConvoyMap
             members={members}
             focusedMember={focusedMember}
             routeConfig={routeConfig}

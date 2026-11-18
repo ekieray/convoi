@@ -1840,7 +1840,7 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
             senderName = "Budi",
             senderVehicle = "Avanza Hitam",
             type = ChatMessageType.TEXT,
-            textContent = "Rombongan siap, jalur Google Maps telah ditetapkan.",
+            textContent = "Rombongan siap, jalur TomTom Maps telah ditetapkan.",
             timestampLabel = currentClockLabel(),
             senderAvatarPreset = AvatarPreset.RIDER_CAPTAIN
         )
