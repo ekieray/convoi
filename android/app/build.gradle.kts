@@ -16,8 +16,11 @@ val localProps = Properties().apply {
         file.inputStream().use { load(it) }
     }
 }
-val mapsApiKey: String = localProps.getProperty("MAPS_API_KEY")
-    ?: System.getenv("MAPS_API_KEY")
+val mapsApiKey: String = listOf("MAPS_API_KEY", "GOOGLE_MAPS_API_KEY", "VITE_GOOGLE_MAPS_API_KEY", "MPS_API_KEY")
+    .firstNotNullOfOrNull { key ->
+        localProps.getProperty(key)?.trim()?.takeIf { it.isNotEmpty() }
+            ?: System.getenv(key)?.trim()?.takeIf { it.isNotEmpty() }
+    }
     ?: ""
 
 android {

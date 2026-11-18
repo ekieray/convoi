@@ -34,8 +34,12 @@ jobs:
 
     - name: Build Debug APK
       env:
-        MAPS_API_KEY: ${{ secrets.MAPS_API_KEY }}
-      run: ./gradlew assembleDebug --no-daemon
+        MAPS_API_KEY: ${{ secrets.MAPS_API_KEY || secrets.GOOGLE_MAPS_API_KEY || secrets.VITE_GOOGLE_MAPS_API_KEY || secrets.MPS_API_KEY }}
+      run: |
+        if [ -z "$MAPS_API_KEY" ]; then
+          echo "::warning::MAPS_API_KEY secret is empty in GitHub Repository Settings > Secrets and variables > Actions."
+        fi
+        ./gradlew assembleDebug --no-daemon
 
     - name: Upload Debug APK Artifact
       uses: actions/upload-artifact@v4

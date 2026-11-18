@@ -1,5 +1,6 @@
 package com.konvoiku.touring.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -88,8 +89,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
@@ -150,6 +149,7 @@ fun TourLeaderScreen(
 
     val stepTitles = listOf("Tujuan", "Jalur", "Istirahat", "Jarak")
 
+    Box(modifier = Modifier.fillMaxSize()) {
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -948,6 +948,7 @@ fun TourLeaderScreen(
             }
         )
     }
+    }
 }
 
 @Composable
@@ -1081,14 +1082,12 @@ private fun DestinationMapPickerDialog(
         String.format(Locale.US, "%s · %.4f, %.4f", base, pinLatLng.latitude, pinLatLng.longitude)
     }
 
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+    BackHandler(onBack = onDismiss)
+
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background
     ) {
-        Surface(
-            modifier = Modifier.fillMaxSize(),
-            color = MaterialTheme.colorScheme.background
-        ) {
             Scaffold(
                 topBar = {
                     TopAppBar(
@@ -1310,7 +1309,11 @@ private fun DestinationMapPickerDialog(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Column(
-                            modifier = Modifier.padding(20.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .navigationBarsPadding()
+                                .imePadding()
+                                .padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 24.dp),
                             verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
                             OutlinedTextField(
@@ -1366,7 +1369,6 @@ private fun DestinationMapPickerDialog(
                     }
                 }
             }
-        }
     }
 }
 

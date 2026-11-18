@@ -271,7 +271,7 @@ export function GoogleMapRoutePickerModal({
         </div>
 
         {/* Footer Confirm Panel */}
-        <div className="p-3.5 bg-white dark:bg-[#141C24] border-t border-[#E2E8F0] dark:border-[#334155] space-y-2.5">
+        <div className="px-3.5 pt-3.5 pb-[calc(1.25rem+env(safe-area-inset-bottom))] bg-white dark:bg-[#141C24] border-t border-[#E2E8F0] dark:border-[#334155] space-y-2.5">
           <div className="flex items-start gap-2.5">
             <div className="w-8 h-8 rounded-full bg-[#ECFDF5] dark:bg-[#064E3B] text-[#16A34A] flex items-center justify-center shrink-0">
               <MapPin className="w-4 h-4" />
