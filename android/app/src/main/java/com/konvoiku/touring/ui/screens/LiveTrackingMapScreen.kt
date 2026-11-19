@@ -1115,8 +1115,8 @@ fun LiveTrackingMapScreen(
                     onClick = {
                         onConfirmAddCheckpointLatLng(
                             dialogName.ifBlank { "Rest Area Konvoi" },
-                            latLng.latitude,
-                            latLng.longitude
+                            latLng.lat,
+                            latLng.lng
                         )
                         tappedCheckpointLatLng = null
                     }

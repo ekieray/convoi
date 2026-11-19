@@ -77,6 +77,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -106,6 +107,7 @@ import com.konvoiku.touring.util.GeoUtils
 import com.konvoiku.touring.util.LatLngGeo
 import com.konvoiku.touring.viewmodel.ConvoyViewModel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -1136,10 +1138,10 @@ private fun DestinationMapPickerDialog(
                         }
                         add(
                             TomTomMapPin.DestinationPin(
-                                latitude = pinLatLng.latitude,
-                                longitude = pinLatLng.longitude,
+                                latitude = pinLatLng.lat,
+                                longitude = pinLatLng.lng,
                                 title = placeName.ifBlank { "Titik Tujuan Konvoi" },
-                                subtitle = String.format(Locale.US, "%.4f, %.4f", pinLatLng.latitude, pinLatLng.longitude)
+                                subtitle = String.format(Locale.US, "%.4f, %.4f", pinLatLng.lat, pinLatLng.lng)
                             )
                         )
                     }
@@ -1215,7 +1217,7 @@ private fun DestinationMapPickerDialog(
                                 if (userGpsLat != null && userGpsLng != null) {
                                     mapController.animateTo(userGpsLat, userGpsLng, 14.0)
                                 } else {
-                                    mapController.animateTo(pinLatLng.latitude, pinLatLng.longitude, 14.0)
+                                    mapController.animateTo(pinLatLng.lat, pinLatLng.lng, 14.0)
                                 }
                             },
                             containerColor = MaterialTheme.colorScheme.surface,
@@ -1236,8 +1238,8 @@ private fun DestinationMapPickerDialog(
                             text = String.format(
                                 Locale.US,
                                 "Pin: %.4f, %.4f · Ketuk peta",
-                                pinLatLng.latitude,
-                                pinLatLng.longitude
+                                pinLatLng.lat,
+                                pinLatLng.lng
                             ),
                             color = Color.White,
                             fontFamily = FontFamily.Monospace,
@@ -1293,8 +1295,8 @@ private fun DestinationMapPickerDialog(
                             Button(
                                 onClick = {
                                     onConfirm(
-                                        pinLatLng.latitude,
-                                        pinLatLng.longitude,
+                                        pinLatLng.lat,
+                                        pinLatLng.lng,
                                         placeName.trim().ifBlank { "Titik Tujuan TomTom" },
                                         resolvedAddress
                                     )
