@@ -159,7 +159,7 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
     private var extraMemberCounter = 0
 
     init {
-        syncRepo.init(application.applicationContext)
+        FirestoreConvoyRepository.init(application.applicationContext)
         _uiState.update { state ->
             val seeded = defaultTripHistory()
             state.copy(
