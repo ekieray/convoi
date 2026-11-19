@@ -46,6 +46,8 @@
         "destinationAddress": { "type": "string", "minLength": 1, "maxLength": 240 },
         "destLat": { "type": "number" },
         "destLng": { "type": "number" },
+        "originName": { "type": "string", "minLength": 0, "maxLength": 120 },
+        "originAddress": { "type": "string", "minLength": 0, "maxLength": 240 },
         "originLat": { "type": "number" },
         "originLng": { "type": "number" },
         "encodedPolyline": { "type": "string", "maxLength": 16384 },

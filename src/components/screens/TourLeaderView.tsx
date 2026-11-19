@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { type ReactNode, useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import {
   ArrowLeft,
   ArrowRight,
+  Ban,
   Bike,
   Car,
   Check,
@@ -11,6 +12,7 @@ import {
   Copy,
   Flag,
   Gauge,
+  LocateFixed,
   Map as MapIcon,
   MapPin,
   Plus,
@@ -18,27 +20,76 @@ import {
   Route,
   Trash2,
   UserPlus,
+  Zap,
 } from 'lucide-react';
 import {
   ConvoyRouteConfig,
   DestinationPreset,
+  RouteInstruction,
   RoutePoint,
+  RoutePreference,
   TourRoom,
+  VehicleType,
 } from '../../types/convoy';
 import { ConvoyAvatar } from '../ConvoyAvatar';
 import { TomTomRoutePickerModal } from '../map/TomTomRoutePicker';
-import { getTomTomTileUrl } from '../../services/tomtomMapService';
+import {
+  fetchTomTomRoute,
+  getTomTomTileUrl,
+} from '../../services/tomtomMapService';
 import { LatLngPoint } from '../../utils/geo';
+
+interface OriginPreset {
+  name: string;
+  address: string;
+  latitude: number;
+  longitude: number;
+}
+
+const ORIGIN_PRESETS: OriginPreset[] = [
+  {
+    name: 'Senayan Parkir Timur',
+    address: 'Jl. Pintu Satu Senayan, Jakarta Pusat',
+    latitude: -6.2241,
+    longitude: 106.8019,
+  },
+  {
+    name: 'Rest Area Cibubur KM 10',
+    address: 'Tol Jagorawi KM 10, Cibubur',
+    latitude: -6.3712,
+    longitude: 106.8904,
+  },
+  {
+    name: 'Simpang Gadog Ciawi',
+    address: 'Simpang Gadog KM 45, Bogor',
+    latitude: -6.6542,
+    longitude: 106.8712,
+  },
+  {
+    name: 'Gerbang Tol Pasteur',
+    address: 'Jl. Dr. Djunjunan, Pasteur, Bandung',
+    latitude: -6.8942,
+    longitude: 107.5855,
+  },
+];
 
 interface TourLeaderViewProps {
   activeRoom: TourRoom | null;
   routeConfig: ConvoyRouteConfig;
   destinationPresets: DestinationPreset[];
+  vehicleType?: VehicleType;
   isAuthenticated?: boolean;
   isCreatingRoom?: boolean;
   userGpsLocation?: LatLngPoint | null;
   darkMode?: boolean;
   onGoogleSignIn?: () => void;
+  onPickOriginLatLng: (
+    lat: number,
+    lng: number,
+    placeName: string,
+    addressLabel: string
+  ) => void;
+  onUseGpsAsOrigin: () => void;
   onSelectPreset: (preset: DestinationPreset) => void;
   onPickDestinationLatLng: (
     lat: number,
@@ -46,8 +97,15 @@ interface TourLeaderViewProps {
     placeName: string,
     addressLabel: string
   ) => void;
+  onSelectRoutePreference: (preference: RoutePreference) => void;
   onUpdateWaypoints: (waypoints: RoutePoint[]) => void;
   onResetDefaultWaypoints: () => void;
+  onRouteComputed?: (
+    distanceMeters: number,
+    durationMillis: number,
+    path: LatLngPoint[],
+    instructions?: RouteInstruction[]
+  ) => void;
   onAddCheckpoint: (name: string, xFraction: number, yFraction: number) => void;
   onRemoveCheckpoint: (checkpointId: string) => void;
   onUpdateMaxStragglerDistance: (meters: number) => void;
@@ -60,20 +118,32 @@ interface TourLeaderViewProps {
 }
 
 const STEP_LABELS = [
-  { num: 1, label: 'Tujuan' },
-  { num: 2, label: 'Jalur' },
-  { num: 3, label: 'Istirahat' },
-  { num: 4, label: 'Jarak' },
+  { num: 1, label: 'Start' },
+  { num: 2, label: 'Tujuan' },
+  { num: 3, label: 'Rute' },
+  { num: 4, label: 'Istirahat' },
+  { num: 5, label: 'Jarak' },
 ];
 
 function TomTomStepRouteMap({
   waypoints,
+  vehicleType = 'MOTOR',
+  routePreference = 'fastest',
   darkMode = false,
   onMapClick,
+  onPreviewRouteComputed,
 }: {
   waypoints: RoutePoint[];
+  vehicleType?: VehicleType;
+  routePreference?: RoutePreference;
   darkMode?: boolean;
   onMapClick: (lat: number, lng: number) => void;
+  onPreviewRouteComputed?: (
+    distanceMeters: number,
+    durationMillis: number,
+    path: LatLngPoint[],
+    instructions?: RouteInstruction[]
+  ) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -82,6 +152,8 @@ function TomTomStepRouteMap({
   const lastBoundsKeyRef = useRef<string>('');
   const onMapClickRef = useRef(onMapClick);
   onMapClickRef.current = onMapClick;
+  const onPreviewRouteComputedRef = useRef(onPreviewRouteComputed);
+  onPreviewRouteComputedRef.current = onPreviewRouteComputed;
 
   useEffect(() => {
     const el = containerRef.current;
@@ -127,37 +199,55 @@ function TomTomStepRouteMap({
     ).addTo(map);
   }, [darkMode]);
 
+  const previewKey = `${routePreference}|${vehicleType}|${waypoints
+    .map((pt) => `${pt.latitude.toFixed(4)},${pt.longitude.toFixed(4)}`)
+    .join('|')}`;
+
   useEffect(() => {
     const map = mapRef.current;
     const group = layerGroupRef.current;
     if (!map || !group) return;
 
-    group.clearLayers();
-    if (waypoints.length >= 2) {
-      L.polyline(
-        waypoints.map((pt) => [pt.latitude, pt.longitude] as [number, number]),
-        { color: '#1D4ED8', weight: 5, opacity: 0.92 }
-      ).addTo(group);
-    }
+    const renderScene = (lineCoords: [number, number][]) => {
+      group.clearLayers();
+      if (lineCoords.length >= 2) {
+        L.polyline(lineCoords, {
+          color: '#FFFFFF',
+          weight: 8,
+          opacity: 0.9,
+          lineJoin: 'round',
+        }).addTo(group);
+        L.polyline(lineCoords, {
+          color: '#1D4ED8',
+          weight: 5,
+          opacity: 0.95,
+          lineJoin: 'round',
+        }).addTo(group);
+      }
 
-    waypoints.forEach((pt, idx) => {
-      const isStart = idx === 0;
-      const isEnd = idx === waypoints.length - 1;
-      const html = isStart
-        ? `<span style="transform:translate(-50%,-50%);display:inline-block;padding:2px 8px;border-radius:9999px;background:#EA580C;color:#fff;font-size:10px;font-weight:700;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.3);">Start</span>`
-        : isEnd
-          ? `<span style="transform:translate(-50%,-50%);display:inline-block;padding:2px 8px;border-radius:9999px;background:#16A34A;color:#fff;font-size:10px;font-weight:700;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.3);">Tujuan</span>`
-          : `<span style="transform:translate(-50%,-50%);width:20px;height:20px;border-radius:9999px;background:#1D4ED8;color:#fff;font-size:9px;font-weight:700;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.3);display:flex;align-items:center;justify-content:center;">${idx}</span>`;
-      L.marker([pt.latitude, pt.longitude], {
-        icon: L.divIcon({
-          className: '',
-          iconSize: [0, 0],
-          iconAnchor: [0, 0],
-          html,
-        }),
-        interactive: false,
-      }).addTo(group);
-    });
+      waypoints.forEach((pt, idx) => {
+        const isStart = idx === 0;
+        const isEnd = idx === waypoints.length - 1;
+        const html = isStart
+          ? `<span style="transform:translate(-50%,-50%);display:inline-block;padding:2px 8px;border-radius:9999px;background:#EA580C;color:#fff;font-size:10px;font-weight:700;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.3);">Start</span>`
+          : isEnd
+            ? `<span style="transform:translate(-50%,-50%);display:inline-block;padding:2px 8px;border-radius:9999px;background:#16A34A;color:#fff;font-size:10px;font-weight:700;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.3);">Tujuan</span>`
+            : `<span style="transform:translate(-50%,-50%);width:18px;height:18px;border-radius:9999px;background:#1D4ED8;color:#fff;font-size:9px;font-weight:700;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.3);display:flex;align-items:center;justify-content:center;">${idx}</span>`;
+        L.marker([pt.latitude, pt.longitude], {
+          icon: L.divIcon({
+            className: '',
+            iconSize: [0, 0],
+            iconAnchor: [0, 0],
+            html,
+          }),
+          interactive: false,
+        }).addTo(group);
+      });
+    };
+
+    renderScene(
+      waypoints.map((pt) => [pt.latitude, pt.longitude] as [number, number])
+    );
 
     const start = waypoints[0];
     const end = waypoints[waypoints.length - 1];
@@ -174,7 +264,30 @@ function TomTomStepRouteMap({
         map.fitBounds(bounds, { padding: [32, 32], maxZoom: 14 });
       }
     }
-  }, [waypoints]);
+
+    if (waypoints.length < 2) return;
+    let cancelled = false;
+    fetchTomTomRoute(
+      waypoints,
+      vehicleType === 'MOBIL' ? 'car' : 'motorcycle',
+      routePreference
+    ).then((result) => {
+      if (cancelled || !result || result.path.length < 2) return;
+      renderScene(result.path.map((p) => [p.lat, p.lng]));
+      if (onPreviewRouteComputedRef.current) {
+        onPreviewRouteComputedRef.current(
+          result.distanceMeters,
+          result.durationMillis,
+          result.path,
+          result.instructions
+        );
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [previewKey]);
 
   return <div ref={containerRef} className="w-full h-full cursor-crosshair" />;
 }
@@ -183,15 +296,20 @@ export function TourLeaderView({
   activeRoom,
   routeConfig,
   destinationPresets,
+  vehicleType = 'MOTOR',
   isAuthenticated,
   isCreatingRoom,
   userGpsLocation,
   darkMode,
   onGoogleSignIn,
+  onPickOriginLatLng,
+  onUseGpsAsOrigin,
   onSelectPreset,
   onPickDestinationLatLng,
+  onSelectRoutePreference,
   onUpdateWaypoints,
   onResetDefaultWaypoints,
+  onRouteComputed,
   onAddCheckpoint,
   onRemoveCheckpoint,
   onUpdateMaxStragglerDistance,
@@ -204,12 +322,18 @@ export function TourLeaderView({
 }: TourLeaderViewProps) {
   const [currentStep, setCurrentStep] = useState(0);
   const [showSetupStepper, setShowSetupStepper] = useState(!activeRoom);
-  const [showDestinationPicker, setShowDestinationPicker] = useState(false);
+  const [pickerMode, setPickerMode] = useState<'origin' | 'destination' | null>(
+    null
+  );
   const [tourNameDraft, setTourNameDraft] = useState(
     activeRoom?.roomTitle || 'Konvoi Puncak Pass Weekend'
   );
   const [checkpointDraft, setCheckpointDraft] = useState('');
   const [copiedType, setCopiedType] = useState<'id' | 'link' | null>(null);
+  const [previewStats, setPreviewStats] = useState<{
+    distanceMeters: number;
+    durationMillis: number;
+  } | null>(null);
 
   const handleCopy = async (text: string, type: 'id' | 'link') => {
     try {
@@ -233,6 +357,13 @@ export function TourLeaderView({
       pts.length >= 2
         ? [...pts.slice(0, pts.length - 1), newPt, pts[pts.length - 1]]
         : [...pts, newPt];
+    onUpdateWaypoints(updated);
+  };
+
+  const handleRemoveLastViaPoint = () => {
+    const pts = routeConfig.waypoints;
+    if (pts.length <= 2) return;
+    const updated = [...pts.slice(0, pts.length - 2), pts[pts.length - 1]];
     onUpdateWaypoints(updated);
   };
 
@@ -260,7 +391,7 @@ export function TourLeaderView({
             </h2>
             <p className="text-[11px] text-[#64748B] dark:text-[#94A3B8] truncate">
               {showSetupStepper
-                ? `Langkah ${currentStep + 1} dari 4 · ${STEP_LABELS[currentStep].label}`
+                ? `Langkah ${currentStep + 1} dari 5 · ${STEP_LABELS[currentStep].label}`
                 : 'Room ID & Peserta Konvoi'}
             </p>
           </div>
@@ -281,8 +412,8 @@ export function TourLeaderView({
       <div className="flex-1 px-4 py-4 space-y-4">
         {showSetupStepper ? (
           <>
-            {/* Stepper Header */}
-            <div className="rounded-[18px] bg-white dark:bg-[#141C24] border border-[#E2E8F0] dark:border-[#334155] p-2 grid grid-cols-4 gap-1.5">
+            {/* Stepper Header (5 Steps) */}
+            <div className="rounded-[18px] bg-white dark:bg-[#141C24] border border-[#E2E8F0] dark:border-[#334155] p-1.5 grid grid-cols-5 gap-1">
               {STEP_LABELS.map((step, idx) => {
                 const isActive = idx === currentStep;
                 const isDone = idx < currentStep;
@@ -291,7 +422,7 @@ export function TourLeaderView({
                     key={step.num}
                     type="button"
                     onClick={() => setCurrentStep(idx)}
-                    className={`py-2 px-1 rounded-[12px] flex flex-col items-center transition-colors cursor-pointer ${
+                    className={`py-2 px-0.5 rounded-[12px] flex flex-col items-center transition-colors cursor-pointer ${
                       isActive
                         ? 'bg-[#1D4ED8] text-white'
                         : isDone
@@ -299,10 +430,10 @@ export function TourLeaderView({
                           : 'bg-[#F1F5F9] dark:bg-[#1E293B] text-[#64748B] dark:text-[#94A3B8]'
                     }`}
                   >
-                    <span className="text-[11px] font-bold">
+                    <span className="text-[10px] font-bold">
                       {isDone ? '✓' : step.num}
                     </span>
-                    <span className="text-[11px] font-semibold truncate max-w-full">
+                    <span className="text-[10px] font-semibold truncate max-w-full">
                       {step.label}
                     </span>
                   </button>
@@ -333,9 +464,9 @@ export function TourLeaderView({
                   )}
 
                   <div className="flex items-center gap-2">
-                    <Flag className="w-5 h-5 text-[#1D4ED8] dark:text-[#60A5FA]" />
+                    <LocateFixed className="w-5 h-5 text-[#EA580C]" />
                     <h3 className="text-base font-bold">
-                      1. Menentukan Tujuan Akhir
+                      1. Menentukan Titik Keberangkatan
                     </h3>
                   </div>
 
@@ -354,6 +485,97 @@ export function TourLeaderView({
                       placeholder="Contoh: Konvoi Puncak Pass Weekend"
                       className="w-full min-h-[44px] px-3.5 rounded-[12px] bg-[#F8FAFC] dark:bg-[#0B1117] border border-[#CBD5E1] dark:border-[#334155] focus:border-[#1D4ED8] text-sm outline-none"
                     />
+                  </div>
+
+                  <button
+                    type="button"
+                    disabled={!userGpsLocation}
+                    onClick={onUseGpsAsOrigin}
+                    className="w-full min-h-[44px] px-3.5 rounded-[12px] bg-[#FFF7ED] dark:bg-[#431407]/50 border border-[#FDBA74] dark:border-[#9A3412] disabled:opacity-50 text-[#C2410C] dark:text-[#FDBA74] text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed"
+                  >
+                    <LocateFixed className="w-4 h-4 shrink-0" />
+                    <span>
+                      {userGpsLocation
+                        ? 'Gunakan Lokasi GPS Saya Sekarang'
+                        : 'Sinyal GPS Belum Aktif — Pilih di Bawah / Peta'}
+                    </span>
+                  </button>
+
+                  <div className="space-y-2">
+                    <p className="text-xs font-semibold text-[#334155] dark:text-[#CBD5E1]">
+                      Atau Pilih Titik Kumpul Populer
+                    </p>
+                    <div className="grid grid-cols-2 gap-2">
+                      {ORIGIN_PRESETS.map((hub) => {
+                        const active = routeConfig.originName === hub.name;
+                        return (
+                          <button
+                            key={hub.name}
+                            type="button"
+                            onClick={() =>
+                              onPickOriginLatLng(
+                                hub.latitude,
+                                hub.longitude,
+                                hub.name,
+                                hub.address
+                              )
+                            }
+                            className={`px-3 py-2.5 rounded-xl text-xs font-semibold border text-left truncate transition-colors cursor-pointer ${
+                              active
+                                ? 'bg-[#FFF7ED] dark:bg-[#431407] border-[#EA580C] text-[#C2410C] dark:text-[#FDBA74]'
+                                : 'bg-[#F8FAFC] dark:bg-[#0B1117] border-[#E2E8F0] dark:border-[#334155]'
+                            }`}
+                          >
+                            {hub.name}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setPickerMode('origin')}
+                    className="w-full min-h-[46px] px-3.5 rounded-[14px] border-2 border-[#EA580C] bg-[#FFF7ED]/70 dark:bg-[#431407]/30 hover:bg-[#FFF7ED] dark:hover:bg-[#431407]/50 text-[#C2410C] dark:text-[#FDBA74] text-xs font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                  >
+                    <MapPin className="w-4 h-4 shrink-0" />
+                    <span>Pilih Titik Start di Peta (TomTom)</span>
+                  </button>
+
+                  {(() => {
+                    const startPt = routeConfig.waypoints[0];
+                    return (
+                      <div className="rounded-[14px] bg-[#FFF7ED] dark:bg-[#431407]/35 border border-[#FDBA74] dark:border-[#9A3412] p-3 flex items-start gap-2.5">
+                        <div className="w-8 h-8 rounded-full bg-[#EA580C] text-white flex items-center justify-center shrink-0 mt-0.5 text-xs font-bold">
+                          S
+                        </div>
+                        <div className="min-w-0 flex-1 space-y-0.5">
+                          <p className="text-[10px] font-semibold uppercase tracking-wide text-[#C2410C] dark:text-[#FDBA74]">
+                            Titik Keberangkatan Aktif
+                          </p>
+                          <p className="text-xs font-bold text-[#0F172A] dark:text-white truncate">
+                            {routeConfig.originName || 'Tol Jagorawi / Ciawi'}
+                          </p>
+                          <p className="text-[11px] text-[#475569] dark:text-[#CBD5E1] line-clamp-2">
+                            {routeConfig.originAddress ||
+                              (startPt
+                                ? `${startPt.latitude.toFixed(4)}, ${startPt.longitude.toFixed(4)}`
+                                : 'Menunggu titik start')}
+                          </p>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </>
+              )}
+
+              {currentStep === 1 && (
+                <>
+                  <div className="flex items-center gap-2">
+                    <Flag className="w-5 h-5 text-[#16A34A]" />
+                    <h3 className="text-base font-bold">
+                      2. Menentukan Tujuan Akhir
+                    </h3>
                   </div>
 
                   <div className="space-y-2">
@@ -383,86 +605,179 @@ export function TourLeaderView({
 
                   <button
                     type="button"
-                    onClick={() => setShowDestinationPicker(true)}
+                    onClick={() => setPickerMode('destination')}
                     className="w-full min-h-[46px] px-3.5 rounded-[14px] border-2 border-[#1D4ED8] dark:border-[#60A5FA] bg-[#EFF6FF]/60 dark:bg-[#1E3A8A]/25 hover:bg-[#EFF6FF] dark:hover:bg-[#1E3A8A]/45 text-[#1D4ED8] dark:text-[#93C5FD] text-xs font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer"
                   >
                     <MapPin className="w-4 h-4 shrink-0" />
-                    <span>Pilih dari Peta (Pick on Map)</span>
+                    <span>Pilih Tujuan dari Peta (TomTom)</span>
                   </button>
 
                   {(() => {
                     const destPt =
                       routeConfig.waypoints[routeConfig.waypoints.length - 1];
                     return (
-                      <div className="rounded-[14px] bg-[#EFF6FF] dark:bg-[#1E3A8A]/35 border border-[#BFDBFE] dark:border-[#1E40AF] p-3 flex items-start gap-2.5">
-                        <div className="w-8 h-8 rounded-full bg-[#1D4ED8] text-white flex items-center justify-center shrink-0 mt-0.5">
-                          <MapPin className="w-4 h-4" />
-                        </div>
-                        <div className="min-w-0 flex-1 space-y-0.5">
-                          <p className="text-xs font-bold text-[#0F172A] dark:text-white truncate">
+                      <div className="rounded-[14px] bg-[#EFF6FF] dark:bg-[#1E3A8A]/35 border border-[#BFDBFE] dark:border-[#1E40AF] p-3 space-y-2">
+                        <div className="flex items-center justify-between gap-2 text-[11px] font-semibold text-[#1D4ED8] dark:text-[#93C5FD]">
+                          <span className="truncate">
+                            {routeConfig.originName || 'Titik Start'}
+                          </span>
+                          <ArrowRight className="w-3.5 h-3.5 shrink-0" />
+                          <span className="truncate text-[#16A34A] dark:text-[#4ADE80]">
                             {routeConfig.destinationName}
-                          </p>
-                          <p className="text-[11px] text-[#475569] dark:text-[#CBD5E1] line-clamp-2">
-                            {routeConfig.destinationAddress}
-                          </p>
-                          {destPt && (
-                            <p className="text-[10px] font-mono text-[#1D4ED8] dark:text-[#93C5FD]">
-                              Koordinat: {destPt.latitude.toFixed(4)},{' '}
-                              {destPt.longitude.toFixed(4)} · Estimasi{' '}
-                              {Math.round(routeConfig.totalRouteMeters / 1000)} km
-                            </p>
-                          )}
+                          </span>
                         </div>
+                        <p className="text-[11px] text-[#475569] dark:text-[#CBD5E1] line-clamp-2">
+                          {routeConfig.destinationAddress}
+                        </p>
+                        {destPt && (
+                          <p className="text-[10px] font-mono text-[#1D4ED8] dark:text-[#93C5FD]">
+                            Tujuan: {destPt.latitude.toFixed(4)},{' '}
+                            {destPt.longitude.toFixed(4)} · Estimasi{' '}
+                            {Math.round(routeConfig.totalRouteMeters / 1000)} km
+                          </p>
+                        )}
                       </div>
                     );
                   })()}
                 </>
               )}
 
-              {currentStep === 1 && (
+              {currentStep === 2 && (
                 <>
                   <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-2">
-                      <Route className="w-5 h-5 text-[#1D4ED8] dark:text-[#60A5FA]" />
-                      <h3 className="text-base font-bold">
-                        2. Gambar / Pilih Jalur
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Route className="w-5 h-5 text-[#1D4ED8] dark:text-[#60A5FA] shrink-0" />
+                      <h3 className="text-base font-bold truncate">
+                        3. Pilih & Gambar Rute
                       </h3>
                     </div>
                     <button
                       type="button"
                       onClick={onResetDefaultWaypoints}
-                      className="px-2.5 py-1 rounded-lg text-xs font-semibold text-[#1D4ED8] dark:text-[#60A5FA] hover:bg-[#EFF6FF] dark:hover:bg-[#1E3A8A]/40 flex items-center gap-1 cursor-pointer"
+                      className="px-2.5 py-1 rounded-lg text-xs font-semibold text-[#1D4ED8] dark:text-[#60A5FA] hover:bg-[#EFF6FF] dark:hover:bg-[#1E3A8A]/40 flex items-center gap-1 cursor-pointer shrink-0"
                     >
                       <RotateCcw className="w-3.5 h-3.5" />
                       <span>Reset</span>
                     </button>
                   </div>
 
+                  {/* Route Preference Selector */}
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {(
+                      [
+                        {
+                          id: 'fastest',
+                          label: 'Tercepat',
+                          icon: <Zap className="w-3.5 h-3.5 shrink-0" />,
+                        },
+                        {
+                          id: 'shortest',
+                          label: 'Terpendek',
+                          icon: <Route className="w-3.5 h-3.5 shrink-0" />,
+                        },
+                        {
+                          id: 'no_toll',
+                          label: 'Bebas Tol',
+                          icon: <Ban className="w-3.5 h-3.5 shrink-0" />,
+                        },
+                      ] as Array<{
+                        id: RoutePreference;
+                        label: string;
+                        icon: ReactNode;
+                      }>
+                    ).map((pref) => {
+                      const active =
+                        (routeConfig.routePreference ?? 'fastest') === pref.id;
+                      return (
+                        <button
+                          key={pref.id}
+                          type="button"
+                          onClick={() => onSelectRoutePreference(pref.id)}
+                          className={`min-h-[38px] px-2 py-1.5 rounded-xl text-[11px] font-semibold border flex items-center justify-center gap-1 transition-colors cursor-pointer ${
+                            active
+                              ? 'bg-[#1D4ED8] text-white border-[#1D4ED8]'
+                              : 'bg-[#F8FAFC] dark:bg-[#0B1117] border-[#E2E8F0] dark:border-[#334155] text-[#334155] dark:text-[#CBD5E1]'
+                          }`}
+                        >
+                          {pref.icon}
+                          <span className="truncate">{pref.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
                   <p className="text-xs text-[#475569] dark:text-[#CBD5E1]">
-                    Ketuk peta TomTom di bawah untuk menambahkan titik belok jalur baru menuju{' '}
-                    {routeConfig.destinationName}.
+                    Ketuk peta TomTom untuk menambah titik belok (via) dari{' '}
+                    <span className="font-semibold">
+                      {routeConfig.originName || 'Start'}
+                    </span>{' '}
+                    ke{' '}
+                    <span className="font-semibold">
+                      {routeConfig.destinationName}
+                    </span>
+                    .
                   </p>
 
                   <div className="relative w-full h-[220px] rounded-[16px] bg-[#EEF2F6] dark:bg-[#141B22] border border-[#CBD5E1] dark:border-[#334155] overflow-hidden">
                     <TomTomStepRouteMap
                       waypoints={routeConfig.waypoints}
+                      vehicleType={vehicleType}
+                      routePreference={routeConfig.routePreference ?? 'fastest'}
                       darkMode={darkMode}
                       onMapClick={handleStepMapClick}
+                      onPreviewRouteComputed={(
+                        distMeters,
+                        durMillis,
+                        path,
+                        instructions
+                      ) => {
+                        setPreviewStats({
+                          distanceMeters: distMeters,
+                          durationMillis: durMillis,
+                        });
+                        if (onRouteComputed) {
+                          onRouteComputed(
+                            distMeters,
+                            durMillis,
+                            path,
+                            instructions
+                          );
+                        }
+                      }}
                     />
                   </div>
 
-                  <p className="text-[11px] text-[#64748B] dark:text-[#94A3B8]">
-                    {routeConfig.waypoints.length} titik jalur aktif di TomTom Maps · Oranye = Start, Hijau = Tujuan
-                  </p>
+                  <div className="flex items-center justify-between gap-2 text-[11px] text-[#64748B] dark:text-[#94A3B8]">
+                    <span className="font-mono tabular-nums truncate">
+                      {(
+                        (previewStats?.distanceMeters ??
+                          routeConfig.totalRouteMeters) / 1000
+                      ).toFixed(1)}{' '}
+                      km
+                      {previewStats && previewStats.durationMillis > 0
+                        ? ` · Est. ${Math.max(1, Math.round(previewStats.durationMillis / 60000))} mnt`
+                        : ''}{' '}
+                      · {routeConfig.waypoints.length} titik
+                    </span>
+                    {routeConfig.waypoints.length > 2 && (
+                      <button
+                        type="button"
+                        onClick={handleRemoveLastViaPoint}
+                        className="px-2 py-1 rounded-lg bg-[#FEE2E2] dark:bg-[#450A0A] text-[#DC2626] dark:text-[#FCA5A5] font-semibold cursor-pointer shrink-0"
+                      >
+                        Hapus Titik Terakhir
+                      </button>
+                    )}
+                  </div>
                 </>
               )}
 
-              {currentStep === 2 && (
+              {currentStep === 3 && (
                 <>
                   <div className="flex items-center gap-2">
                     <Coffee className="w-5 h-5 text-[#0F766E]" />
                     <h3 className="text-base font-bold">
-                      3. Titik Istirahat (Checkpoint)
+                      4. Titik Istirahat (Checkpoint)
                     </h3>
                   </div>
 
@@ -546,12 +861,12 @@ export function TourLeaderView({
                 </>
               )}
 
-              {currentStep === 3 && (
+              {currentStep === 4 && (
                 <>
                   <div className="flex items-center gap-2">
                     <Gauge className="w-5 h-5 text-[#1D4ED8] dark:text-[#60A5FA]" />
                     <h3 className="text-base font-bold">
-                      4. Batas Jarak Tertinggal
+                      5. Batas Jarak & Konfirmasi
                     </h3>
                   </div>
 
@@ -619,16 +934,28 @@ export function TourLeaderView({
                     </button>
                   </div>
 
-                  <div className="rounded-[14px] bg-[#F8FAFC] dark:bg-[#0B1117] border border-[#E2E8F0] dark:border-[#334155] p-3 flex items-center gap-2.5">
-                    <Flag className="w-4 h-4 text-[#EA580C] shrink-0" />
-                    <div className="min-w-0 flex-1">
-                      <p className="text-xs font-semibold truncate">
-                        Tujuan Akhir: {routeConfig.destinationName}
-                      </p>
-                      <p className="text-[11px] text-[#64748B] dark:text-[#94A3B8] truncate">
-                        {routeConfig.destinationAddress}
-                      </p>
+                  <div className="rounded-[14px] bg-[#F8FAFC] dark:bg-[#0B1117] border border-[#E2E8F0] dark:border-[#334155] p-3 space-y-1.5">
+                    <div className="flex items-center gap-2 text-xs font-bold">
+                      <LocateFixed className="w-3.5 h-3.5 text-[#EA580C] shrink-0" />
+                      <span className="truncate">
+                        {routeConfig.originName || 'Titik Keberangkatan'}
+                      </span>
+                      <ArrowRight className="w-3.5 h-3.5 text-[#64748B] shrink-0" />
+                      <Flag className="w-3.5 h-3.5 text-[#16A34A] shrink-0" />
+                      <span className="truncate">
+                        {routeConfig.destinationName}
+                      </span>
                     </div>
+                    <p className="text-[11px] text-[#64748B] dark:text-[#94A3B8]">
+                      Rute:{' '}
+                      {routeConfig.routePreference === 'shortest'
+                        ? 'Terpendek'
+                        : routeConfig.routePreference === 'no_toll'
+                          ? 'Bebas Tol'
+                          : 'Tercepat'}{' '}
+                      · {(routeConfig.totalRouteMeters / 1000).toFixed(1)} km ·{' '}
+                      {routeConfig.checkpoints.length} Rest Area
+                    </p>
                   </div>
                 </>
               )}
@@ -646,7 +973,7 @@ export function TourLeaderView({
                     Sebelumnya
                   </button>
                 )}
-                {currentStep < 3 ? (
+                {currentStep < 4 ? (
                   <button
                     type="button"
                     onClick={() => setCurrentStep((s) => s + 1)}
@@ -841,23 +1168,39 @@ export function TourLeaderView({
         </div>
       )}
 
-      {showDestinationPicker && (
+      {pickerMode && (
         <TomTomRoutePickerModal
+          mode={pickerMode}
           initialPoint={
-            routeConfig.waypoints[routeConfig.waypoints.length - 1] || {
-              xFraction: 0.86,
-              yFraction: 0.14,
-              latitude: -6.645,
-              longitude: 106.99,
-            }
+            pickerMode === 'origin'
+              ? routeConfig.waypoints[0] || {
+                  xFraction: 0.14,
+                  yFraction: 0.86,
+                  latitude: -6.648,
+                  longitude: 106.845,
+                }
+              : routeConfig.waypoints[routeConfig.waypoints.length - 1] || {
+                  xFraction: 0.86,
+                  yFraction: 0.14,
+                  latitude: -6.645,
+                  longitude: 106.99,
+                }
           }
-          initialName={routeConfig.destinationName}
+          initialName={
+            pickerMode === 'origin'
+              ? routeConfig.originName || 'Titik Start Konvoi'
+              : routeConfig.destinationName
+          }
           userGpsLocation={userGpsLocation}
           darkMode={darkMode}
-          onDismiss={() => setShowDestinationPicker(false)}
+          onDismiss={() => setPickerMode(null)}
           onConfirm={(lat, lng, placeName, addressLabel) => {
-            onPickDestinationLatLng(lat, lng, placeName, addressLabel);
-            setShowDestinationPicker(false);
+            if (pickerMode === 'origin') {
+              onPickOriginLatLng(lat, lng, placeName, addressLabel);
+            } else {
+              onPickDestinationLatLng(lat, lng, placeName, addressLabel);
+            }
+            setPickerMode(null);
           }}
         />
       )}

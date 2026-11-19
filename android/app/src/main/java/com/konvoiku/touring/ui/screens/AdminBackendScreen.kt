@@ -116,6 +116,8 @@ fun AdminBackendScreen(
     isSavingConfig: Boolean,
     configFeedback: String?,
     onGoogleSignIn: (Activity?) -> Unit = {},
+    onOpenGoogleBrowserSync: () -> Unit = {},
+    onSubmitGoogleSyncToken: (String) -> Unit = {},
     onStartMonitoring: () -> Unit,
     onStopMonitoring: () -> Unit,
     onSaveGlobalConfig: (GlobalAppConfig) -> Unit,
@@ -126,6 +128,8 @@ fun AdminBackendScreen(
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
+    var showManualTokenInput by remember { mutableStateOf(false) }
+    var manualSyncToken by remember { mutableStateOf("") }
 
     DisposableEffect(isVerifiedAdmin) {
         if (isVerifiedAdmin) {
@@ -424,15 +428,8 @@ fun AdminBackendScreen(
                         }
 
                         OutlinedButton(
-                            onClick = {
-                                runCatching {
-                                    val intent = Intent(
-                                        Intent.ACTION_VIEW,
-                                        Uri.parse(FirestoreConvoyRepository.GOOGLE_BRIDGE_URL)
-                                    )
-                                    context.startActivity(intent)
-                                }
-                            },
+                            onClick = onOpenGoogleBrowserSync,
+                            enabled = !isAuthLoading,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(46.dp),
@@ -451,6 +448,36 @@ fun AdminBackendScreen(
                                 fontWeight = FontWeight.SemiBold,
                                 color = Color(0xFF2563EB)
                             )
+                        }
+
+                        TextButton(
+                            onClick = { showManualTokenInput = !showManualTokenInput },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = if (showManualTokenInput) "Tutup tempel token" else "Sudah login di browser? Tempel link/token",
+                                fontSize = 12.sp,
+                                color = Color(0xFF2563EB)
+                            )
+                        }
+
+                        if (showManualTokenInput) {
+                            OutlinedTextField(
+                                value = manualSyncToken,
+                                onValueChange = { manualSyncToken = it },
+                                label = { Text("Tempel link konvoiku://auth atau token") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                            Button(
+                                onClick = { onSubmitGoogleSyncToken(manualSyncToken) },
+                                enabled = !isAuthLoading && manualSyncToken.isNotBlank(),
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Text("Terapkan Verifikasi Admin", fontWeight = FontWeight.SemiBold)
+                            }
                         }
 
                         TextButton(

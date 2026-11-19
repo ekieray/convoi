@@ -196,6 +196,8 @@ service cloud.firestore {
         'destinationAddress',
         'destLat',
         'destLng',
+        'originName',
+        'originAddress',
         'originLat',
         'originLng',
         'encodedPolyline',
@@ -221,6 +223,8 @@ service cloud.firestore {
       data.destinationName is string && data.destinationName.size() >= 1 && data.destinationName.size() <= 120 &&
       data.destinationAddress is string && data.destinationAddress.size() >= 1 && data.destinationAddress.size() <= 240 &&
       data.destLat is number && data.destLng is number &&
+      (!('originName' in data) || (data.originName is string && data.originName.size() <= 120)) &&
+      (!('originAddress' in data) || (data.originAddress is string && data.originAddress.size() <= 240)) &&
       data.originLat is number && data.originLng is number &&
       data.encodedPolyline is string && data.encodedPolyline.size() <= 16384 &&
       data.totalRouteMeters is number &&
@@ -572,6 +576,8 @@ service cloud.firestore {
                   'destinationAddress',
                   'destLat',
                   'destLng',
+                  'originName',
+                  'originAddress',
                   'originLat',
                   'originLng',
                   'encodedPolyline',

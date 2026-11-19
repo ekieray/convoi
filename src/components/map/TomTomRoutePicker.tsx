@@ -18,6 +18,7 @@ import {
 } from '../../services/tomtomMapService';
 
 interface TomTomRoutePickerModalProps {
+  mode?: 'origin' | 'destination';
   initialPoint: RoutePoint;
   initialName: string;
   userGpsLocation?: LatLngPoint | null;
@@ -78,6 +79,7 @@ const JAVA_TOURING_LANDMARKS: LandmarkCoord[] = [
 ];
 
 export function TomTomRoutePickerModal({
+  mode = 'destination',
   initialPoint,
   initialName,
   userGpsLocation,
@@ -85,11 +87,14 @@ export function TomTomRoutePickerModal({
   onDismiss,
   onConfirm,
 }: TomTomRoutePickerModalProps) {
+  const isOrigin = mode === 'origin';
   const [pin, setPin] = useState<LatLngPoint>({
-    lat: initialPoint.latitude || -6.7016,
-    lng: initialPoint.longitude || 106.9949,
+    lat: initialPoint.latitude || (isOrigin ? -6.648 : -6.7016),
+    lng: initialPoint.longitude || (isOrigin ? 106.845 : 106.9949),
   });
-  const [placeName, setPlaceName] = useState(initialName || 'Tujuan Konvoi');
+  const [placeName, setPlaceName] = useState(
+    initialName || (isOrigin ? 'Titik Start Konvoi' : 'Tujuan Konvoi')
+  );
   const [addressLabel, setAddressLabel] = useState(
     `${(initialPoint.latitude || -6.7016).toFixed(4)}, ${(initialPoint.longitude || 106.9949).toFixed(4)}`
   );
@@ -221,6 +226,8 @@ export function TomTomRoutePickerModal({
       map.removeLayer(pinMarkerRef.current);
     }
 
+    const pinColor = isOrigin ? '#EA580C' : '#16A34A';
+    const pinEmoji = isOrigin ? '🚩' : '🏁';
     const icon = L.divIcon({
       className: '',
       iconSize: [0, 0],
@@ -230,8 +237,8 @@ export function TomTomRoutePickerModal({
           <span style="padding:2px 8px;border-radius:8px;background:#0F172A;color:#fff;font-size:10px;font-weight:600;box-shadow:0 2px 8px rgba(0,0,0,0.35);max-width:170px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
             ${placeName.replace(/</g, '&lt;').replace(/>/g, '&gt;')}
           </span>
-          <span style="margin-top:3px;width:30px;height:30px;border-radius:9999px;background:#16A34A;border:2px solid #fff;box-shadow:0 3px 10px rgba(0,0,0,0.35);display:flex;align-items:center;justify-content:center;color:#fff;font-size:13px;">
-            🏁
+          <span style="margin-top:3px;width:30px;height:30px;border-radius:9999px;background:${pinColor};border:2px solid #fff;box-shadow:0 3px 10px rgba(0,0,0,0.35);display:flex;align-items:center;justify-content:center;color:#fff;font-size:13px;">
+            ${pinEmoji}
           </span>
         </div>
       `,
@@ -250,12 +257,12 @@ export function TomTomRoutePickerModal({
           radius: 7,
           color: '#FFFFFF',
           weight: 2,
-          fillColor: '#EA580C',
+          fillColor: '#1D4ED8',
           fillOpacity: 1,
         }
       ).addTo(map);
     }
-  }, [pin.lat, pin.lng, placeName, userGpsLocation?.lat, userGpsLocation?.lng]);
+  }, [pin.lat, pin.lng, placeName, isOrigin, userGpsLocation?.lat, userGpsLocation?.lng]);
 
   return (
     <div className="fixed inset-0 z-50 bg-black/55 backdrop-blur-[2px] flex items-center justify-center p-2 sm:p-4">
@@ -263,10 +270,12 @@ export function TomTomRoutePickerModal({
         <div className="px-3.5 py-2.5 bg-white dark:bg-[#141C24] border-b border-[#E2E8F0] dark:border-[#334155] flex items-center justify-between gap-2">
           <div className="min-w-0">
             <h3 className="text-sm font-bold truncate">
-              Pilih Tujuan di TomTom Maps
+              {isOrigin ? 'Pilih Titik Start di TomTom Maps' : 'Pilih Tujuan di TomTom Maps'}
             </h3>
             <p className="text-[11px] text-[#64748B] dark:text-[#94A3B8] truncate">
-              Cari tempat atau ketuk peta untuk menaruh pin tujuan
+              {isOrigin
+                ? 'Cari lokasi kumpul atau ketuk peta untuk menaruh pin start'
+                : 'Cari tempat atau ketuk peta untuk menaruh pin tujuan'}
             </p>
           </div>
           <button
@@ -287,7 +296,11 @@ export function TomTomRoutePickerModal({
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Cari tujuan di TomTom (mis. Puncak, Lembang)..."
+              placeholder={
+                isOrigin
+                  ? 'Cari titik keberangkatan (mis. Senayan, Gadog)...'
+                  : 'Cari tujuan di TomTom (mis. Puncak, Lembang)...'
+              }
               className="w-full bg-transparent text-xs outline-none"
             />
             {searchQuery && (
@@ -384,7 +397,13 @@ export function TomTomRoutePickerModal({
         {/* Footer Confirm Panel */}
         <div className="px-3.5 pt-3.5 pb-[calc(1.25rem+env(safe-area-inset-bottom))] bg-white dark:bg-[#141C24] border-t border-[#E2E8F0] dark:border-[#334155] space-y-2.5">
           <div className="flex items-start gap-2.5">
-            <div className="w-8 h-8 rounded-full bg-[#ECFDF5] dark:bg-[#064E3B] text-[#16A34A] flex items-center justify-center shrink-0">
+            <div
+              className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${
+                isOrigin
+                  ? 'bg-[#FFF7ED] dark:bg-[#431407] text-[#EA580C]'
+                  : 'bg-[#ECFDF5] dark:bg-[#064E3B] text-[#16A34A]'
+              }`}
+            >
               <MapPin className="w-4 h-4" />
             </div>
             <div className="min-w-0 flex-1">
@@ -392,7 +411,7 @@ export function TomTomRoutePickerModal({
                 type="text"
                 value={placeName}
                 onChange={(e) => setPlaceName(e.target.value)}
-                aria-label="Nama Lokasi Tujuan"
+                aria-label={isOrigin ? 'Nama Titik Start' : 'Nama Lokasi Tujuan'}
                 className="w-full text-xs font-bold bg-transparent border-b border-transparent focus:border-[#1D4ED8] outline-none pb-0.5"
               />
               <p className="text-[11px] text-[#64748B] dark:text-[#94A3B8] truncate">
@@ -418,14 +437,19 @@ export function TomTomRoutePickerModal({
                 onConfirm(
                   pin.lat,
                   pin.lng,
-                  placeName.trim() || 'Titik Tujuan Konvoi',
+                  placeName.trim() ||
+                    (isOrigin ? 'Titik Start Konvoi' : 'Titik Tujuan Konvoi'),
                   addressLabel
                 )
               }
-              className="flex-1 min-h-[42px] rounded-xl bg-[#EA580C] hover:bg-[#C2410C] text-white text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
+              className={`flex-1 min-h-[42px] rounded-xl text-white text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer ${
+                isOrigin
+                  ? 'bg-[#EA580C] hover:bg-[#C2410C]'
+                  : 'bg-[#16A34A] hover:bg-[#15803D]'
+              }`}
             >
               <Check className="w-4 h-4" />
-              <span>Tetapkan Tujuan</span>
+              <span>{isOrigin ? 'Tetapkan Titik Start' : 'Tetapkan Tujuan'}</span>
             </button>
           </div>
         </div>

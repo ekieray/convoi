@@ -106,6 +106,8 @@ fun LoginScreen(
     globalConfig: GlobalAppConfig = GlobalAppConfig(),
     onClearAuthError: () -> Unit = {},
     onGoogleSignIn: (Activity?) -> Unit = {},
+    onOpenGoogleBrowserSync: () -> Unit = {},
+    onSubmitGoogleSyncToken: (String) -> Unit = {},
     onFacebookSignIn: (Activity?) -> Unit = {},
     onForgotPassword: (String) -> Unit = {},
     onEmailSignIn: (email: String, password: String) -> Unit = { _, _ -> },
@@ -127,6 +129,8 @@ fun LoginScreen(
     var confirmPassword by remember { mutableStateOf("") }
     var showPassword by remember { mutableStateOf(false) }
     var localError by remember { mutableStateOf<String?>(null) }
+    var showManualTokenInput by remember { mutableStateOf(false) }
+    var manualSyncToken by remember { mutableStateOf("") }
 
     var pendingSocialProvider by remember { mutableStateOf<AuthProviderType?>(null) }
     var socialNameInput by remember { mutableStateOf("") }
@@ -374,16 +378,11 @@ fun LoginScreen(
                             if (showGoogleBrowserFallback) {
                                 OutlinedButton(
                                     onClick = {
-                                        runCatching {
-                                            val intent = Intent(
-                                                Intent.ACTION_VIEW,
-                                                Uri.parse(FirestoreConvoyRepository.GOOGLE_BRIDGE_URL)
-                                            )
-                                            context.startActivity(intent)
-                                        }.onFailure {
-                                            localError = "Tidak dapat membuka browser untuk sinkronisasi Google."
-                                        }
+                                        localError = null
+                                        onClearAuthError()
+                                        onOpenGoogleBrowserSync()
                                     },
+                                    enabled = !isAuthLoading,
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .height(46.dp),
@@ -402,6 +401,42 @@ fun LoginScreen(
                                         fontWeight = FontWeight.SemiBold,
                                         color = Color(0xFF2563EB)
                                     )
+                                }
+
+                                TextButton(
+                                    onClick = { showManualTokenInput = !showManualTokenInput },
+                                    modifier = Modifier.align(Alignment.End)
+                                ) {
+                                    Text(
+                                        text = if (showManualTokenInput) "Tutup tempel token" else "Sudah login di browser? Tempel link/token",
+                                        fontSize = 12.sp,
+                                        color = Color(0xFF2563EB)
+                                    )
+                                }
+
+                                if (showManualTokenInput) {
+                                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        OutlinedTextField(
+                                            value = manualSyncToken,
+                                            onValueChange = { manualSyncToken = it },
+                                            label = { Text("Tempel link konvoiku://auth atau token") },
+                                            singleLine = true,
+                                            modifier = Modifier.fillMaxWidth(),
+                                            shape = RoundedCornerShape(12.dp)
+                                        )
+                                        Button(
+                                            onClick = {
+                                                localError = null
+                                                onClearAuthError()
+                                                onSubmitGoogleSyncToken(manualSyncToken)
+                                            },
+                                            enabled = !isAuthLoading && manualSyncToken.isNotBlank(),
+                                            modifier = Modifier.fillMaxWidth(),
+                                            shape = RoundedCornerShape(12.dp)
+                                        ) {
+                                            Text("Terapkan Sinkronisasi Google", fontWeight = FontWeight.SemiBold)
+                                        }
+                                    }
                                 }
                             }
 

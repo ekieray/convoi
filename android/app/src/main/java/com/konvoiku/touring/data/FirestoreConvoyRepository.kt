@@ -34,7 +34,11 @@ import com.konvoiku.touring.model.VehicleProfile
 import com.konvoiku.touring.model.VehicleType
 import com.konvoiku.touring.util.GeoUtils
 import com.konvoiku.touring.util.LatLngGeo
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withContext
+import java.net.HttpURLConnection
+import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -62,8 +66,13 @@ class FirestoreConvoyRepository {
         ).joinToString("")
         private const val FIREBASE_STORAGE_BUCKET = "excellent-victor-7v0ns.firebasestorage.app"
         private const val FIREBASE_SENDER_ID = "886997766185"
-        const val GOOGLE_BRIDGE_URL =
-            "https://ais-pre-mbwxrxf647cphhl5i4ggug-588877716211.asia-southeast1.run.app/?mobile_auth=google"
+        private const val SHARED_BASE_URL =
+            "https://ais-pre-mbwxrxf647cphhl5i4ggug-588877716211.asia-southeast1.run.app"
+        private const val DEV_BASE_URL =
+            "https://ais-dev-mbwxrxf647cphhl5i4ggug-588877716211.asia-southeast1.run.app"
+        const val SHARED_GOOGLE_BRIDGE_URL = "$SHARED_BASE_URL/?mobile_auth=google"
+        const val DEV_GOOGLE_BRIDGE_URL = "$DEV_BASE_URL/?mobile_auth=google"
+        const val GOOGLE_BRIDGE_URL = DEV_GOOGLE_BRIDGE_URL
         const val ADMIN_EMAIL = "ekie.ray@gmail.com"
 
         @Volatile
@@ -113,6 +122,24 @@ class FirestoreConvoyRepository {
     fun currentUid(): String? = getAuth()?.currentUser?.uid
 
     fun currentUserEmail(): String = getAuth()?.currentUser?.email.orEmpty()
+
+    suspend fun resolveActiveGoogleBridgeUrl(): String = withContext(Dispatchers.IO) {
+        val sharedReady = runCatching {
+            val conn = (URL("$SHARED_BASE_URL/api/health").openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                instanceFollowRedirects = false
+                connectTimeout = 2500
+                readTimeout = 2500
+            }
+            try {
+                conn.responseCode in 200..399
+            } finally {
+                conn.disconnect()
+            }
+        }.getOrDefault(false)
+
+        if (sharedReady) SHARED_GOOGLE_BRIDGE_URL else DEV_GOOGLE_BRIDGE_URL
+    }
 
     fun observeAuthState(onChanged: (FirebaseUser?) -> Unit): () -> Unit {
         val auth = getAuth() ?: return {}

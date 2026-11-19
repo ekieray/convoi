@@ -4,8 +4,11 @@ import android.app.Activity
 import android.app.Application
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.google.firebase.auth.FirebaseUser
 import com.konvoiku.touring.data.FirestoreConvoyRepository
 import com.konvoiku.touring.location.GpsLocationTracker
@@ -667,6 +670,64 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
                 }
             }
         }
+    }
+
+    fun openGoogleBrowserSync(context: Context) {
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    authError = null,
+                    authInfoMessage = "Memeriksa halaman sinkronisasi Google yang aktif..."
+                )
+            }
+            val targetUrl = syncRepo.resolveActiveGoogleBridgeUrl()
+            runCatching {
+                withContext(Dispatchers.Main) {
+                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(targetUrl)).apply {
+                        if (context !is Activity) {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                    }
+                    context.startActivity(intent)
+                }
+            }.onSuccess {
+                _uiState.update {
+                    it.copy(
+                        authInfoMessage = "Browser dibuka. Setelah login Google selesai, ketuk 'Buka Aplikasi KonvoiKu' atau salin link/tokennya ke kolom di bawah."
+                    )
+                }
+            }.onFailure {
+                _uiState.update {
+                    it.copy(
+                        authInfoMessage = null,
+                        authError = "Tidak dapat membuka browser untuk sinkronisasi Google."
+                    )
+                }
+            }
+        }
+    }
+
+    fun importGoogleSyncInput(rawInput: String, onSuccess: () -> Unit = {}) {
+        val trimmed = rawInput.trim()
+        if (trimmed.isBlank()) {
+            _uiState.update {
+                it.copy(authError = "Tempel link konvoiku://auth atau kode id_token dari browser terlebih dahulu.")
+            }
+            return
+        }
+        val extractedToken = if (trimmed.startsWith("konvoiku://", ignoreCase = true) || trimmed.contains("id_token=")) {
+            val uriString = if (trimmed.contains("://")) trimmed else "konvoiku://auth?$trimmed"
+            Uri.parse(uriString).getQueryParameter("id_token")?.trim().orEmpty()
+        } else {
+            trimmed
+        }
+        if (extractedToken.isBlank()) {
+            _uiState.update {
+                it.copy(authError = "Token Google tidak ditemukan pada teks yang ditempel. Pastikan menyalin seluruh link sinkronisasi.")
+            }
+            return
+        }
+        completeGoogleIdTokenSignIn(extractedToken, onSuccess)
     }
 
     fun handleIncomingIntent(intent: Intent?) {

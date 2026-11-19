@@ -1,3 +1,4 @@
+import { RouteInstruction, RoutePreference } from '../types/convoy';
 import { LatLngPoint } from '../utils/geo';
 
 export interface TomTomRouteResult {
@@ -5,6 +6,7 @@ export interface TomTomRouteResult {
   durationMillis: number;
   trafficDelaySeconds: number;
   path: LatLngPoint[];
+  instructions?: RouteInstruction[];
 }
 
 export interface TomTomPlaceResult {
@@ -24,7 +26,8 @@ export function getTomTomTileUrl(
 
 export async function fetchTomTomRoute(
   waypoints: Array<{ latitude: number; longitude: number }>,
-  travelMode: 'motorcycle' | 'car' = 'motorcycle'
+  travelMode: 'motorcycle' | 'car' = 'motorcycle',
+  routePreference: RoutePreference = 'fastest'
 ): Promise<TomTomRouteResult | null> {
   if (waypoints.length < 2) return null;
 
@@ -45,8 +48,11 @@ export async function fetchTomTomRoute(
     .map((pt) => `${pt.latitude.toFixed(6)},${pt.longitude.toFixed(6)}`)
     .join(':');
 
+  const routeType = routePreference === 'shortest' ? 'shortest' : 'fastest';
+  const avoidQuery = routePreference === 'no_toll' ? '&avoid=tollRoads' : '';
+
   const res = await fetch(
-    `/api/tomtom/route?points=${encodeURIComponent(pointsParam)}&travelMode=${travelMode}`
+    `/api/tomtom/route?points=${encodeURIComponent(pointsParam)}&travelMode=${travelMode}&routeType=${routeType}${avoidQuery}`
   );
 
   if (res.status === 429) {
@@ -63,6 +69,7 @@ export async function fetchTomTomRoute(
     durationMillis: Number(data.durationMillis ?? 0),
     trafficDelaySeconds: Number(data.trafficDelaySeconds ?? 0),
     path: data.path,
+    instructions: Array.isArray(data.instructions) ? data.instructions : [],
   };
 }
 

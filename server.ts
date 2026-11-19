@@ -102,11 +102,15 @@ async function startServer() {
     }
   });
 
-  // Proxy TomTom Routing API (supports motorcycle/car & live traffic ETA)
+  // Proxy TomTom Routing API (supports motorcycle/car, route preferences, turn-by-turn instructions & live traffic ETA)
   app.get('/api/tomtom/route', async (req: Request, res: Response) => {
     const points = typeof req.query.points === 'string' ? req.query.points.trim() : '';
     const travelMode =
       req.query.travelMode === 'car' ? 'car' : 'motorcycle';
+    const routeType =
+      req.query.routeType === 'shortest' ? 'shortest' : 'fastest';
+    const avoidParam =
+      req.query.avoid === 'tollRoads' ? '&avoid=tollRoads' : '';
 
     if (!points || !/^-?\d+(\.\d+)?,-?\d+(\.\d+)?(:-?\d+(\.\d+)?,-?\d+(\.\d+)?)+$/.test(points)) {
       res.status(400).json({ error: 'Format parameter points tidak valid.' });
@@ -114,7 +118,7 @@ async function startServer() {
     }
 
     const apiKey = getTomTomApiKey();
-    const url = `https://api.tomtom.com/routing/1/calculateRoute/${encodeURIComponent(points)}/json?key=${encodeURIComponent(apiKey)}&traffic=true&travelMode=${travelMode}&routeType=fastest`;
+    const url = `https://api.tomtom.com/routing/1/calculateRoute/${encodeURIComponent(points)}/json?key=${encodeURIComponent(apiKey)}&traffic=true&travelMode=${travelMode}&routeType=${routeType}${avoidParam}&instructionsType=text&language=id-ID`;
 
     try {
       const upstream = await fetch(url);
@@ -140,6 +144,15 @@ async function startServer() {
           legs?: Array<{
             points?: Array<{ latitude: number; longitude: number }>;
           }>;
+          guidance?: {
+            instructions?: Array<{
+              routeOffsetInMeters?: number;
+              point?: { latitude?: number; longitude?: number };
+              maneuver?: string;
+              message?: string;
+              street?: string;
+            }>;
+          };
         }>;
       };
 
@@ -158,11 +171,30 @@ async function startServer() {
         }
       }
 
+      const instructions = (route.guidance?.instructions ?? [])
+        .filter(
+          (ins) =>
+            typeof ins.message === 'string' &&
+            ins.message.trim().length > 0 &&
+            Number.isFinite(ins.point?.latitude) &&
+            Number.isFinite(ins.point?.longitude)
+        )
+        .slice(0, 60)
+        .map((ins) => ({
+          latitude: Number(ins.point?.latitude ?? 0),
+          longitude: Number(ins.point?.longitude ?? 0),
+          routeOffsetInMeters: Math.max(0, Math.round(Number(ins.routeOffsetInMeters ?? 0))),
+          maneuver: String(ins.maneuver || 'STRAIGHT'),
+          message: String(ins.message || '').trim(),
+          street: typeof ins.street === 'string' ? ins.street.trim() : undefined,
+        }));
+
       res.json({
         distanceMeters: Number(route.summary?.lengthInMeters ?? 0),
         durationMillis: Number(route.summary?.travelTimeInSeconds ?? 0) * 1000,
         trafficDelaySeconds: Number(route.summary?.trafficDelayInSeconds ?? 0),
         path: pathPoints,
+        instructions,
       });
     } catch {
       res.status(502).json({ error: 'Tidak dapat menghubungi TomTom Routing API.' });

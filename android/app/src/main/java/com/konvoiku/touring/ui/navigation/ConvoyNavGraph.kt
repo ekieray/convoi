@@ -8,6 +8,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
@@ -47,6 +48,7 @@ fun ConvoyNavGraph(
     viewModel: ConvoyViewModel = viewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val appContext = LocalContext.current
 
     NavHost(
         navController = navController,
@@ -95,6 +97,16 @@ fun ConvoyNavGraph(
                 onClearAuthError = viewModel::clearAuthError,
                 onGoogleSignIn = { activity ->
                     viewModel.signInWithGoogle(activity) {
+                        navController.navigate(ConvoyRoute.RoleSelection.route) {
+                            popUpTo(ConvoyRoute.Login.route) { inclusive = true }
+                        }
+                    }
+                },
+                onOpenGoogleBrowserSync = {
+                    viewModel.openGoogleBrowserSync(appContext)
+                },
+                onSubmitGoogleSyncToken = { raw ->
+                    viewModel.importGoogleSyncInput(raw) {
                         navController.navigate(ConvoyRoute.RoleSelection.route) {
                             popUpTo(ConvoyRoute.Login.route) { inclusive = true }
                         }
@@ -210,6 +222,8 @@ fun ConvoyNavGraph(
                 isSavingConfig = uiState.isSavingGlobalConfig,
                 configFeedback = uiState.globalConfigFeedback,
                 onGoogleSignIn = { activity -> viewModel.signInWithGoogle(activity) },
+                onOpenGoogleBrowserSync = { viewModel.openGoogleBrowserSync(appContext) },
+                onSubmitGoogleSyncToken = { raw -> viewModel.importGoogleSyncInput(raw) },
                 onStartMonitoring = viewModel::startAdminMonitoring,
                 onStopMonitoring = viewModel::stopAdminMonitoring,
                 onSaveGlobalConfig = viewModel::saveGlobalConfig,

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { User } from 'firebase/auth';
-import { AlertTriangle, Moon, RotateCcw, Sun } from 'lucide-react';
+import { AlertTriangle, Check, Copy, Moon, RotateCcw, Sun } from 'lucide-react';
 import { KotlinSourceExplorer } from './components/KotlinSourceExplorer';
 import { AboutAppView } from './components/screens/AboutAppView';
 import { AdminBackendView } from './components/screens/AdminBackendView';
@@ -69,7 +69,9 @@ import {
   OffRouteAlertState,
   RestCheckpoint,
   RoomMessage,
+  RouteInstruction,
   RoutePoint,
+  RoutePreference,
   ScreenRoute,
   SosEmergencyState,
   StragglerAlertState,
@@ -127,8 +129,12 @@ const DESTINATION_PRESETS: DestinationPreset[] = [
 ];
 
 const INITIAL_ROUTE_CONFIG: ConvoyRouteConfig = {
+  originName: 'Simpang Gadog / Tol Jagorawi',
+  originAddress: 'Tol Jagorawi KM 45, Ciawi · -6.6480, 106.8450',
+  originLockedByLeader: false,
   destinationName: 'Puncak Pass Resort',
   destinationAddress: 'Jl. Raya Puncak KM 90, Cisarua · -6.7003, 106.9960',
+  routePreference: 'fastest',
   waypoints: [
     { xFraction: 0.14, yFraction: 0.86, latitude: -6.648, longitude: 106.845 },
     { xFraction: 0.32, yFraction: 0.65, latitude: -6.662, longitude: 106.882 },
@@ -136,6 +142,7 @@ const INITIAL_ROUTE_CONFIG: ConvoyRouteConfig = {
     { xFraction: 0.72, yFraction: 0.3, latitude: -6.69, longitude: 106.962 },
     { xFraction: 0.86, yFraction: 0.14, latitude: -6.7003, longitude: 106.996 },
   ],
+  routeInstructions: [],
   checkpoints: [
     {
       id: 'cp-default-1',
@@ -634,15 +641,20 @@ export default function App() {
   const [profileSyncMessage, setProfileSyncMessage] = useState<string | null>(null);
   const [isCreatingRoom, setIsCreatingRoom] = useState(false);
   const [isJoiningRoom, setIsJoiningRoom] = useState(false);
-  const [isMobileGoogleBridge] = useState<boolean>(() =>
-    typeof window !== 'undefined'
-      ? new URLSearchParams(window.location.search).get('mobile_auth') === 'google'
-      : false
-  );
+  const [isMobileGoogleBridge] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    const params = new URLSearchParams(window.location.search);
+    return (
+      params.get('mobile_auth') === 'google' ||
+      window.location.pathname === '/mobile-auth' ||
+      window.location.pathname === '/mobile-auth/'
+    );
+  });
   const [mobileBridgeBusy, setMobileBridgeBusy] = useState(false);
   const [mobileBridgeError, setMobileBridgeError] = useState<string | null>(null);
   const [mobileBridgeDeepLink, setMobileBridgeDeepLink] = useState<string | null>(null);
   const [mobileBridgeEmail, setMobileBridgeEmail] = useState<string>('');
+  const [mobileBridgeCopied, setMobileBridgeCopied] = useState(false);
   const [globalConfig, setGlobalConfig] = useState<GlobalAppConfig>(
     DEFAULT_GLOBAL_APP_CONFIG
   );
@@ -1623,22 +1635,32 @@ export default function App() {
     const effectiveConfig = routeOverride ?? routeConfig;
     const roomId = generateUniqueRoomId();
     const title = customTitle.trim() || 'Konvoi Touring Akhir Pekan';
-    const startLat = gps.lastFix?.latitude ?? effectiveConfig.waypoints[0]?.latitude ?? -6.648;
-    const startLng = gps.lastFix?.longitude ?? effectiveConfig.waypoints[0]?.longitude ?? 106.845;
+    const startLat =
+      effectiveConfig.originLockedByLeader || effectiveConfig.waypoints.length >= 2
+        ? (effectiveConfig.waypoints[0]?.latitude ?? gps.lastFix?.latitude ?? -6.648)
+        : (gps.lastFix?.latitude ?? effectiveConfig.waypoints[0]?.latitude ?? -6.648);
+    const startLng =
+      effectiveConfig.originLockedByLeader || effectiveConfig.waypoints.length >= 2
+        ? (effectiveConfig.waypoints[0]?.longitude ?? gps.lastFix?.longitude ?? 106.845)
+        : (gps.lastFix?.longitude ?? effectiveConfig.waypoints[0]?.longitude ?? 106.845);
+    const memberInitLat = gps.lastFix?.latitude ?? startLat;
+    const memberInitLng = gps.lastFix?.longitude ?? startLng;
 
     // Cloud Synced Firestore Room if authenticated
     if (authUser) {
       setIsCreatingRoom(true);
       try {
         const dest = effectiveConfig.waypoints[effectiveConfig.waypoints.length - 1];
+        const hasExplicitOrigin =
+          effectiveConfig.originLockedByLeader || effectiveConfig.waypoints.length >= 2;
         const nextWaypoints: RoutePoint[] =
-          gps.lastFix && dest
+          !hasExplicitOrigin && gps.lastFix && dest
             ? buildPolylineToDestination(
                 {
                   xFraction: 0.14,
                   yFraction: 0.86,
-                  latitude: startLat,
-                  longitude: startLng,
+                  latitude: gps.lastFix.latitude,
+                  longitude: gps.lastFix.longitude,
                 },
                 dest
               )
@@ -1656,8 +1678,8 @@ export default function App() {
           leaderUid: authUser.uid,
           profile: vehicleProfile,
           routeConfig: nextConfig,
-          initialLat: startLat,
-          initialLng: startLng,
+          initialLat: memberInitLat,
+          initialLng: memberInitLng,
         });
 
         setRouteConfig(nextConfig);
@@ -2388,27 +2410,119 @@ export default function App() {
     commitRoomMembers(synced, nextConfig);
   };
 
+  const handlePickOriginLatLng = (
+    lat: number,
+    lng: number,
+    placeName?: string,
+    addressLabel?: string
+  ) => {
+    const startPt: RoutePoint = {
+      xFraction: 0.14,
+      yFraction: 0.86,
+      latitude: lat,
+      longitude: lng,
+    };
+    const tailPoints = routeConfig.waypoints.slice(1);
+    const destPt: RoutePoint =
+      tailPoints[tailPoints.length - 1] ?? {
+        xFraction: 0.86,
+        yFraction: 0.14,
+        latitude: -6.7003,
+        longitude: 106.996,
+      };
+    const nextWaypoints =
+      tailPoints.length >= 2
+        ? [startPt, ...tailPoints]
+        : buildPolylineToDestination(startPt, destPt);
+    const estMeters = Math.max(
+      500,
+      Math.round(
+        haversineMeters(
+          { lat, lng },
+          { lat: destPt.latitude, lng: destPt.longitude }
+        ) * 1.25
+      )
+    );
+    const resolvedName =
+      placeName?.trim() || `Titik Start (${lat.toFixed(4)}, ${lng.toFixed(4)})`;
+    const resolvedAddress =
+      addressLabel?.trim() || `${resolvedName} · ${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+
+    const nextConfig: ConvoyRouteConfig = {
+      ...routeConfig,
+      originName: resolvedName,
+      originAddress: resolvedAddress,
+      originLockedByLeader: true,
+      waypoints: nextWaypoints,
+      routeInstructions: [],
+      totalRouteMeters: estMeters,
+    };
+    setRouteConfig(nextConfig);
+    syncMembersToRoute(nextConfig);
+    if (activeRoom?.isSyncedRoom && authUser && activeRoom.leaderUid === authUser.uid) {
+      updateSyncedRoomRoute(activeRoom.roomId, nextConfig);
+    }
+  };
+
+  const handleUseGpsAsOrigin = () => {
+    if (!gps.lastFix) {
+      gps.retryGps();
+      return;
+    }
+    const { latitude, longitude } = gps.lastFix;
+    handlePickOriginLatLng(
+      latitude,
+      longitude,
+      'Lokasi GPS Saya',
+      `Posisi GPS Saat Ini · ${latitude.toFixed(5)}, ${longitude.toFixed(5)}`
+    );
+  };
+
+  const handleSelectRoutePreference = (preference: RoutePreference) => {
+    const nextConfig: ConvoyRouteConfig = {
+      ...routeConfig,
+      routePreference: preference,
+      routeInstructions: [],
+    };
+    setRouteConfig(nextConfig);
+    if (activeRoom?.isSyncedRoom && authUser && activeRoom.leaderUid === authUser.uid) {
+      updateSyncedRoomRoute(activeRoom.roomId, nextConfig);
+    }
+  };
+
   const handleSelectPreset = (preset: DestinationPreset) => {
-    const startPt: RoutePoint = gps.lastFix
-      ? {
-          xFraction: 0.14,
-          yFraction: 0.86,
-          latitude: gps.lastFix.latitude,
-          longitude: gps.lastFix.longitude,
-        }
-      : routeConfig.waypoints[0] ?? {
-          xFraction: 0.14,
-          yFraction: 0.86,
-          latitude: -6.648,
-          longitude: 106.845,
-        };
+    const startPt: RoutePoint =
+      routeConfig.waypoints[0] ??
+      (gps.lastFix
+        ? {
+            xFraction: 0.14,
+            yFraction: 0.86,
+            latitude: gps.lastFix.latitude,
+            longitude: gps.lastFix.longitude,
+          }
+        : {
+            xFraction: 0.14,
+            yFraction: 0.86,
+            latitude: -6.648,
+            longitude: 106.845,
+          });
     const coordStr = `${preset.endPoint.latitude.toFixed(4)}, ${preset.endPoint.longitude.toFixed(4)}`;
+    const estMeters = Math.max(
+      500,
+      Math.round(
+        haversineMeters(
+          { lat: startPt.latitude, lng: startPt.longitude },
+          { lat: preset.endPoint.latitude, lng: preset.endPoint.longitude }
+        ) * 1.25
+      )
+    );
     const nextConfig: ConvoyRouteConfig = {
       ...routeConfig,
       destinationName: preset.name,
       destinationAddress: `${preset.name} · ${coordStr}`,
       waypoints: buildPolylineToDestination(startPt, preset.endPoint),
-      totalRouteMeters: preset.totalMeters,
+      routeInstructions: [],
+      totalRouteMeters: estMeters,
     };
     setRouteConfig(nextConfig);
     setIsPickingDestinationOnMap(false);
@@ -2424,19 +2538,21 @@ export default function App() {
     placeName?: string,
     addressLabel?: string
   ) => {
-    const startPt: RoutePoint = gps.lastFix
-      ? {
-          xFraction: 0.14,
-          yFraction: 0.86,
-          latitude: gps.lastFix.latitude,
-          longitude: gps.lastFix.longitude,
-        }
-      : routeConfig.waypoints[0] ?? {
-          xFraction: 0.14,
-          yFraction: 0.86,
-          latitude: -6.648,
-          longitude: 106.845,
-        };
+    const startPt: RoutePoint =
+      routeConfig.waypoints[0] ??
+      (gps.lastFix
+        ? {
+            xFraction: 0.14,
+            yFraction: 0.86,
+            latitude: gps.lastFix.latitude,
+            longitude: gps.lastFix.longitude,
+          }
+        : {
+            xFraction: 0.14,
+            yFraction: 0.86,
+            latitude: -6.648,
+            longitude: 106.845,
+          });
     const endPoint: RoutePoint = {
       xFraction: 0.86,
       yFraction: 0.14,
@@ -2463,6 +2579,7 @@ export default function App() {
       destinationName: resolvedName,
       destinationAddress: resolvedAddress,
       waypoints,
+      routeInstructions: [],
       totalRouteMeters: estMeters,
     };
     setRouteConfig(nextConfig);
@@ -2474,13 +2591,23 @@ export default function App() {
   };
 
   const handleRouteComputed = useCallback(
-    (distanceMeters: number, durationMillis: number, path: LatLngPoint[]) => {
+    (
+      distanceMeters: number,
+      durationMillis: number,
+      path: LatLngPoint[],
+      instructions?: RouteInstruction[]
+    ) => {
       if (path.length < 2 || distanceMeters <= 0) return;
       const sampled = downsampleRoutePoints(path, 60);
       const currentCfg = routeConfigRef.current;
       const distDiff = Math.abs(currentCfg.totalRouteMeters - distanceMeters);
-      const sig = `${currentCfg.destinationName}|${Math.round(distanceMeters / 50)}|${sampled.length}`;
-      if (sig === lastSyncedRouteSigRef.current && distDiff < 80) return;
+      const sig = `${currentCfg.originName ?? ''}|${currentCfg.destinationName}|${currentCfg.routePreference ?? 'fastest'}|${Math.round(distanceMeters / 50)}|${sampled.length}`;
+      const hasNewInstructions =
+        Boolean(instructions && instructions.length > 0) &&
+        (!currentCfg.routeInstructions || currentCfg.routeInstructions.length === 0);
+      if (sig === lastSyncedRouteSigRef.current && distDiff < 80 && !hasNewInstructions) {
+        return;
+      }
 
       lastSyncedRouteSigRef.current = sig;
       const nextConfig: ConvoyRouteConfig = {
@@ -2489,6 +2616,10 @@ export default function App() {
         totalRouteMeters: distanceMeters,
         estimatedDurationMillis:
           durationMillis > 0 ? durationMillis : currentCfg.estimatedDurationMillis,
+        routeInstructions:
+          instructions && instructions.length > 0
+            ? instructions
+            : currentCfg.routeInstructions,
       };
       setRouteConfig(nextConfig);
 
@@ -2890,6 +3021,7 @@ export default function App() {
     setMobileBridgeBusy(true);
     setMobileBridgeError(null);
     setMobileBridgeDeepLink(null);
+    setMobileBridgeCopied(false);
     try {
       const { user, idToken } = await signInWithGoogleForMobileBridge();
       if (!idToken) {
@@ -2906,6 +3038,19 @@ export default function App() {
       setMobileBridgeError(mapFirebaseAuthError(err, 'Google'));
     } finally {
       setMobileBridgeBusy(false);
+    }
+  };
+
+  const handleCopyMobileBridgeLink = async () => {
+    if (!mobileBridgeDeepLink) return;
+    try {
+      await navigator.clipboard.writeText(mobileBridgeDeepLink);
+      setMobileBridgeCopied(true);
+      window.setTimeout(() => setMobileBridgeCopied(false), 3000);
+    } catch {
+      setMobileBridgeError(
+        'Gagal menyalin otomatis. Silakan tekan tombol Buka Aplikasi KonvoiKu di atas.'
+      );
     }
   };
 
@@ -2930,15 +3075,18 @@ export default function App() {
           </div>
 
           {mobileBridgeError && (
-            <div className="rounded-xl bg-[#FEF2F2] dark:bg-[#450A0A]/40 border border-[#FECACA] dark:border-[#991B1B] px-3.5 py-2.5 text-xs text-[#B91C1C] dark:text-[#FCA5A5]">
-              {mobileBridgeError}
+            <div className="rounded-xl bg-[#FEF2F2] dark:bg-[#450A0A]/40 border border-[#FECACA] dark:border-[#991B1B] px-3.5 py-2.5 text-xs text-[#B91C1C] dark:text-[#FCA5A5] space-y-1">
+              <p>{mobileBridgeError}</p>
+              <p className="opacity-85">
+                Tip: Jika popup diblokir browser HP, izinkan jendela pop-up lalu ketuk lagi tombol masuk di bawah.
+              </p>
             </div>
           )}
 
           {mobileBridgeDeepLink ? (
             <div className="space-y-3">
               <div className="rounded-xl bg-[#ECFDF5] dark:bg-[#064E3B]/40 border border-[#A7F3D0] dark:border-[#047857] px-3.5 py-3 text-xs text-[#065F46] dark:text-[#A7F3D0]">
-                Login Google berhasil ({mobileBridgeEmail || 'terverifikasi'}). Jika aplikasi Android belum terbuka otomatis, ketuk tombol di bawah.
+                Login Google berhasil ({mobileBridgeEmail || 'terverifikasi'}). Jika aplikasi Android belum terbuka otomatis, ketuk tombol di bawah atau salin link sinkronisasi lalu tempel di APK.
               </div>
               <a
                 href={mobileBridgeDeepLink}
@@ -2946,6 +3094,23 @@ export default function App() {
               >
                 Buka Aplikasi KonvoiKu
               </a>
+              <button
+                type="button"
+                onClick={handleCopyMobileBridgeLink}
+                className="w-full min-h-[44px] px-4 py-2.5 rounded-xl border border-[#CBD5E1] dark:border-[#334155] hover:bg-[#F8FAFC] dark:hover:bg-[#1E293B] text-[#0F172A] dark:text-[#E2E8F0] font-semibold text-xs flex items-center justify-center gap-2 transition-colors cursor-pointer"
+              >
+                {mobileBridgeCopied ? (
+                  <>
+                    <Check className="w-4 h-4 text-[#16A34A]" />
+                    Link Sinkronisasi Disalin! Tempel di APK
+                  </>
+                ) : (
+                  <>
+                    <Copy className="w-4 h-4" />
+                    Salin Link / Token Sinkronisasi
+                  </>
+                )}
+              </button>
             </div>
           ) : (
             <button
@@ -3316,6 +3481,7 @@ export default function App() {
                         activeRoom={activeRoom}
                         routeConfig={routeConfig}
                         destinationPresets={DESTINATION_PRESETS}
+                        vehicleType={vehicleProfile.vehicleType}
                         isAuthenticated={Boolean(authUser)}
                         isCreatingRoom={isCreatingRoom}
                         userGpsLocation={
@@ -3328,10 +3494,14 @@ export default function App() {
                         }
                         darkMode={darkMode}
                         onGoogleSignIn={handleGoogleSignIn}
+                        onPickOriginLatLng={handlePickOriginLatLng}
+                        onUseGpsAsOrigin={handleUseGpsAsOrigin}
                         onSelectPreset={handleSelectPreset}
                         onPickDestinationLatLng={handlePickDestinationLatLng}
+                        onSelectRoutePreference={handleSelectRoutePreference}
                         onUpdateWaypoints={handleUpdateWaypoints}
                         onResetDefaultWaypoints={handleResetDefaultWaypoints}
+                        onRouteComputed={handleRouteComputed}
                         onAddCheckpoint={handleAddCheckpointFromStepper}
                         onRemoveCheckpoint={handleRemoveCheckpoint}
                         onUpdateMaxStragglerDistance={handleUpdateMaxStraggler}
@@ -3371,6 +3541,7 @@ export default function App() {
                         selectedMemberId={selectedMemberId}
                         isSimulationRunning={isSimulationRunning}
                         routeConfig={routeConfig}
+                        vehicleType={vehicleProfile.vehicleType}
                         stragglerAlert={stragglerAlert}
                         offRouteAlert={offRouteAlert}
                         sosState={sosState}

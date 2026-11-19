@@ -17,6 +17,7 @@ import {
   MapPin,
   MessageCircle,
   Mic,
+  Navigation,
   Pause,
   Play,
   Route,
@@ -44,10 +45,12 @@ import {
   MemberConditionStatus,
   OffRouteAlertState,
   RoomMessage,
+  RouteInstruction,
   SosEmergencyState,
   StragglerAlertState,
   TourRoom,
   UserRole,
+  VehicleType,
 } from '../../types/convoy';
 import { ConvoyAvatar } from '../ConvoyAvatar';
 import { LiveTomTomConvoyMap } from '../map/LiveTomTomConvoyMap';
@@ -60,6 +63,7 @@ interface LiveTrackingMapViewProps {
   selectedMemberId: string | null;
   isSimulationRunning: boolean;
   routeConfig: ConvoyRouteConfig;
+  vehicleType?: VehicleType;
   stragglerAlert: StragglerAlertState;
   offRouteAlert: OffRouteAlertState;
   sosState: SosEmergencyState;
@@ -81,7 +85,8 @@ interface LiveTrackingMapViewProps {
   onRouteComputed?: (
     distanceMeters: number,
     durationMillis: number,
-    path: LatLngPoint[]
+    path: LatLngPoint[],
+    instructions?: RouteInstruction[]
   ) => void;
   onSelectMember: (memberId: string) => void;
   onToggleSimulation: () => void;
@@ -286,6 +291,7 @@ export function LiveTrackingMapView({
   selectedMemberId,
   isSimulationRunning,
   routeConfig,
+  vehicleType,
   stragglerAlert,
   offRouteAlert,
   sosState,
@@ -331,6 +337,7 @@ export function LiveTrackingMapView({
   onFinishAndSaveTrip,
   onExitRoom,
 }: LiveTrackingMapViewProps) {
+  const [isNavigationMode, setIsNavigationMode] = useState(false);
   const [participantsExpanded, setParticipantsExpanded] = useState(false);
   const [showChatSheet, setShowChatSheet] = useState(false);
   const [showLeaderSettings, setShowLeaderSettings] = useState(false);
@@ -492,6 +499,19 @@ export function LiveTrackingMapView({
         <div className="flex items-center gap-1 shrink-0">
           <button
             type="button"
+            onClick={() => setIsNavigationMode((v) => !v)}
+            className={`px-2 py-1.5 rounded-lg text-[10px] font-semibold transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1 ${
+              isNavigationMode
+                ? 'bg-[#EA580C] text-white'
+                : 'bg-[#FFF7ED] dark:bg-[#431407] text-[#C2410C] dark:text-[#FB923C] border border-[#FED7AA] dark:border-[#9A3412]'
+            }`}
+          >
+            <Navigation className="w-3 h-3 shrink-0" />
+            <span>{isNavigationMode ? 'Pantau Peta' : 'Navigasi GPS'}</span>
+          </button>
+
+          <button
+            type="button"
             onClick={() => setShowFinishTripConfirm(true)}
             className="px-2 py-1.5 rounded-lg bg-[#DCFCE7] dark:bg-[#064E3B] text-[10px] font-semibold text-[#15803D] dark:text-[#4ADE80] transition-colors cursor-pointer whitespace-nowrap"
           >
@@ -507,7 +527,7 @@ export function LiveTrackingMapView({
             }
             className="px-2 py-1.5 rounded-lg bg-[#EFF6FF] dark:bg-[#1E3A8A] text-[10px] font-semibold text-[#1D4ED8] dark:text-[#DBEAFE] transition-colors cursor-pointer whitespace-nowrap"
           >
-            {role === 'TOUR_LEADER' ? 'Mode: Leader' : 'Mode: Anggota'}
+            {role === 'TOUR_LEADER' ? 'Leader' : 'Anggota'}
           </button>
 
           {role === 'TOUR_LEADER' && (
@@ -515,7 +535,7 @@ export function LiveTrackingMapView({
               type="button"
               onClick={() => setShowLeaderSettings(true)}
               aria-label="Pengaturan Rute & Batas Tertinggal"
-              className="min-w-[36px] min-h-[36px] rounded-full flex items-center justify-center hover:bg-[#EFF6FF] dark:hover:bg-[#1E3A8A]/40 text-[#1D4ED8] dark:text-[#60A5FA] transition-colors cursor-pointer"
+              className="min-w-[34px] min-h-[34px] rounded-full flex items-center justify-center hover:bg-[#EFF6FF] dark:hover:bg-[#1E3A8A]/40 text-[#1D4ED8] dark:text-[#60A5FA] transition-colors cursor-pointer"
             >
               <Settings className="w-4 h-4" />
             </button>
@@ -791,12 +811,15 @@ export function LiveTrackingMapView({
             members={members}
             focusedMember={focusedMember}
             routeConfig={routeConfig}
+            vehicleType={vehicleType || currentUser?.vehicleType || 'MOTOR'}
             stragglerAlert={stragglerAlert}
             sosState={sosState}
             etaInfo={etaInfo}
             darkMode={darkMode}
             isPickingDestination={isPickingDestinationOnMap}
             isPickingCheckpoint={isPickingCheckpointOnMap}
+            isNavigationMode={isNavigationMode}
+            onToggleNavigationMode={() => setIsNavigationMode((v) => !v)}
             onSelectMember={onSelectMember}
             onPickCoordinateOnMap={handlePickCoordinateOnMap}
             onRouteComputed={onRouteComputed}
@@ -804,7 +827,13 @@ export function LiveTrackingMapView({
         </div>
 
         {/* Top-Left Live GPS, Sync Badge & Optional Offline Controls */}
-        <div className="absolute top-3 left-3 z-20 flex flex-col gap-1.5 max-w-[65%]">
+        <div
+          className={`absolute left-2.5 z-20 flex flex-col gap-1.5 max-w-[65%] transition-all ${
+            isNavigationMode && !isPickingDestinationOnMap && !isPickingCheckpointOnMap
+              ? 'top-[78px]'
+              : 'top-3'
+          }`}
+        >
           <div className="flex flex-wrap items-center gap-1.5">
             <button
               type="button"

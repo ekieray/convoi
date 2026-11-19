@@ -285,6 +285,8 @@ export async function createSyncedRoom(params: {
       destinationAddress: routeConfig.destinationAddress.slice(0, 240),
       destLat: dest.latitude,
       destLng: dest.longitude,
+      originName: (routeConfig.originName || 'Titik Keberangkatan').slice(0, 120),
+      originAddress: (routeConfig.originAddress || `${origin.latitude.toFixed(4)}, ${origin.longitude.toFixed(4)}`).slice(0, 240),
       originLat: origin.latitude,
       originLng: origin.longitude,
       encodedPolyline,
@@ -498,6 +500,11 @@ export function subscribeToSyncedRoom(
             ];
 
       const nextConfig: ConvoyRouteConfig = {
+        originName: typeof d.originName === 'string' && d.originName ? d.originName : cachedExistingConfig?.originName,
+        originAddress: typeof d.originAddress === 'string' && d.originAddress ? d.originAddress : cachedExistingConfig?.originAddress,
+        originLockedByLeader: Boolean(d.originName || cachedExistingConfig?.originLockedByLeader),
+        routePreference: cachedExistingConfig?.routePreference ?? 'fastest',
+        routeInstructions: cachedExistingConfig?.routeInstructions,
         destinationName: String(d.destinationName || 'Tujuan Konvoi'),
         destinationAddress: String(d.destinationAddress || ''),
         waypoints,
@@ -753,6 +760,8 @@ export async function updateSyncedRoomRoute(
     await updateDoc(doc(db, 'rooms', roomId), {
       destinationName: config.destinationName.slice(0, 120),
       destinationAddress: config.destinationAddress.slice(0, 240),
+      ...(config.originName ? { originName: config.originName.slice(0, 120) } : {}),
+      ...(config.originAddress ? { originAddress: config.originAddress.slice(0, 240) } : {}),
       ...(origin ? { originLat: origin.latitude, originLng: origin.longitude } : {}),
       ...(dest ? { destLat: dest.latitude, destLng: dest.longitude } : {}),
       encodedPolyline,

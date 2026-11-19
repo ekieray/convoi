@@ -1,4 +1,4 @@
-import { RoutePoint } from '../types/convoy';
+import { NavigationGuidanceState, RouteInstruction, RoutePoint } from '../types/convoy';
 
 const EARTH_RADIUS_METERS = 6_371_000;
 
@@ -448,3 +448,246 @@ export function projectTripMapViewport(
     tileZoom,
   };
 }
+
+/**
+ * Projects a lat/lng point forward along a compass bearing by offsetMeters (used for GPS cockpit look-ahead).
+ */
+export function projectAheadPoint(
+  lat: number,
+  lng: number,
+  headingDeg: number,
+  offsetMeters: number
+): LatLngPoint {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || offsetMeters <= 0) {
+    return { lat, lng };
+  }
+  const rad = (headingDeg * Math.PI) / 180;
+  const dLat = (offsetMeters * Math.cos(rad)) / 111_132.92;
+  const cosLat = Math.max(0.2, Math.cos((lat * Math.PI) / 180));
+  const dLng = (offsetMeters * Math.sin(rad)) / (111_412.84 * cosLat);
+  return {
+    lat: lat + dLat,
+    lng: lng + dLng,
+  };
+}
+
+function formatNavMetersLabel(meters: number): string {
+  if (meters >= 1000) {
+    return `${(meters / 1000).toFixed(1)} km`;
+  }
+  const rounded = Math.max(10, Math.round(meters / 10) * 10);
+  return `${rounded} m`;
+}
+
+/**
+ * Computes heading-up bearing + next turn instruction from TomTom routeInstructions or polyline geometry fallback.
+ */
+export function computeNavigationGuidance(params: {
+  pos: LatLngPoint;
+  speedKmh: number;
+  gpsHeading?: number;
+  waypoints: RoutePoint[];
+  instructions?: RouteInstruction[];
+  destinationName: string;
+  totalRouteMeters: number;
+  offRouteMeters?: number;
+  offRouteToleranceMeters?: number;
+}): NavigationGuidanceState {
+  const {
+    pos,
+    speedKmh,
+    gpsHeading,
+    waypoints,
+    instructions = [],
+    destinationName,
+    totalRouteMeters,
+    offRouteMeters = 0,
+    offRouteToleranceMeters = 75,
+  } = params;
+
+  const isOffRoute = offRouteMeters > offRouteToleranceMeters;
+
+  if (waypoints.length < 2) {
+    const dest = waypoints[0];
+    const dist = dest ? haversineMeters(pos, { lat: dest.latitude, lng: dest.longitude }) : 0;
+    const bearing = dest
+      ? computeBearingDegrees(pos, { lat: dest.latitude, lng: dest.longitude })
+      : Math.round(gpsHeading ?? 0);
+    return {
+      maneuver: dist <= 60 ? 'ARRIVE' : 'STRAIGHT',
+      instructionText:
+        dist <= 60 ? `Anda tiba di ${destinationName}` : `Menuju ${destinationName}`,
+      streetName: destinationName,
+      distanceToTurnMeters: Math.round(dist),
+      distanceToTurnLabel: formatNavMetersLabel(dist),
+      routeBearingDeg: gpsHeading && gpsHeading > 0 ? Math.round(gpsHeading) : bearing,
+      speedKmh: Math.max(0, Math.round(speedKmh)),
+      isOffRoute,
+    };
+  }
+
+  // Find closest segment and cumulative traveled distance
+  const segStarts: number[] = [];
+  const segLengths: number[] = [];
+  let cumulative = 0;
+  for (let i = 0; i < waypoints.length - 1; i++) {
+    segStarts.push(cumulative);
+    const len = haversineMeters(
+      { lat: waypoints[i].latitude, lng: waypoints[i].longitude },
+      { lat: waypoints[i + 1].latitude, lng: waypoints[i + 1].longitude }
+    );
+    segLengths.push(len);
+    cumulative += len;
+  }
+
+  const refLatRad = (waypoints[0].latitude * Math.PI) / 180;
+  const metersPerDegLat = 111_132.92;
+  const metersPerDegLng = 111_412.84 * Math.cos(refLatRad);
+  const toXY = (pt: LatLngPoint) => ({
+    x: (pt.lng - waypoints[0].longitude) * metersPerDegLng,
+    y: (pt.lat - waypoints[0].latitude) * metersPerDegLat,
+  });
+
+  const pXY = toXY(pos);
+  let bestSegIdx = 0;
+  let minDist = Number.MAX_VALUE;
+  let bestTraveled = 0;
+
+  for (let i = 0; i < waypoints.length - 1; i++) {
+    const a = toXY({ lat: waypoints[i].latitude, lng: waypoints[i].longitude });
+    const b = toXY({
+      lat: waypoints[i + 1].latitude,
+      lng: waypoints[i + 1].longitude,
+    });
+    const abx = b.x - a.x;
+    const aby = b.y - a.y;
+    const abLenSq = abx * abx + aby * aby;
+    const t =
+      abLenSq > 0
+        ? Math.max(0, Math.min(1, ((pXY.x - a.x) * abx + (pXY.y - a.y) * aby) / abLenSq))
+        : 0;
+    const projX = a.x + t * abx;
+    const projY = a.y + t * aby;
+    const perp = Math.hypot(pXY.x - projX, pXY.y - projY);
+    if (perp < minDist) {
+      minDist = perp;
+      bestSegIdx = i;
+      bestTraveled = segStarts[i] + t * segLengths[i];
+    }
+  }
+
+  const segBearing = computeBearingDegrees(
+    { lat: waypoints[bestSegIdx].latitude, lng: waypoints[bestSegIdx].longitude },
+    {
+      lat: waypoints[bestSegIdx + 1].latitude,
+      lng: waypoints[bestSegIdx + 1].longitude,
+    }
+  );
+  const effectiveBearing =
+    typeof gpsHeading === 'number' && Number.isFinite(gpsHeading) && gpsHeading > 0 && speedKmh >= 5
+      ? Math.round(gpsHeading)
+      : segBearing;
+
+  const effectiveTotal = Math.max(100, cumulative || totalRouteMeters);
+  const remainingTotal = Math.max(0, effectiveTotal - bestTraveled);
+
+  if (remainingTotal <= 60) {
+    return {
+      maneuver: 'ARRIVE',
+      instructionText: `Tiba di Tujuan: ${destinationName}`,
+      streetName: destinationName,
+      distanceToTurnMeters: Math.round(remainingTotal),
+      distanceToTurnLabel: `${Math.round(remainingTotal)} m`,
+      routeBearingDeg: effectiveBearing,
+      speedKmh: Math.max(0, Math.round(speedKmh)),
+      isOffRoute,
+    };
+  }
+
+  // Prefer TomTom guidance instructions when available
+  if (instructions.length > 0) {
+    const nextIns =
+      instructions.find((ins) => ins.routeOffsetInMeters >= bestTraveled + 15) ||
+      instructions[instructions.length - 1];
+    if (nextIns) {
+      const distToTurn = Math.max(
+        10,
+        Math.round(
+          Math.max(
+            nextIns.routeOffsetInMeters - bestTraveled,
+            haversineMeters(pos, { lat: nextIns.latitude, lng: nextIns.longitude }) * 0.85
+          )
+        )
+      );
+      return {
+        maneuver: nextIns.maneuver || 'STRAIGHT',
+        instructionText: nextIns.message,
+        streetName: nextIns.street || destinationName,
+        distanceToTurnMeters: distToTurn,
+        distanceToTurnLabel: formatNavMetersLabel(distToTurn),
+        routeBearingDeg: effectiveBearing,
+        speedKmh: Math.max(0, Math.round(speedKmh)),
+        isOffRoute,
+      };
+    }
+  }
+
+  // Offline polyline bend-detection fallback
+  for (let i = bestSegIdx; i < waypoints.length - 2; i++) {
+    const b1 = computeBearingDegrees(
+      { lat: waypoints[i].latitude, lng: waypoints[i].longitude },
+      { lat: waypoints[i + 1].latitude, lng: waypoints[i + 1].longitude }
+    );
+    const b2 = computeBearingDegrees(
+      { lat: waypoints[i + 1].latitude, lng: waypoints[i + 1].longitude },
+      { lat: waypoints[i + 2].latitude, lng: waypoints[i + 2].longitude }
+    );
+    let delta = b2 - b1;
+    while (delta > 180) delta -= 360;
+    while (delta < -180) delta += 360;
+
+    if (Math.abs(delta) >= 22) {
+      const turnVertexDist = Math.max(15, segStarts[i + 1] - bestTraveled);
+      let maneuver = 'STRAIGHT';
+      let label = 'Lurus ikuti jalur konvoi';
+      if (Math.abs(delta) >= 135) {
+        maneuver = 'MAKE_UTURN';
+        label = 'Putar balik ikuti rute';
+      } else if (delta >= 55) {
+        maneuver = 'TURN_RIGHT';
+        label = 'Belok kanan ikuti rute konvoi';
+      } else if (delta >= 22) {
+        maneuver = 'BEAR_RIGHT';
+        label = 'Ambil jalur kanan';
+      } else if (delta <= -55) {
+        maneuver = 'TURN_LEFT';
+        label = 'Belok kiri ikuti rute konvoi';
+      } else if (delta <= -22) {
+        maneuver = 'BEAR_LEFT';
+        label = 'Ambil jalur kiri';
+      }
+      return {
+        maneuver,
+        instructionText: label,
+        streetName: `Menuju ${destinationName}`,
+        distanceToTurnMeters: Math.round(turnVertexDist),
+        distanceToTurnLabel: formatNavMetersLabel(turnVertexDist),
+        routeBearingDeg: effectiveBearing,
+        speedKmh: Math.max(0, Math.round(speedKmh)),
+        isOffRoute,
+      };
+    }
+  }
+
+  return {
+    maneuver: 'STRAIGHT',
+    instructionText: `Terus ikuti jalur menuju ${destinationName}`,
+    streetName: destinationName,
+    distanceToTurnMeters: Math.round(remainingTotal),
+    distanceToTurnLabel: formatNavMetersLabel(remainingTotal),
+    routeBearingDeg: effectiveBearing,
+    speedKmh: Math.max(0, Math.round(speedKmh)),
+    isOffRoute,
+  };
+}
+

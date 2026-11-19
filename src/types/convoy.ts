@@ -79,7 +79,34 @@ export interface RestCheckpoint {
   longitude: number;
 }
 
+export type RoutePreference = 'fastest' | 'shortest' | 'no_toll';
+
+export interface RouteInstruction {
+  latitude: number;
+  longitude: number;
+  routeOffsetInMeters: number;
+  maneuver: string;
+  message: string;
+  street?: string;
+}
+
+export interface NavigationGuidanceState {
+  maneuver: string;
+  instructionText: string;
+  streetName: string;
+  distanceToTurnMeters: number;
+  distanceToTurnLabel: string;
+  routeBearingDeg: number;
+  speedKmh: number;
+  isOffRoute: boolean;
+}
+
 export interface ConvoyRouteConfig {
+  originName?: string;
+  originAddress?: string;
+  originLockedByLeader?: boolean;
+  routePreference?: RoutePreference;
+  routeInstructions?: RouteInstruction[];
   destinationName: string;
   destinationAddress: string;
   waypoints: RoutePoint[];
