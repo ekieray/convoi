@@ -20,6 +20,7 @@ import {
   signInWithEmail,
   signInWithFacebook,
   signInWithGoogle,
+  signInWithGoogleForMobileBridge,
   signOutFirebase,
   signUpWithEmail,
   subscribeToAuthState,
@@ -79,7 +80,9 @@ import {
   VehicleType,
 } from './types/convoy';
 import {
+  computePolylineLengthMeters,
   downsampleRoutePoints,
+  downsampleTrackPoints,
   evaluatePositionAlongRoute,
   haversineMeters,
   LatLngPoint,
@@ -433,22 +436,35 @@ const DEFAULT_TRIP_HISTORY: TripHistoryRecord[] = [
     userRole: 'TOUR_LEADER',
     destinationName: 'Puncak Pass Resort',
     destinationAddress: 'Jl. Raya Puncak KM 90, Cisarua · -6.7003, 106.9960',
-    waypoints: [
-      { xFraction: 0.14, yFraction: 0.86, latitude: -6.648, longitude: 106.845 },
-      { xFraction: 0.32, yFraction: 0.65, latitude: -6.662, longitude: 106.882 },
-      { xFraction: 0.55, yFraction: 0.48, latitude: -6.678, longitude: 106.925 },
-      { xFraction: 0.72, yFraction: 0.3, latitude: -6.69, longitude: 106.962 },
-      { xFraction: 0.86, yFraction: 0.14, latitude: -6.7003, longitude: 106.996 },
-    ],
+    waypoints: downsampleRoutePoints(
+      [
+        { lat: -6.5976, lng: 106.806 },
+        { lat: -6.6124, lng: 106.8185 },
+        { lat: -6.6285, lng: 106.8322 },
+        { lat: -6.6458, lng: 106.8452 },
+        { lat: -6.6529, lng: 106.8618 },
+        { lat: -6.6562, lng: 106.8794 },
+        { lat: -6.6638, lng: 106.8942 },
+        { lat: -6.6705, lng: 106.9088 },
+        { lat: -6.6746, lng: 106.9245 },
+        { lat: -6.6818, lng: 106.9372 },
+        { lat: -6.6852, lng: 106.9488 },
+        { lat: -6.6914, lng: 106.9605 },
+        { lat: -6.6948, lng: 106.9735 },
+        { lat: -6.6981, lng: 106.9852 },
+        { lat: -6.7003, lng: 106.996 },
+      ],
+      60
+    ),
     visitedCheckpoints: [
       {
         id: 'cp-s1',
-        name: 'Rest Area KM 57',
+        name: 'Rest Area Ciawi KM 45',
         arrivedAtLabel: '06:20',
         xFraction: 0.36,
         yFraction: 0.62,
-        latitude: -6.668,
-        longitude: 106.895,
+        latitude: -6.6638,
+        longitude: 106.8942,
       },
       {
         id: 'cp-s2',
@@ -456,8 +472,8 @@ const DEFAULT_TRIP_HISTORY: TripHistoryRecord[] = [
         arrivedAtLabel: '07:15',
         xFraction: 0.66,
         yFraction: 0.36,
-        latitude: -6.685,
-        longitude: 106.948,
+        latitude: -6.6852,
+        longitude: 106.9488,
       },
     ],
     participants: [
@@ -514,12 +530,22 @@ const DEFAULT_TRIP_HISTORY: TripHistoryRecord[] = [
     userRole: 'MEMBER',
     destinationName: 'Lembang Highland',
     destinationAddress: 'Jl. Raya Lembang No. 12, Bandung · -6.8120, 107.6180',
-    waypoints: [
-      { xFraction: 0.16, yFraction: 0.84, latitude: -6.89, longitude: 107.48 },
-      { xFraction: 0.38, yFraction: 0.68, latitude: -6.865, longitude: 107.52 },
-      { xFraction: 0.52, yFraction: 0.44, latitude: -6.842, longitude: 107.565 },
-      { xFraction: 0.78, yFraction: 0.22, latitude: -6.812, longitude: 107.618 },
-    ],
+    waypoints: downsampleRoutePoints(
+      [
+        { lat: -6.8425, lng: 107.4965 },
+        { lat: -6.8548, lng: 107.5152 },
+        { lat: -6.8662, lng: 107.5318 },
+        { lat: -6.8745, lng: 107.5515 },
+        { lat: -6.8722, lng: 107.5718 },
+        { lat: -6.8638, lng: 107.5892 },
+        { lat: -6.8524, lng: 107.5956 },
+        { lat: -6.8398, lng: 107.6012 },
+        { lat: -6.8265, lng: 107.6064 },
+        { lat: -6.8178, lng: 107.6115 },
+        { lat: -6.812, lng: 107.618 },
+      ],
+      60
+    ),
     visitedCheckpoints: [
       {
         id: 'cp-s3',
@@ -608,6 +634,15 @@ export default function App() {
   const [profileSyncMessage, setProfileSyncMessage] = useState<string | null>(null);
   const [isCreatingRoom, setIsCreatingRoom] = useState(false);
   const [isJoiningRoom, setIsJoiningRoom] = useState(false);
+  const [isMobileGoogleBridge] = useState<boolean>(() =>
+    typeof window !== 'undefined'
+      ? new URLSearchParams(window.location.search).get('mobile_auth') === 'google'
+      : false
+  );
+  const [mobileBridgeBusy, setMobileBridgeBusy] = useState(false);
+  const [mobileBridgeError, setMobileBridgeError] = useState<string | null>(null);
+  const [mobileBridgeDeepLink, setMobileBridgeDeepLink] = useState<string | null>(null);
+  const [mobileBridgeEmail, setMobileBridgeEmail] = useState<string>('');
   const [globalConfig, setGlobalConfig] = useState<GlobalAppConfig>(
     DEFAULT_GLOBAL_APP_CONFIG
   );
@@ -655,6 +690,7 @@ export default function App() {
   const [selectedTripId, setSelectedTripId] = useState<string | null>(
     DEFAULT_TRIP_HISTORY[0]?.id ?? null
   );
+  const [lastCompletedTrip, setLastCompletedTrip] = useState<TripHistoryRecord | null>(null);
   const [syncWithPreview, setSyncWithPreview] = useState(true);
   const [mobileWorkspaceTab, setMobileWorkspaceTab] = useState<'preview' | 'code'>('preview');
 
@@ -665,6 +701,7 @@ export default function App() {
   const lastTelemetrySentMsRef = useRef<number>(0);
   const lastTelemetryFixRef = useRef<LatLngPoint | null>(null);
   const lastSyncedRouteSigRef = useRef<string>('');
+  const recordedTrackRef = useRef<LatLngPoint[]>([]);
   const routeConfigRef = useRef<ConvoyRouteConfig>(routeConfig);
   routeConfigRef.current = routeConfig;
   const activeRoomRef = useRef<TourRoom | null>(activeRoom);
@@ -912,6 +949,19 @@ export default function App() {
       const currentCfg = routeConfigRef.current;
       const user = authUserRef.current;
       if (!currentRoom) return;
+
+      // Record real GPS breadcrumb along the route actually traveled
+      if (fix.accuracyMeters <= 80 || recordedTrackRef.current.length === 0) {
+        const pt: LatLngPoint = { lat: fix.latitude, lng: fix.longitude };
+        const track = recordedTrackRef.current;
+        const lastPt = track[track.length - 1];
+        if (!lastPt || haversineMeters(lastPt, pt) >= 15) {
+          track.push(pt);
+          if (track.length > 1800) {
+            recordedTrackRef.current = downsampleTrackPoints(track, 20, 300);
+          }
+        }
+      }
 
       const geoEval = evaluatePositionAlongRoute(
         { lat: fix.latitude, lng: fix.longitude },
@@ -1559,7 +1609,10 @@ export default function App() {
     });
   };
 
-  const handleCreateRoom = async (customTitle = 'Konvoi Touring Akhir Pekan') => {
+  const handleCreateRoom = async (
+    customTitle = 'Konvoi Touring Akhir Pekan',
+    routeOverride?: ConvoyRouteConfig
+  ) => {
     if (
       globalConfig.allowNewRooms === false &&
       !isVerifiedAdminSession(authUser)
@@ -1567,16 +1620,17 @@ export default function App() {
       setJoinError('Pembuatan room baru sedang dijeda oleh Admin Backend.');
       return;
     }
+    const effectiveConfig = routeOverride ?? routeConfig;
     const roomId = generateUniqueRoomId();
     const title = customTitle.trim() || 'Konvoi Touring Akhir Pekan';
-    const startLat = gps.lastFix?.latitude ?? routeConfig.waypoints[0]?.latitude ?? -6.648;
-    const startLng = gps.lastFix?.longitude ?? routeConfig.waypoints[0]?.longitude ?? 106.845;
+    const startLat = gps.lastFix?.latitude ?? effectiveConfig.waypoints[0]?.latitude ?? -6.648;
+    const startLng = gps.lastFix?.longitude ?? effectiveConfig.waypoints[0]?.longitude ?? 106.845;
 
     // Cloud Synced Firestore Room if authenticated
     if (authUser) {
       setIsCreatingRoom(true);
       try {
-        const dest = routeConfig.waypoints[routeConfig.waypoints.length - 1];
+        const dest = effectiveConfig.waypoints[effectiveConfig.waypoints.length - 1];
         const nextWaypoints: RoutePoint[] =
           gps.lastFix && dest
             ? buildPolylineToDestination(
@@ -1588,10 +1642,10 @@ export default function App() {
                 },
                 dest
               )
-            : routeConfig.waypoints;
+            : effectiveConfig.waypoints;
 
         const nextConfig: ConvoyRouteConfig = {
-          ...routeConfig,
+          ...effectiveConfig,
           waypoints: nextWaypoints,
         };
 
@@ -1607,6 +1661,10 @@ export default function App() {
         });
 
         setRouteConfig(nextConfig);
+        recordedTrackRef.current = gps.lastFix
+          ? [{ lat: gps.lastFix.latitude, lng: gps.lastFix.longitude }]
+          : [];
+        setLastCompletedTrip(null);
         setIsOffRouteSimActive(false);
         setIsStragglerSimActive(false);
         const syncedRoom: TourRoom = {
@@ -1663,7 +1721,7 @@ export default function App() {
             heading: gps.lastFix.heading,
             accuracyMeters: gps.lastFix.accuracyMeters,
           }
-        : interpolateAlongPolyline(0.74, routeConfig.waypoints, 0, 60),
+        : interpolateAlongPolyline(0.74, effectiveConfig.waypoints, 0, 60),
     };
 
     const peers: ConvoyMember[] = DEFAULT_CONVOY_TEMPLATES.slice(0, 3).map(
@@ -1683,12 +1741,12 @@ export default function App() {
         connectionStatus: tpl.connectionStatus,
         lastLocationText: tpl.lastLocationText,
         lastUpdatedLabel: tpl.connectionStatus === 'WEAK_SIGNAL' ? '4 dtk lalu' : 'Baru saja',
-        routeDistanceMeters: Math.round(tpl.baseProgress * routeConfig.totalRouteMeters),
+        routeDistanceMeters: Math.round(tpl.baseProgress * effectiveConfig.totalRouteMeters),
         offRouteMeters: 0,
         convoyOrderRank: idx + 2,
         mapPosition: interpolateAlongPolyline(
           tpl.baseProgress,
-          routeConfig.waypoints,
+          effectiveConfig.waypoints,
           0,
           tpl.baseSpeed
         ),
@@ -1696,6 +1754,10 @@ export default function App() {
     );
 
     setSimIndex(0);
+    recordedTrackRef.current = gps.lastFix
+      ? [{ lat: gps.lastFix.latitude, lng: gps.lastFix.longitude }]
+      : [];
+    setLastCompletedTrip(null);
     setIsOffRouteSimActive(false);
     setIsStragglerSimActive(false);
     setSosState({
@@ -1718,7 +1780,7 @@ export default function App() {
       members: [leader, ...peers],
     };
     setSelectedMemberId(leader.id);
-    commitRoomMembers(room.members, routeConfig, room);
+    commitRoomMembers(room.members, effectiveConfig, room);
     navigateTo('live_map', 1);
   };
 
@@ -1792,6 +1854,10 @@ export default function App() {
         }
         setSelectedRole(res.role);
         setSelectedMemberId(authUser.uid);
+        recordedTrackRef.current = gps.lastFix
+          ? [{ lat: gps.lastFix.latitude, lng: gps.lastFix.longitude }]
+          : [];
+        setLastCompletedTrip(null);
         setActiveRoom({
           roomId: code,
           roomTitle: `Room ${code}`,
@@ -1941,6 +2007,10 @@ export default function App() {
       members: [hostLeader, selfMember, peer1, peer2],
     };
     setSelectedMemberId(selfMember.id);
+    recordedTrackRef.current = gps.lastFix
+      ? [{ lat: gps.lastFix.latitude, lng: gps.lastFix.longitude }]
+      : [];
+    setLastCompletedTrip(null);
     commitRoomMembers(room.members, routeConfig, room);
     navigateTo('live_map', 1);
   };
@@ -2656,7 +2726,22 @@ export default function App() {
         : 52;
     const maxSpeed = (activeSpeeds.length > 0 ? Math.max(...activeSpeeds) : 64) + 12;
 
-    const distanceKm = Math.max(1, Number((routeConfig.totalRouteMeters / 1000).toFixed(1)));
+    const rawTrack = recordedTrackRef.current;
+    const rawTrackMeters = computePolylineLengthMeters(rawTrack);
+    const hasRealRecordedGpsTrack = rawTrack.length >= 2 && rawTrackMeters >= 50;
+
+    const finalWaypoints: RoutePoint[] = hasRealRecordedGpsTrack
+      ? downsampleRoutePoints(downsampleTrackPoints(rawTrack, 15, 120), 120)
+      : routeConfig.waypoints;
+
+    const realDistanceMeters = hasRealRecordedGpsTrack
+      ? rawTrackMeters
+      : routeConfig.totalRouteMeters;
+
+    const distanceKm = Math.max(
+      0.1,
+      Number((realDistanceMeters / 1000).toFixed(1))
+    );
     const estMinutes = Math.max(15, Math.round((distanceKm / Math.max(25, avgSpeed)) * 60));
     const hours = Math.floor(estMinutes / 60);
     const mins = estMinutes % 60;
@@ -2683,7 +2768,7 @@ export default function App() {
       userRole: selectedRole,
       destinationName: routeConfig.destinationName,
       destinationAddress: routeConfig.destinationAddress,
-      waypoints: routeConfig.waypoints,
+      waypoints: finalWaypoints,
       visitedCheckpoints: routeConfig.checkpoints.map((cp, idx) => ({
         id: cp.id,
         name: cp.name,
@@ -2715,9 +2800,13 @@ export default function App() {
       );
     }
 
+    recordedTrackRef.current = [];
     setTripHistory((prev) => [newRecord, ...prev]);
     setSelectedTripId(newRecord.id);
+    setLastCompletedTrip(newRecord);
     setActiveRoom(null);
+    setIsOffRouteSimActive(false);
+    setIsStragglerSimActive(false);
     setSosState({
       isActive: false,
       senderId: '',
@@ -2731,10 +2820,43 @@ export default function App() {
     navigateTo('trip_detail', 1);
   };
 
+  const handleRepeatTour = async (trip: TripHistoryRecord) => {
+    const restoredWaypoints =
+      trip.waypoints.length >= 2 ? trip.waypoints : routeConfig.waypoints;
+    const restoredCheckpoints: RestCheckpoint[] = trip.visitedCheckpoints.map(
+      (cp, idx) => ({
+        id: cp.id || `cp-repeat-${Date.now()}-${idx}`,
+        name: cp.name,
+        xFraction: cp.xFraction,
+        yFraction: cp.yFraction,
+        latitude: cp.latitude,
+        longitude: cp.longitude,
+      })
+    );
+    const restoredConfig: ConvoyRouteConfig = {
+      ...routeConfig,
+      destinationName: trip.destinationName || routeConfig.destinationName,
+      destinationAddress:
+        trip.destinationAddress || routeConfig.destinationAddress,
+      waypoints: restoredWaypoints,
+      checkpoints: restoredCheckpoints,
+      totalRouteMeters: Math.max(1000, Math.round(trip.distanceKm * 1000)),
+    };
+    setSelectedRole('TOUR_LEADER');
+    setRouteConfig(restoredConfig);
+    setLastCompletedTrip(null);
+    await handleCreateRoom(
+      trip.tourTitle || 'Konvoi Touring Akhir Pekan',
+      restoredConfig
+    );
+  };
+
   const handleResetDemo = () => {
+    recordedTrackRef.current = [];
     setSelectedRole('TOUR_LEADER');
     setVehicleProfile(INITIAL_PROFILE);
     setActiveRoom(null);
+    setLastCompletedTrip(null);
     setJoinInput('');
     setJoinError(null);
     setSelectedMemberId(null);
@@ -2762,6 +2884,83 @@ export default function App() {
     setNavDirection(-1);
     setCurrentRoute(authUser || localUserName ? 'role_selection' : 'login');
   };
+
+  const handleMobileGoogleBridgeAuth = async () => {
+    if (mobileBridgeBusy) return;
+    setMobileBridgeBusy(true);
+    setMobileBridgeError(null);
+    setMobileBridgeDeepLink(null);
+    try {
+      const { user, idToken } = await signInWithGoogleForMobileBridge();
+      if (!idToken) {
+        setMobileBridgeError(
+          'Token verifikasi Google tidak ditemukan. Silakan ulangi masuk dengan Google.'
+        );
+        return;
+      }
+      const deepLink = `konvoiku://auth?id_token=${encodeURIComponent(idToken)}`;
+      setMobileBridgeEmail(user.email || '');
+      setMobileBridgeDeepLink(deepLink);
+      window.location.href = deepLink;
+    } catch (err) {
+      setMobileBridgeError(mapFirebaseAuthError(err, 'Google'));
+    } finally {
+      setMobileBridgeBusy(false);
+    }
+  };
+
+  if (isMobileGoogleBridge) {
+    return (
+      <div className="min-h-screen bg-[#F1F5FA] dark:bg-[#0A0F16] text-[#0F172A] dark:text-[#F1F5F9] flex items-center justify-center p-4">
+        <div className="w-full max-w-md rounded-2xl bg-white dark:bg-[#131B26] border border-[#E2E8F0] dark:border-[#2D3A4F] shadow-xl p-6 space-y-5">
+          <div className="space-y-1.5">
+            <span className="inline-block px-2.5 py-1 rounded-md bg-[#EFF6FF] dark:bg-[#1E3A8A]/40 text-[#1D4ED8] dark:text-[#93C5FD] text-xs font-semibold">
+              KonvoiKu Android Sync
+            </span>
+            <h1 className="text-xl font-bold tracking-tight">
+              Sinkronisasi Akun Google ke APK
+            </h1>
+            <p className="text-sm text-[#475569] dark:text-[#94A3B8]">
+              Masuk dengan akun Google Anda (termasuk akun Admin{' '}
+              <span className="font-semibold text-[#0F172A] dark:text-white">
+                ekie.ray@gmail.com
+              </span>
+              ) agar profil &amp; Admin Backend langsung aktif di aplikasi Android.
+            </p>
+          </div>
+
+          {mobileBridgeError && (
+            <div className="rounded-xl bg-[#FEF2F2] dark:bg-[#450A0A]/40 border border-[#FECACA] dark:border-[#991B1B] px-3.5 py-2.5 text-xs text-[#B91C1C] dark:text-[#FCA5A5]">
+              {mobileBridgeError}
+            </div>
+          )}
+
+          {mobileBridgeDeepLink ? (
+            <div className="space-y-3">
+              <div className="rounded-xl bg-[#ECFDF5] dark:bg-[#064E3B]/40 border border-[#A7F3D0] dark:border-[#047857] px-3.5 py-3 text-xs text-[#065F46] dark:text-[#A7F3D0]">
+                Login Google berhasil ({mobileBridgeEmail || 'terverifikasi'}). Jika aplikasi Android belum terbuka otomatis, ketuk tombol di bawah.
+              </div>
+              <a
+                href={mobileBridgeDeepLink}
+                className="w-full min-h-[48px] px-4 py-3 rounded-xl bg-[#EA580C] hover:bg-[#C2410C] text-white font-semibold text-sm flex items-center justify-center transition-colors"
+              >
+                Buka Aplikasi KonvoiKu
+              </a>
+            </div>
+          ) : (
+            <button
+              type="button"
+              disabled={mobileBridgeBusy}
+              onClick={handleMobileGoogleBridgeAuth}
+              className="w-full min-h-[48px] px-4 py-3 rounded-xl bg-[#1D4ED8] hover:bg-[#1E40AF] disabled:opacity-60 text-white font-semibold text-sm flex items-center justify-center gap-2 transition-colors cursor-pointer"
+            >
+              {mobileBridgeBusy ? 'Membuka Google...' : 'Masuk dengan Akun Google'}
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="relative min-h-screen bg-[#F1F5FA] dark:bg-[#0A0F16] text-[#0F172A] dark:text-[#F1F5F9] flex flex-col transition-colors">
@@ -3034,6 +3233,7 @@ export default function App() {
                     {currentRoute === 'role_selection' && (
                       <RoleSelectionView
                         activeRoom={activeRoom}
+                        lastCompletedTrip={lastCompletedTrip ?? tripHistory[0] ?? null}
                         destinationName={routeConfig.destinationName}
                         tripHistoryCount={tripHistory.length}
                         latestTripTitle={tripHistory[0]?.tourTitle}
@@ -3055,9 +3255,11 @@ export default function App() {
                         onOpenAdminBackend={() => navigateTo('admin_backend', 1)}
                         onSelectRole={handleSelectRole}
                         onResumeCurrentConvoy={() => {
-                          ensureDemoRoom(selectedRole);
-                          navigateTo('live_map', 1);
+                          if (activeRoom) {
+                            navigateTo('live_map', 1);
+                          }
                         }}
+                        onRepeatTour={handleRepeatTour}
                         onOpenTripHistory={() => navigateTo('trip_history', 1)}
                         onOpenAboutApp={() => {
                           setAboutReturnRoute('role_selection');

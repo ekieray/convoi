@@ -1,6 +1,7 @@
 package com.konvoiku.touring.ui.screens
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -44,7 +45,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -53,6 +59,7 @@ import androidx.compose.ui.unit.sp
 import com.konvoiku.touring.model.TripHistoryRecord
 import com.konvoiku.touring.model.UserRole
 import com.konvoiku.touring.ui.components.ConvoyAvatar
+import com.konvoiku.touring.util.GeoUtils
 import java.util.Locale
 
 private enum class TripRoleFilter(val label: String) {
@@ -264,12 +271,60 @@ private fun TripHistoryCard(
                     }
                 }
 
-                Icon(
-                    imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
-                    contentDescription = "Buka Rekap",
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(18.dp)
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (trip.waypoints.size >= 2) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.background,
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                            modifier = Modifier.size(width = 72.dp, height = 50.dp)
+                        ) {
+                            Canvas(modifier = Modifier.fillMaxSize().padding(4.dp)) {
+                                val proj = GeoUtils.projectTripMapViewport(
+                                    waypoints = trip.waypoints,
+                                    checkpoints = trip.visitedCheckpoints,
+                                    width = size.width,
+                                    height = size.height,
+                                    paddingFraction = 0.14f
+                                )
+                                val pts = proj.waypoints
+                                if (pts.size >= 2) {
+                                    val path = Path().apply {
+                                        moveTo(pts.first().x, pts.first().y)
+                                        for (i in 1 until pts.size) {
+                                            lineTo(pts[i].x, pts[i].y)
+                                        }
+                                    }
+                                    drawPath(
+                                        path = path,
+                                        color = Color(0xFFEA580C),
+                                        style = Stroke(
+                                            width = 2.2.dp.toPx(),
+                                            cap = StrokeCap.Round,
+                                            join = StrokeJoin.Round
+                                        )
+                                    )
+                                }
+                                pts.firstOrNull()?.let { start ->
+                                    drawCircle(Color(0xFFEA580C), radius = 3.dp.toPx(), center = Offset(start.x, start.y))
+                                }
+                                pts.lastOrNull()?.let { end ->
+                                    drawCircle(Color(0xFF16A34A), radius = 3.dp.toPx(), center = Offset(end.x, end.y))
+                                }
+                            }
+                        }
+                    }
+
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
+                        contentDescription = "Buka Rekap",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
             }
 
             // Metrics Strip: Distance, Duration, Avg Speed

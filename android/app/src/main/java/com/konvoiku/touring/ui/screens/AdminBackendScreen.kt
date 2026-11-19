@@ -1,5 +1,10 @@
 package com.konvoiku.touring.ui.screens
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,6 +28,8 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Build
 import androidx.compose.material.icons.rounded.Campaign
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.CloudDone
+import androidx.compose.material.icons.rounded.CloudOff
 import androidx.compose.material.icons.rounded.Computer
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.DirectionsCar
@@ -30,8 +37,10 @@ import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Group
 import androidx.compose.material.icons.rounded.Navigation
+import androidx.compose.material.icons.rounded.OpenInBrowser
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.PowerSettingsNew
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Save
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
@@ -47,6 +56,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -57,6 +67,7 @@ import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -69,22 +80,34 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.konvoiku.touring.data.FirestoreConvoyRepository
 import com.konvoiku.touring.model.AdminRoomOverview
 import com.konvoiku.touring.model.AdminUserSummary
 import com.konvoiku.touring.model.GlobalAppConfig
 import com.konvoiku.touring.model.UserPresenceInfo
 import com.konvoiku.touring.ui.components.ConvoyAvatar
 
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AdminBackendScreen(
     isVerifiedAdmin: Boolean,
     authUserEmail: String,
+    isCloudConnected: Boolean = true,
+    isAuthLoading: Boolean = false,
+    authError: String? = null,
+    isMonitoringLoading: Boolean = false,
     globalConfig: GlobalAppConfig,
     presenceList: List<UserPresenceInfo>,
     rooms: List<AdminRoomOverview>,
@@ -92,6 +115,7 @@ fun AdminBackendScreen(
     monitorError: String?,
     isSavingConfig: Boolean,
     configFeedback: String?,
+    onGoogleSignIn: (Activity?) -> Unit = {},
     onStartMonitoring: () -> Unit,
     onStopMonitoring: () -> Unit,
     onSaveGlobalConfig: (GlobalAppConfig) -> Unit,
@@ -101,6 +125,8 @@ fun AdminBackendScreen(
     onDeleteRoom: (roomId: String) -> Unit,
     onBack: () -> Unit
 ) {
+    val context = LocalContext.current
+
     DisposableEffect(isVerifiedAdmin) {
         if (isVerifiedAdmin) {
             onStartMonitoring()
@@ -295,7 +321,7 @@ fun AdminBackendScreen(
                 ) {
                     Column(
                         modifier = Modifier.padding(18.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -307,19 +333,206 @@ fun AdminBackendScreen(
                                 tint = Color(0xFFD97706)
                             )
                             Text(
-                                text = "Verifikasi Admin Diperlukan",
+                                text = "Verifikasi Admin Google Diperlukan",
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold
                             )
                         }
+
+                        Surface(
+                            color = if (isCloudConnected) Color(0xFFECFDF5) else Color(0xFFFEF2F2),
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(
+                                1.dp,
+                                if (isCloudConnected) Color(0xFFA7F3D0) else Color(0xFFFECACA)
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (isCloudConnected) Icons.Rounded.CloudDone else Icons.Rounded.CloudOff,
+                                    contentDescription = null,
+                                    tint = if (isCloudConnected) Color(0xFF047857) else Color(0xFFB91C1C),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Text(
+                                    text = if (isCloudConnected) {
+                                        "Firebase Cloud & Firestore siap di perangkat."
+                                    } else {
+                                        "Firebase Cloud belum terhubung. Periksa koneksi internet."
+                                    },
+                                    fontSize = 11.sp,
+                                    color = if (isCloudConnected) Color(0xFF065F46) else Color(0xFF991B1B),
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                        }
+
                         Text(
-                            text = "Panel Admin Backend hanya dapat membaca telemetri semua user & mengubah konfigurasi global bila Anda masuk menggunakan akun email terverifikasi ekie.ray@gmail.com (email aktif saat ini: ${authUserEmail.ifBlank { "belum login email" }}).",
+                            text = "Panel Admin Backend membaca telemetri semua pengendara secara real-time dan mengubah pengaturan global. Masuk menggunakan akun Google terverifikasi ${FirestoreConvoyRepository.ADMIN_EMAIL} (sesi saat ini: ${authUserEmail.ifBlank { "belum login Google/Email" }}).",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+
+                        val diagnostic = authError ?: monitorError
+                        if (!diagnostic.isNullOrBlank()) {
+                            Surface(
+                                color = Color(0xFFFEF2F2),
+                                shape = RoundedCornerShape(12.dp),
+                                border = BorderStroke(1.dp, Color(0xFFFECACA)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = diagnostic,
+                                    fontSize = 11.sp,
+                                    color = Color(0xFF991B1B),
+                                    modifier = Modifier.padding(10.dp)
+                                )
+                            }
+                        }
+
+                        Button(
+                            onClick = { onGoogleSignIn(context.findActivity()) },
+                            enabled = !isAuthLoading,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.secondary,
+                                contentColor = Color.White
+                            )
+                        ) {
+                            if (isAuthLoading) {
+                                CircularProgressIndicator(
+                                    color = Color.White,
+                                    strokeWidth = 2.dp,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Menyinkronkan...", fontWeight = FontWeight.SemiBold)
+                            } else {
+                                Text(
+                                    text = "Masuk Admin dengan Google",
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                runCatching {
+                                    val intent = Intent(
+                                        Intent.ACTION_VIEW,
+                                        Uri.parse(FirestoreConvoyRepository.GOOGLE_BRIDGE_URL)
+                                    )
+                                    context.startActivity(intent)
+                                }
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(46.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, Color(0xFF2563EB))
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.OpenInBrowser,
+                                contentDescription = null,
+                                tint = Color(0xFF2563EB),
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Verifikasi Google via Browser",
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color(0xFF2563EB)
+                            )
+                        }
+
+                        TextButton(
+                            onClick = onBack,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Kembali ke Beranda")
+                        }
                     }
                 }
                 return@Column
+            }
+
+            // Live Firestore Header Card
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+                border = BorderStroke(1.dp, Color(0xFF334155))
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = "Firestore Live Backend",
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp
+                            )
+                            Surface(
+                                color = Color(0xFF14532D),
+                                shape = RoundedCornerShape(6.dp)
+                            ) {
+                                Text(
+                                    text = "SYNC REAL-TIME",
+                                    color = Color(0xFF86EFAC),
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                        Text(
+                            text = "Operator: ${authUserEmail.ifBlank { FirestoreConvoyRepository.ADMIN_EMAIL }}",
+                            color = Color(0xFFCBD5E1),
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    IconButton(onClick = onStartMonitoring) {
+                        Icon(
+                            imageVector = Icons.Rounded.Refresh,
+                            contentDescription = "Muat ulang data",
+                            tint = Color(0xFF93C5FD)
+                        )
+                    }
+                }
+            }
+
+            if (isMonitoringLoading) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                    Text(
+                        text = "Menyinkronkan data presence, room, dan pengguna...",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
 
             // Tab Switcher

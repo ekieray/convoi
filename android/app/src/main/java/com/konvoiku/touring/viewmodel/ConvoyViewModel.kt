@@ -1,9 +1,12 @@
 package com.konvoiku.touring.viewmodel
 
+import android.app.Activity
 import android.app.Application
 import android.content.Context
+import android.content.Intent
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.google.firebase.auth.FirebaseUser
 import com.konvoiku.touring.data.FirestoreConvoyRepository
 import com.konvoiku.touring.location.GpsLocationTracker
 import com.konvoiku.touring.model.AuthProviderType
@@ -66,7 +69,10 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
     private var roomUnsubscribe: (() -> Unit)? = null
     private var configUnsubscribe: (() -> Unit)? = null
     private var adminMonitorUnsubscribe: (() -> Unit)? = null
+    private var authUnsubscribe: (() -> Unit)? = null
     private var lastTelemetrySentMs = 0L
+    private val recordedTrackPoints = mutableListOf<LatLngGeo>()
+    private var lastComputedRouteSig = ""
 
     private data class SimTemplate(
         val name: String,
@@ -153,15 +159,18 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
     private var extraMemberCounter = 0
 
     init {
+        syncRepo.init(application.applicationContext)
         _uiState.update { state ->
             val seeded = defaultTripHistory()
             state.copy(
                 tripHistory = seeded,
                 selectedTripId = seeded.firstOrNull()?.id,
-                isCloudSyncConnected = syncRepo.isAvailable()
+                isCloudSyncConnected = syncRepo.isAvailable(),
+                isVerifiedAdmin = syncRepo.isVerifiedAdminSession()
             )
         }
         restoreSessionAndProfile()
+        attachAuthStateObserver()
         subscribeToGlobalConfig()
         startPresenceHeartbeatLoop()
         startLiveMapTicker()
@@ -172,6 +181,7 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
 
     override fun onCleared() {
         super.onCleared()
+        authUnsubscribe?.invoke()
         roomUnsubscribe?.invoke()
         configUnsubscribe?.invoke()
         adminMonitorUnsubscribe?.invoke()
@@ -213,6 +223,7 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
                 }
 
                 val room = state.activeRoom ?: return@collect
+                recordGpsPoint(sample.latitude, sample.longitude, sample.accuracyMeters)
                 val updatedMembers = room.members.map { m ->
                     if (m.isCurrentUser) {
                         m.copy(
@@ -381,12 +392,134 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
         profilePrefs.edit().remove("active_session").apply()
     }
 
+    private fun detectProvider(user: FirebaseUser): AuthProviderType {
+        val providerIds = user.providerData.map { it.providerId }
+        return when {
+            providerIds.any { it.contains("google", ignoreCase = true) } -> AuthProviderType.GOOGLE
+            providerIds.any { it.contains("facebook", ignoreCase = true) } -> AuthProviderType.FACEBOOK
+            providerIds.any { it.contains("password", ignoreCase = true) } -> AuthProviderType.EMAIL
+            else -> _uiState.value.authProvider.takeIf { it != AuthProviderType.LOCAL }
+                ?: AuthProviderType.GOOGLE
+        }
+    }
+
+    private fun attachAuthStateObserver() {
+        authUnsubscribe?.invoke()
+        authUnsubscribe = syncRepo.observeAuthState { user ->
+            val available = syncRepo.isAvailable()
+            val verifiedAdmin = syncRepo.isVerifiedAdminSession()
+            if (user != null && !user.isAnonymous) {
+                val detectedProvider = detectProvider(user)
+                viewModelScope.launch {
+                    syncFirebaseUserProfile(user, detectedProvider)
+                }
+            } else {
+                _uiState.update {
+                    it.copy(
+                        isCloudSyncConnected = available,
+                        isVerifiedAdmin = verifiedAdmin
+                    )
+                }
+            }
+        }
+    }
+
+    private suspend fun syncFirebaseUserProfile(
+        user: FirebaseUser,
+        fallbackProvider: AuthProviderType
+    ) {
+        val uid = user.uid
+        val detectedProvider = detectProvider(user).let { detected ->
+            if (detected == AuthProviderType.LOCAL) fallbackProvider else detected
+        }
+        val cleanEmail = normalizeEmail(user.email.orEmpty())
+        val displayName = user.displayName.orEmpty().trim()
+        val photoUrl = user.photoUrl?.toString()?.takeIf { it.isNotBlank() }
+
+        val cloudProfile = syncRepo.loadUserPrivateProfile(uid)
+        val localProfile = loadProfileByEmail(
+            cloudProfile?.email?.ifBlank { cleanEmail } ?: cleanEmail
+        )
+        val baseProfile = when {
+            cloudProfile != null -> mergeProfiles(cloudProfile, localProfile)
+            localProfile != null -> localProfile
+            else -> _uiState.value.vehicleProfile
+        }
+        val resolvedName = baseProfile.fullName.ifBlank { displayName }
+            .ifBlank { cleanEmail.substringBefore("@") }
+            .ifBlank { "Rider KonvoiKu" }
+        val resolvedEmail = baseProfile.email.ifBlank { cleanEmail }
+        val resolvedProvider = if (
+            baseProfile.authProvider != AuthProviderType.LOCAL &&
+            baseProfile.authProvider != AuthProviderType.EMAIL
+        ) {
+            baseProfile.authProvider
+        } else {
+            detectedProvider
+        }
+        val merged = baseProfile.copy(
+            fullName = resolvedName,
+            email = resolvedEmail,
+            authProvider = resolvedProvider,
+            avatarPhotoUri = baseProfile.avatarPhotoUri ?: photoUrl
+        )
+
+        saveProfileByEmail(merged)
+        saveActiveSession(resolvedName, resolvedEmail, resolvedProvider, isGuest = false)
+        if (cloudProfile == null) {
+            syncRepo.saveUserPrivateProfile(uid, merged)
+        }
+
+        val isVerifiedAdmin = syncRepo.isVerifiedAdminSession()
+        _uiState.update { state ->
+            state.copy(
+                isCloudSyncConnected = syncRepo.isAvailable(),
+                isLoggedIn = true,
+                authUserName = resolvedName,
+                authUserEmail = resolvedEmail,
+                authProvider = resolvedProvider,
+                isGuestMode = false,
+                isVerifiedAdmin = isVerifiedAdmin,
+                authError = null,
+                showGoogleBrowserFallback = false,
+                vehicleProfile = merged
+            )
+        }
+        pushPresenceSnapshotNow()
+        val cloudTrips = syncRepo.loadUserTrips(uid)
+        mergeCloudTrips(cloudTrips)
+    }
+
     private fun restoreSessionAndProfile() {
         val sessionRaw = profilePrefs.getString("active_session", null)
+        val firebaseUser = syncRepo.currentUser()
         val firebaseEmail = normalizeEmail(syncRepo.currentUserEmail())
         val firebaseUid = syncRepo.currentUid()
+        val isVerifiedAdmin = syncRepo.isVerifiedAdminSession()
 
-        if (sessionRaw != null) {
+        if (firebaseUser != null && !firebaseUser.isAnonymous && firebaseEmail.isNotBlank()) {
+            val provider = detectProvider(firebaseUser)
+            val savedProfile = loadProfileByEmail(firebaseEmail)
+            val displayName = firebaseUser.displayName.orEmpty().trim()
+            val mergedProfile = (savedProfile ?: _uiState.value.vehicleProfile).copy(
+                fullName = savedProfile?.fullName?.ifBlank { displayName } ?: displayName.ifBlank { firebaseEmail.substringBefore("@") },
+                email = firebaseEmail,
+                authProvider = provider,
+                avatarPhotoUri = savedProfile?.avatarPhotoUri ?: firebaseUser.photoUrl?.toString()
+            )
+            saveActiveSession(mergedProfile.fullName, firebaseEmail, provider, isGuest = false)
+            _uiState.update { state ->
+                state.copy(
+                    isLoggedIn = true,
+                    authUserName = mergedProfile.fullName,
+                    authUserEmail = firebaseEmail,
+                    authProvider = provider,
+                    isGuestMode = false,
+                    isVerifiedAdmin = isVerifiedAdmin,
+                    vehicleProfile = mergedProfile
+                )
+            }
+        } else if (sessionRaw != null) {
             runCatching {
                 val json = JSONObject(sessionRaw)
                 val email = normalizeEmail(json.optString("email")).ifBlank { firebaseEmail }
@@ -406,44 +539,16 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
                         authUserEmail = email,
                         authProvider = provider,
                         isGuestMode = isGuest,
+                        isVerifiedAdmin = isVerifiedAdmin,
                         vehicleProfile = mergedProfile
                     )
                 }
             }
-        } else if (firebaseEmail.isNotBlank()) {
-            val savedProfile = loadProfileByEmail(firebaseEmail)
-            _uiState.update { state ->
-                val mergedProfile = (savedProfile ?: state.vehicleProfile).copy(
-                    email = firebaseEmail,
-                    authProvider = AuthProviderType.EMAIL
-                )
-                state.copy(
-                    isLoggedIn = true,
-                    authUserName = mergedProfile.fullName.ifBlank { firebaseEmail.substringBefore("@") },
-                    authUserEmail = firebaseEmail,
-                    authProvider = AuthProviderType.EMAIL,
-                    isGuestMode = false,
-                    vehicleProfile = mergedProfile
-                )
-            }
         }
 
-        if (firebaseUid != null && firebaseEmail.isNotBlank()) {
+        if (firebaseUid != null && firebaseUser != null && !firebaseUser.isAnonymous) {
             viewModelScope.launch {
-                val cloudProfile = syncRepo.loadUserPrivateProfile(firebaseUid)
-                if (cloudProfile != null) {
-                    val localProfile = loadProfileByEmail(cloudProfile.email.ifBlank { firebaseEmail })
-                    val merged = mergeProfiles(primary = cloudProfile, fallback = localProfile)
-                    saveProfileByEmail(merged)
-                    _uiState.update { state ->
-                        state.copy(
-                            authUserName = merged.fullName.ifBlank { state.authUserName },
-                            authUserEmail = merged.email.ifBlank { state.authUserEmail },
-                            authProvider = merged.authProvider,
-                            vehicleProfile = merged
-                        )
-                    }
-                }
+                syncFirebaseUserProfile(firebaseUser, detectProvider(firebaseUser))
             }
         }
     }
@@ -466,11 +571,189 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun clearAuthError() {
-        _uiState.update { it.copy(authError = null) }
+        _uiState.update {
+            it.copy(
+                authError = null,
+                authInfoMessage = null
+            )
+        }
     }
 
     fun clearProfileSyncMessage() {
         _uiState.update { it.copy(profileSyncMessage = null) }
+    }
+
+    fun signInWithGoogle(activity: Activity?, onSuccess: () -> Unit = {}) {
+        if (activity == null) {
+            _uiState.update {
+                it.copy(
+                    authError = "Jendela aplikasi tidak siap. Gunakan tombol Sinkronkan via Browser di bawah.",
+                    showGoogleBrowserFallback = true
+                )
+            }
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isAuthLoading = true,
+                    authError = null,
+                    authInfoMessage = null,
+                    showGoogleBrowserFallback = false
+                )
+            }
+            val result = syncRepo.signInWithGoogleProvider(activity)
+            if (result.isSuccess) {
+                val user = result.getOrThrow()
+                syncFirebaseUserProfile(user, AuthProviderType.GOOGLE)
+                _uiState.update {
+                    it.copy(
+                        isAuthLoading = false,
+                        authInfoMessage = "Akun Google (${user.email.orEmpty()}) berhasil disinkronkan!",
+                        showGoogleBrowserFallback = false
+                    )
+                }
+                onSuccess()
+            } else {
+                val err = result.exceptionOrNull()
+                val raw = err?.message.orEmpty().lowercase(Locale.ROOT)
+                val cancelled = raw.contains("cancel") || raw.contains("closed")
+                _uiState.update {
+                    it.copy(
+                        isAuthLoading = false,
+                        showGoogleBrowserFallback = !cancelled,
+                        authError = if (cancelled) {
+                            "Login Google dibatalkan. Silakan coba lagi."
+                        } else {
+                            "Login Google langsung di APK membutuhkan registrasi SHA-1 di Firebase, atau klik tombol 'Sinkronkan Google via Browser' di bawah agar langsung tersinkronisasi."
+                        }
+                    )
+                }
+            }
+        }
+    }
+
+    fun completeGoogleIdTokenSignIn(idToken: String, onSuccess: () -> Unit = {}) {
+        val cleanToken = idToken.trim()
+        if (cleanToken.isBlank()) return
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isAuthLoading = true,
+                    authError = null,
+                    authInfoMessage = null,
+                    showGoogleBrowserFallback = false
+                )
+            }
+            val result = syncRepo.signInWithGoogleIdToken(cleanToken)
+            if (result.isSuccess) {
+                val user = result.getOrThrow()
+                syncFirebaseUserProfile(user, AuthProviderType.GOOGLE)
+                _uiState.update {
+                    it.copy(
+                        isAuthLoading = false,
+                        authInfoMessage = "Sinkronisasi Google (${user.email.orEmpty()}) berhasil!",
+                        showGoogleBrowserFallback = false
+                    )
+                }
+                onSuccess()
+            } else {
+                _uiState.update {
+                    it.copy(
+                        isAuthLoading = false,
+                        showGoogleBrowserFallback = true,
+                        authError = mapAuthError(result.exceptionOrNull())
+                    )
+                }
+            }
+        }
+    }
+
+    fun handleIncomingIntent(intent: Intent?) {
+        val dataUri = intent?.data ?: return
+        if (dataUri.scheme == "konvoiku" && dataUri.host == "auth") {
+            val idToken = dataUri.getQueryParameter("id_token")?.trim().orEmpty()
+            val errorMsg = dataUri.getQueryParameter("error")?.trim()
+            if (idToken.isNotBlank()) {
+                completeGoogleIdTokenSignIn(idToken)
+            } else if (!errorMsg.isNullOrBlank()) {
+                _uiState.update {
+                    it.copy(
+                        isAuthLoading = false,
+                        authError = errorMsg
+                    )
+                }
+            }
+        } else if (dataUri.scheme == "https" && dataUri.host == "konvoiku.id") {
+            val roomCode = extractRoomId(dataUri.toString())
+            if (roomCode.isNotBlank()) {
+                _uiState.update {
+                    it.copy(joinInput = roomCode, joinError = null)
+                }
+            }
+        }
+    }
+
+    fun signInWithFacebook(activity: Activity?, onSuccess: () -> Unit = {}) {
+        if (activity == null) {
+            _uiState.update { it.copy(authError = "Tidak dapat membuka login Facebook.") }
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isAuthLoading = true,
+                    authError = null,
+                    authInfoMessage = null
+                )
+            }
+            val result = syncRepo.signInWithFacebookProvider(activity)
+            if (result.isSuccess) {
+                val user = result.getOrThrow()
+                syncFirebaseUserProfile(user, AuthProviderType.FACEBOOK)
+                _uiState.update {
+                    it.copy(
+                        isAuthLoading = false,
+                        authInfoMessage = "Akun Facebook berhasil disinkronkan!"
+                    )
+                }
+                onSuccess()
+            } else {
+                _uiState.update {
+                    it.copy(
+                        isAuthLoading = false,
+                        authError = mapAuthError(result.exceptionOrNull())
+                    )
+                }
+            }
+        }
+    }
+
+    fun sendPasswordReset(email: String) {
+        val cleanEmail = normalizeEmail(email)
+        if (!cleanEmail.contains("@") || !cleanEmail.contains(".")) {
+            _uiState.update {
+                it.copy(authError = "Masukkan alamat email terlebih dahulu untuk reset kata sandi.")
+            }
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update { it.copy(isAuthLoading = true, authError = null, authInfoMessage = null) }
+            val result = syncRepo.sendPasswordReset(cleanEmail)
+            _uiState.update {
+                if (result.isSuccess) {
+                    it.copy(
+                        isAuthLoading = false,
+                        authInfoMessage = "Email reset kata sandi telah dikirim ke $cleanEmail."
+                    )
+                } else {
+                    it.copy(
+                        isAuthLoading = false,
+                        authError = mapAuthError(result.exceptionOrNull())
+                    )
+                }
+            }
+        }
     }
 
     fun signUpWithEmail(
@@ -581,6 +864,8 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
                     )
                 }
                 pushPresenceSnapshotNow()
+                val cloudTrips = syncRepo.loadUserTrips(uid)
+                mergeCloudTrips(cloudTrips)
                 onSuccess()
             } else {
                 _uiState.update {
@@ -763,6 +1048,8 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
     fun logoutUser() {
         roomUnsubscribe?.invoke()
         roomUnsubscribe = null
+        recordedTrackPoints.clear()
+        lastComputedRouteSig = ""
         stopAdminMonitoring()
         syncRepo.signOutAuth()
         clearActiveSession()
@@ -773,10 +1060,19 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
                 authUserEmail = "",
                 authProvider = AuthProviderType.LOCAL,
                 isGuestMode = false,
+                isVerifiedAdmin = false,
                 authError = null,
+                authInfoMessage = null,
+                showGoogleBrowserFallback = false,
                 profileSyncMessage = null,
+                adminPresenceList = emptyList(),
+                adminRooms = emptyList(),
+                adminUsers = emptyList(),
+                isAdminMonitoringLoading = false,
+                adminMonitorError = null,
                 activeRoom = null,
                 selectedRole = null,
+                lastCompletedTrip = null,
                 sosState = SosEmergencyState(),
                 messages = emptyList()
             )
@@ -827,6 +1123,8 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
         val mockLink = "https://konvoiku.id/join/$roomCode"
         val startLat = state.userGpsLat ?: routeConfig.waypoints.firstOrNull()?.latitude ?: -6.648
         val startLng = state.userGpsLng ?: routeConfig.waypoints.firstOrNull()?.longitude ?: 106.845
+        lastComputedRouteSig = ""
+        seedRecordedTrackFromStart(startLat, startLng)
 
         if (syncRepo.isAvailable()) {
             viewModelScope.launch {
@@ -855,6 +1153,7 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
                             it.copy(
                                 activeRoom = syncedRoom,
                                 selectedMemberId = uid,
+                                lastCompletedTrip = null,
                                 isCloudSyncConnected = true
                             )
                         }
@@ -940,6 +1239,7 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
                     isSyncedRoom = false
                 ),
                 selectedMemberId = leaderMember.id,
+                lastCompletedTrip = null,
                 sosState = SosEmergencyState(),
                 messages = initialRoomMessages(roomCode),
                 isOffRouteSimActive = false,
@@ -1062,11 +1362,14 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
                     )
                     if (result.isSuccess) {
                         val role = result.getOrDefault(UserRole.MEMBER)
+                        lastComputedRouteSig = ""
+                        seedRecordedTrackFromStart(startLat, startLng)
                         _uiState.update {
                             it.copy(
                                 selectedRole = role,
                                 joinError = null,
                                 selectedMemberId = uid,
+                                lastCompletedTrip = null,
                                 activeRoom = TourRoom(
                                     roomId = extractedId,
                                     roomTitle = "Room $extractedId",
@@ -1102,6 +1405,11 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
     private fun joinLocalDemoRoom(extractedId: String) {
         val profile = _uiState.value.vehicleProfile
         val waypoints = _uiState.value.routeConfig.waypoints
+        lastComputedRouteSig = ""
+        seedRecordedTrackFromStart(
+            _uiState.value.userGpsLat ?: waypoints.firstOrNull()?.latitude ?: -6.648,
+            _uiState.value.userGpsLng ?: waypoints.firstOrNull()?.longitude ?: 106.845
+        )
         val leaderTpl = defaultConvoyTemplates[0]
         val peerTpl1 = defaultConvoyTemplates[1]
         val peerTpl2 = defaultConvoyTemplates[2]
@@ -1648,6 +1956,80 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
         syncMembersToUpdatedRoute()
     }
 
+    fun updateComputedTomTomRoute(distanceMeters: Int, roadWaypoints: List<RoutePoint>) {
+        if (roadWaypoints.size < 2) return
+        val state = _uiState.value
+        val first = roadWaypoints.first()
+        val last = roadWaypoints.last()
+        val sig = String.format(
+            Locale.US,
+            "%.4f,%.4f->%.4f,%.4f|%d",
+            first.latitude,
+            first.longitude,
+            last.latitude,
+            last.longitude,
+            roadWaypoints.size
+        )
+        if (sig == lastComputedRouteSig) return
+        lastComputedRouteSig = sig
+
+        val nextConfig = state.routeConfig.copy(
+            waypoints = roadWaypoints,
+            totalRouteMeters = distanceMeters.coerceAtLeast(100)
+        )
+        _uiState.update { it.copy(routeConfig = nextConfig) }
+        if (state.activeRoom?.isSyncedRoom == true && state.selectedRole == UserRole.TOUR_LEADER) {
+            syncRepo.updateRouteConfig(state.activeRoom.roomId, nextConfig)
+        }
+    }
+
+    private fun recordGpsPoint(lat: Double, lng: Double, accuracyMeters: Int) {
+        if (!GeoUtils.hasValidGeoCoord(lat, lng)) return
+        val isFirst = recordedTrackPoints.isEmpty()
+        if (!isFirst && accuracyMeters > 80) return
+        val nextPt = LatLngGeo(lat, lng)
+        val prev = recordedTrackPoints.lastOrNull()
+        if (prev == null || GeoUtils.haversineMeters(prev, nextPt) >= 15.0) {
+            recordedTrackPoints.add(nextPt)
+            if (recordedTrackPoints.size > 1800) {
+                val compact = GeoUtils.downsampleTrackPoints(recordedTrackPoints, 15.0, 300)
+                recordedTrackPoints.clear()
+                recordedTrackPoints.addAll(compact)
+            }
+        }
+    }
+
+    private fun seedRecordedTrackFromStart(lat: Double, lng: Double) {
+        recordedTrackPoints.clear()
+        if (GeoUtils.hasValidGeoCoord(lat, lng)) {
+            recordedTrackPoints.add(LatLngGeo(lat, lng))
+        }
+    }
+
+    private fun mergeCloudTrips(cloudTrips: List<TripHistoryRecord>) {
+        if (cloudTrips.isEmpty()) return
+        _uiState.update { state ->
+            val existingById = state.tripHistory.associateBy { it.id }
+            val mergedCloud = cloudTrips.map { cloud ->
+                val existing = existingById[cloud.id]
+                if (existing != null) {
+                    existing.copy(
+                        waypoints = if (cloud.waypoints.size >= 2) cloud.waypoints else existing.waypoints
+                    )
+                } else {
+                    cloud
+                }
+            }
+            val cloudIds = mergedCloud.map { it.id }.toSet()
+            val remainingLocal = state.tripHistory.filterNot { it.id in cloudIds }
+            val combined = mergedCloud + remainingLocal
+            state.copy(
+                tripHistory = combined,
+                selectedTripId = state.selectedTripId ?: combined.firstOrNull()?.id
+            )
+        }
+    }
+
     fun resetDefaultWaypoints() {
         val defaultWaypoints = ConvoyRouteConfig.defaultWaypoints()
         val state = _uiState.value
@@ -1928,7 +2310,35 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
         val avgSpeed = if (activeSpeeds.isNotEmpty()) activeSpeeds.average().roundToInt() else 52
         val maxSpeed = (activeSpeeds.maxOrNull() ?: 64) + 12
 
-        val distanceKm = (route.totalRouteMeters / 1000.0).coerceAtLeast(1.0)
+        val snapshotTrack = recordedTrackPoints.toList()
+        recordedTrackPoints.clear()
+        lastComputedRouteSig = ""
+        val compactedTrack = if (snapshotTrack.size >= 2) {
+            GeoUtils.downsampleTrackPoints(snapshotTrack, 15.0, 140)
+        } else {
+            emptyList()
+        }
+        val recordedLengthMeters = if (compactedTrack.size >= 2) {
+            GeoUtils.computePolylineLengthMeters(compactedTrack)
+        } else {
+            0
+        }
+        val useRecordedTrack = compactedTrack.size >= 2 && recordedLengthMeters >= 50
+        val savedWaypoints = if (useRecordedTrack) {
+            GeoUtils.toRoutePoints(compactedTrack)
+        } else {
+            route.waypoints
+        }
+
+        val distanceKm = if (useRecordedTrack) {
+            (recordedLengthMeters / 1000.0).coerceAtLeast(0.1)
+        } else {
+            val polyMeters = GeoUtils.computePolylineLengthMeters(
+                route.waypoints.map { LatLngGeo(it.latitude, it.longitude) }
+            )
+            ((polyMeters.takeIf { it >= 100 } ?: route.totalRouteMeters) / 1000.0).coerceAtLeast(0.5)
+        }
+
         val estMinutes = ((distanceKm / avgSpeed.coerceAtLeast(25)) * 60.0)
             .roundToInt()
             .coerceAtLeast(15)
@@ -1979,7 +2389,7 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
             userRole = role,
             destinationName = route.destinationName,
             destinationAddress = route.destinationAddress,
-            waypoints = route.waypoints,
+            waypoints = savedWaypoints,
             visitedCheckpoints = checkpointLogs,
             participants = participants
         )
@@ -1988,12 +2398,70 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
             it.copy(
                 tripHistory = listOf(record) + it.tripHistory,
                 selectedTripId = record.id,
+                lastCompletedTrip = record,
                 activeRoom = null,
-                sosState = SosEmergencyState()
+                sosState = SosEmergencyState(),
+                isOffRouteSimActive = false,
+                isStragglerSimActive = false
             )
+        }
+        if (syncRepo.isAvailable()) {
+            viewModelScope.launch {
+                val uid = syncRepo.currentUid()
+                if (uid != null) {
+                    if (room.isSyncedRoom && room.leaderUid == uid) {
+                        syncRepo.finishRoomIfLeader(room.roomId, uid)
+                    }
+                    syncRepo.saveTripRecord(uid, record)
+                }
+            }
         }
         pushPresenceSnapshotNow()
         return record
+    }
+
+    fun repeatCompletedTrip(trip: TripHistoryRecord, onReady: () -> Unit = {}) {
+        val state = _uiState.value
+        if (!state.globalConfig.allowNewRooms && !syncRepo.isVerifiedAdminSession()) {
+            _uiState.update {
+                it.copy(authError = "Pembuatan room baru sedang dijeda sementara oleh Admin Backend.")
+            }
+            return
+        }
+        val restoredWaypoints = if (trip.waypoints.size >= 2) {
+            trip.waypoints
+        } else {
+            state.routeConfig.waypoints
+        }
+        val restoredCheckpoints = trip.visitedCheckpoints.map { cp ->
+            RestCheckpoint(
+                id = cp.id.ifBlank { "cp-${UUID.randomUUID()}" },
+                name = cp.name,
+                xFraction = cp.xFraction,
+                yFraction = cp.yFraction,
+                latitude = cp.latitude,
+                longitude = cp.longitude
+            )
+        }
+        val restoredConfig = state.routeConfig.copy(
+            destinationName = trip.destinationName.ifBlank { state.routeConfig.destinationName },
+            destinationAddress = trip.destinationAddress.ifBlank { state.routeConfig.destinationAddress },
+            waypoints = restoredWaypoints,
+            checkpoints = restoredCheckpoints,
+            totalRouteMeters = (trip.distanceKm * 1000.0).roundToInt().coerceAtLeast(1000)
+        )
+        _uiState.update {
+            it.copy(
+                selectedRole = UserRole.TOUR_LEADER,
+                routeConfig = restoredConfig,
+                lastCompletedTrip = null,
+                sosState = SosEmergencyState(),
+                isOffRouteSimActive = false,
+                isStragglerSimActive = false
+            )
+        }
+        createNewTourRoom(customTitle = trip.tourTitle.ifBlank { "Konvoi Touring Akhir Pekan" })
+        onReady()
     }
 
     private fun defaultTripHistory(): List<TripHistoryRecord> = listOf(
@@ -2011,16 +2479,28 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
             userRole = UserRole.TOUR_LEADER,
             destinationName = "Puncak Pass Resort",
             destinationAddress = "Jl. Raya Puncak KM 90, Cisarua · -6.7003, 106.9960",
-            waypoints = listOf(
-                RoutePoint(0.14f, 0.86f, -6.6480, 106.8450),
-                RoutePoint(0.32f, 0.65f, -6.6620, 106.8820),
-                RoutePoint(0.55f, 0.48f, -6.6780, 106.9250),
-                RoutePoint(0.72f, 0.30f, -6.6900, 106.9620),
-                RoutePoint(0.86f, 0.14f, -6.7003, 106.9960)
+            waypoints = GeoUtils.toRoutePoints(
+                listOf(
+                    LatLngGeo(-6.5976, 106.8060),
+                    LatLngGeo(-6.6124, 106.8185),
+                    LatLngGeo(-6.6285, 106.8322),
+                    LatLngGeo(-6.6458, 106.8452),
+                    LatLngGeo(-6.6529, 106.8618),
+                    LatLngGeo(-6.6562, 106.8794),
+                    LatLngGeo(-6.6638, 106.8942),
+                    LatLngGeo(-6.6705, 106.9088),
+                    LatLngGeo(-6.6746, 106.9245),
+                    LatLngGeo(-6.6818, 106.9372),
+                    LatLngGeo(-6.6852, 106.9488),
+                    LatLngGeo(-6.6914, 106.9605),
+                    LatLngGeo(-6.6948, 106.9735),
+                    LatLngGeo(-6.6981, 106.9852),
+                    LatLngGeo(-6.7003, 106.9960)
+                )
             ),
             visitedCheckpoints = listOf(
-                VisitedCheckpointLog("cp-s1", "Rest Area KM 57", "06:20", 0.36f, 0.62f, -6.6680, 106.8950),
-                VisitedCheckpointLog("cp-s2", "Warung Kopi Cisarua", "07:15", 0.66f, 0.36f, -6.6850, 106.9480)
+                VisitedCheckpointLog("cp-s1", "Rest Area KM 57", "06:20", 0.36f, 0.62f, -6.6638, 106.8942),
+                VisitedCheckpointLog("cp-s2", "Warung Kopi Cisarua", "07:15", 0.66f, 0.36f, -6.6852, 106.9488)
             ),
             participants = listOf(
                 TripParticipantSummary("p1", "Anda (Leader)", VehicleType.MOBIL, "Avanza Hitam", "B 1001 LDR", UserRole.TOUR_LEADER, avatarPreset = AvatarPreset.RIDER_CAPTAIN),
@@ -2043,11 +2523,20 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
             userRole = UserRole.MEMBER,
             destinationName = "Lembang Highland",
             destinationAddress = "Jl. Raya Lembang No. 12, Bandung · -6.8120, 107.6180",
-            waypoints = listOf(
-                RoutePoint(0.16f, 0.84f, -6.8900, 107.4800),
-                RoutePoint(0.38f, 0.68f, -6.8650, 107.5200),
-                RoutePoint(0.52f, 0.44f, -6.8420, 107.5650),
-                RoutePoint(0.78f, 0.22f, -6.8120, 107.6180)
+            waypoints = GeoUtils.toRoutePoints(
+                listOf(
+                    LatLngGeo(-6.8425, 107.4965),
+                    LatLngGeo(-6.8548, 107.5152),
+                    LatLngGeo(-6.8662, 107.5318),
+                    LatLngGeo(-6.8745, 107.5515),
+                    LatLngGeo(-6.8722, 107.5718),
+                    LatLngGeo(-6.8638, 107.5892),
+                    LatLngGeo(-6.8524, 107.5956),
+                    LatLngGeo(-6.8398, 107.6012),
+                    LatLngGeo(-6.8265, 107.6064),
+                    LatLngGeo(-6.8178, 107.6115),
+                    LatLngGeo(-6.8120, 107.6180)
+                )
             ),
             visitedCheckpoints = listOf(
                 VisitedCheckpointLog("cp-s3", "SPBU Padalarang KM 120", "08:05", 0.38f, 0.68f, -6.8650, 107.5200),
@@ -2113,34 +2602,74 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
 
     fun isAdminEmailSession(): Boolean {
         val state = _uiState.value
-        return syncRepo.isAdminEmail(state.authUserEmail.ifBlank { state.vehicleProfile.email })
+        val activeEmail = state.authUserEmail
+            .ifBlank { state.vehicleProfile.email }
+            .ifBlank { syncRepo.currentUserEmail() }
+        return syncRepo.isAdminEmail(activeEmail)
     }
 
     fun isVerifiedAdminSession(): Boolean = syncRepo.isVerifiedAdminSession()
 
     fun startAdminMonitoring() {
+        if (!syncRepo.isAvailable()) {
+            _uiState.update {
+                it.copy(
+                    isAdminMonitoringLoading = false,
+                    adminMonitorError = "Koneksi Firestore belum siap di perangkat. Periksa jaringan internet."
+                )
+            }
+            return
+        }
         if (!syncRepo.isVerifiedAdminSession()) {
             _uiState.update {
                 it.copy(
-                    adminMonitorError = "Masuk dengan akun terverifikasi ekie.ray@gmail.com untuk membaca monitoring realtime."
+                    isAdminMonitoringLoading = false,
+                    isVerifiedAdmin = false,
+                    adminMonitorError = "Masuk dengan akun Google terverifikasi ekie.ray@gmail.com untuk membaca monitoring realtime."
                 )
             }
             return
         }
         adminMonitorUnsubscribe?.invoke()
-        _uiState.update { it.copy(adminMonitorError = null) }
+        _uiState.update {
+            it.copy(
+                isVerifiedAdmin = true,
+                isAdminMonitoringLoading = true,
+                adminMonitorError = null
+            )
+        }
         adminMonitorUnsubscribe = syncRepo.subscribeToAdminMonitoring(
             onPresence = { list ->
-                _uiState.update { it.copy(adminPresenceList = list) }
+                _uiState.update {
+                    it.copy(
+                        adminPresenceList = list,
+                        isAdminMonitoringLoading = false
+                    )
+                }
             },
             onRooms = { rooms ->
-                _uiState.update { it.copy(adminRooms = rooms) }
+                _uiState.update {
+                    it.copy(
+                        adminRooms = rooms,
+                        isAdminMonitoringLoading = false
+                    )
+                }
             },
             onUsers = { users ->
-                _uiState.update { it.copy(adminUsers = users) }
+                _uiState.update {
+                    it.copy(
+                        adminUsers = users,
+                        isAdminMonitoringLoading = false
+                    )
+                }
             },
             onError = { msg ->
-                _uiState.update { it.copy(adminMonitorError = msg) }
+                _uiState.update {
+                    it.copy(
+                        isAdminMonitoringLoading = false,
+                        adminMonitorError = msg
+                    )
+                }
             }
         )
     }
@@ -2148,6 +2677,7 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
     fun stopAdminMonitoring() {
         adminMonitorUnsubscribe?.invoke()
         adminMonitorUnsubscribe = null
+        _uiState.update { it.copy(isAdminMonitoringLoading = false) }
     }
 
     fun clearGlobalConfigFeedback() {

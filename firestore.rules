@@ -139,6 +139,7 @@ service cloud.firestore {
         'userRole',
         'destinationName',
         'destinationAddress',
+        'encodedPolyline',
         'createdAt'
       ]) &&
       data.id is string && data.id.size() >= 1 && data.id.size() <= 64 &&
@@ -155,6 +156,7 @@ service cloud.firestore {
       data.userRole in ['TOUR_LEADER', 'MEMBER'] &&
       data.destinationName is string && data.destinationName.size() <= 120 &&
       data.destinationAddress is string && data.destinationAddress.size() <= 240 &&
+      (!('encodedPolyline' in data) || (data.encodedPolyline is string && data.encodedPolyline.size() <= 16384)) &&
       data.createdAt is timestamp;
     }
 

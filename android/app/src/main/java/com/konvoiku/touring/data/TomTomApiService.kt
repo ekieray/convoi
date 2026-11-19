@@ -1,5 +1,8 @@
 package com.konvoiku.touring.data
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.util.LruCache
 import com.konvoiku.touring.BuildConfig
 import com.konvoiku.touring.model.RoutePoint
 import kotlinx.coroutines.Dispatchers
@@ -38,6 +41,46 @@ data class TomTomReverseResult(
 object TomTomApiService {
     private val apiKey: String
         get() = BuildConfig.TOMTOM_API_KEY.trim()
+
+    private val tileCache = LruCache<String, Bitmap>(64)
+
+    suspend fun fetchMapTileBitmap(
+        layer: String,
+        style: String,
+        z: Int,
+        x: Int,
+        y: Int
+    ): Bitmap? = withContext(Dispatchers.IO) {
+        if (apiKey.isBlank()) return@withContext null
+        val cacheKey = "$layer/$style/$z/$x/$y"
+        tileCache.get(cacheKey)?.let { return@withContext it }
+
+        val ext = if (layer == "sat") "jpg" else "png"
+        val url = "https://api.tomtom.com/map/1/tile/$layer/$style/$z/$x/$y.$ext?key=${
+            URLEncoder.encode(apiKey, "UTF-8")
+        }&tileSize=256"
+
+        runCatching {
+            val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 6000
+                readTimeout = 6000
+            }
+            try {
+                if (conn.responseCode in 200..299) {
+                    conn.inputStream.use { stream ->
+                        BitmapFactory.decodeStream(stream)?.also { bmp ->
+                            tileCache.put(cacheKey, bmp)
+                        }
+                    }
+                } else {
+                    null
+                }
+            } finally {
+                conn.disconnect()
+            }
+        }.getOrNull()
+    }
 
     suspend fun calculateRoute(
         waypoints: List<RoutePoint>,

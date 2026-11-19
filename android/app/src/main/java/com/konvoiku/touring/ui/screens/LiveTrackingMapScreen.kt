@@ -153,6 +153,7 @@ import com.konvoiku.touring.ui.components.TomTomConvoyMap
 import com.konvoiku.touring.ui.components.TomTomMapPin
 import com.konvoiku.touring.ui.components.TomTomMapStyle
 import com.konvoiku.touring.ui.components.rememberTomTomMapController
+import com.konvoiku.touring.util.GeoUtils
 import com.konvoiku.touring.util.LatLngGeo
 import com.konvoiku.touring.viewmodel.ConvoyViewModel
 import java.util.Locale
@@ -206,7 +207,8 @@ fun LiveTrackingMapScreen(
     onUpdateOwnCondition: (MemberConditionStatus) -> Unit,
     onAssignSweeper: (String) -> Unit,
     onFinishAndSaveTrip: () -> Unit,
-    onExitRoom: () -> Unit
+    onExitRoom: () -> Unit,
+    onRouteComputed: (Int, List<RoutePoint>) -> Unit = { _, _ -> }
 ) {
     var mapStyle by remember { mutableStateOf(TomTomMapStyle.ROAD) }
     var showTraffic by remember { mutableStateOf(true) }
@@ -312,18 +314,32 @@ fun LiveTrackingMapScreen(
         mutableStateOf(routeConfig.waypoints)
     }
 
-    LaunchedEffect(routeConfig.waypoints) {
+    val routeEndpointsKey = remember(routeConfig.destinationName, routeConfig.waypoints) {
+        val first = routeConfig.waypoints.firstOrNull()
+        val last = routeConfig.waypoints.lastOrNull()
+        String.format(
+            Locale.US,
+            "%s|%.5f,%.5f->%.5f,%.5f",
+            routeConfig.destinationName,
+            first?.latitude ?: 0.0,
+            first?.longitude ?: 0.0,
+            last?.latitude ?: 0.0,
+            last?.longitude ?: 0.0
+        )
+    }
+
+    LaunchedEffect(routeEndpointsKey) {
         if (routeConfig.waypoints.size >= 2) {
             val res = TomTomApiService.calculateRoute(routeConfig.waypoints)
             if (res != null && res.path.size >= 2) {
-                tomTomRoadPath = res.path.map {
-                    RoutePoint(
-                        xFraction = 0.5f,
-                        yFraction = 0.5f,
-                        latitude = it.latitude,
-                        longitude = it.longitude
+                val snapped = GeoUtils.toRoutePoints(
+                    GeoUtils.downsampleLatLng(
+                        res.path.map { LatLngGeo(it.latitude, it.longitude) },
+                        maxPoints = 90
                     )
-                }
+                )
+                tomTomRoadPath = snapped
+                onRouteComputed(res.distanceMeters, snapped)
             }
         }
     }

@@ -1,5 +1,10 @@
 package com.konvoiku.touring.ui.screens
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -25,11 +30,13 @@ import androidx.compose.material.icons.automirrored.rounded.Login
 import androidx.compose.material.icons.rounded.AlternateEmail
 import androidx.compose.material.icons.rounded.Build
 import androidx.compose.material.icons.rounded.Campaign
+import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Email
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Map
 import androidx.compose.material.icons.rounded.Navigation
+import androidx.compose.material.icons.rounded.OpenInBrowser
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.PersonAdd
 import androidx.compose.material.icons.rounded.Shield
@@ -65,6 +72,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -74,10 +82,17 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.konvoiku.touring.data.FirestoreConvoyRepository
 import com.konvoiku.touring.model.AuthProviderType
 import com.konvoiku.touring.model.GlobalAppConfig
 import com.konvoiku.touring.ui.components.TouringDashboardCanvasBackdrop
 import com.konvoiku.touring.ui.components.TouringHeroAtmosphereHeader
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -86,8 +101,13 @@ fun LoginScreen(
     initialEmail: String = "",
     isAuthLoading: Boolean = false,
     authError: String? = null,
+    authInfoMessage: String? = null,
+    showGoogleBrowserFallback: Boolean = false,
     globalConfig: GlobalAppConfig = GlobalAppConfig(),
     onClearAuthError: () -> Unit = {},
+    onGoogleSignIn: (Activity?) -> Unit = {},
+    onFacebookSignIn: (Activity?) -> Unit = {},
+    onForgotPassword: (String) -> Unit = {},
     onEmailSignIn: (email: String, password: String) -> Unit = { _, _ -> },
     onEmailSignUp: (fullName: String, email: String, password: String) -> Unit = { _, _, _ -> },
     onSocialSignIn: (
@@ -99,6 +119,7 @@ fun LoginScreen(
     onLoginSuccess: (fullName: String, email: String, isGuest: Boolean) -> Unit,
     onOpenAboutApp: () -> Unit
 ) {
+    val context = LocalContext.current
     var isSignUpMode by remember { mutableStateOf(false) }
     var fullName by remember(initialName) { mutableStateOf(initialName) }
     var email by remember(initialEmail) { mutableStateOf(initialEmail) }
@@ -342,26 +363,58 @@ fun LoginScreen(
                                 badgeColor = Color(0xFFEA4335),
                                 label = if (isSignUpMode) "Daftar dengan Akun Google" else "Masuk dengan Akun Google",
                                 borderColor = MaterialTheme.colorScheme.outline,
+                                enabled = !isAuthLoading,
                                 onClick = {
-                                    socialNameInput = fullName
-                                    socialEmailInput = email
-                                    socialInstagramHandle = ""
-                                    socialDialogError = null
-                                    pendingSocialProvider = AuthProviderType.GOOGLE
+                                    localError = null
+                                    onClearAuthError()
+                                    onGoogleSignIn(context.findActivity())
                                 }
                             )
+
+                            if (showGoogleBrowserFallback) {
+                                OutlinedButton(
+                                    onClick = {
+                                        runCatching {
+                                            val intent = Intent(
+                                                Intent.ACTION_VIEW,
+                                                Uri.parse(FirestoreConvoyRepository.GOOGLE_BRIDGE_URL)
+                                            )
+                                            context.startActivity(intent)
+                                        }.onFailure {
+                                            localError = "Tidak dapat membuka browser untuk sinkronisasi Google."
+                                        }
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(46.dp),
+                                    shape = RoundedCornerShape(14.dp),
+                                    border = BorderStroke(1.dp, Color(0xFF2563EB))
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.OpenInBrowser,
+                                        contentDescription = null,
+                                        tint = Color(0xFF2563EB),
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "Sinkronkan Google via Browser",
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = Color(0xFF2563EB)
+                                    )
+                                }
+                            }
 
                             SocialAuthProviderButton(
                                 badgeText = "f",
                                 badgeColor = Color(0xFF1877F2),
                                 label = if (isSignUpMode) "Daftar dengan Facebook" else "Masuk dengan Facebook",
                                 borderColor = Color(0xFF1877F2).copy(alpha = 0.45f),
+                                enabled = !isAuthLoading,
                                 onClick = {
-                                    socialNameInput = fullName
-                                    socialEmailInput = email
-                                    socialInstagramHandle = ""
-                                    socialDialogError = null
-                                    pendingSocialProvider = AuthProviderType.FACEBOOK
+                                    localError = null
+                                    onClearAuthError()
+                                    onFacebookSignIn(context.findActivity())
                                 }
                             )
 
@@ -370,6 +423,7 @@ fun LoginScreen(
                                 badgeColor = Color(0xFFD62976),
                                 label = if (isSignUpMode) "Daftar dengan Instagram" else "Masuk dengan Instagram",
                                 borderColor = Color(0xFFD62976).copy(alpha = 0.45f),
+                                enabled = !isAuthLoading,
                                 onClick = {
                                     socialNameInput = fullName
                                     socialEmailInput = email
@@ -501,6 +555,56 @@ fun LoginScreen(
                                 modifier = Modifier.fillMaxWidth(),
                                 shape = RoundedCornerShape(14.dp)
                             )
+                        }
+
+                        if (!isSignUpMode) {
+                            Box(
+                                modifier = Modifier.fillMaxWidth(),
+                                contentAlignment = Alignment.CenterEnd
+                            ) {
+                                TextButton(
+                                    onClick = {
+                                        localError = null
+                                        onClearAuthError()
+                                        onForgotPassword(email.trim())
+                                    },
+                                    enabled = !isAuthLoading
+                                ) {
+                                    Text(
+                                        text = "Lupa Kata Sandi?",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+                        }
+
+                        if (!authInfoMessage.isNullOrBlank()) {
+                            Surface(
+                                color = Color(0xFFECFDF5),
+                                shape = RoundedCornerShape(12.dp),
+                                border = BorderStroke(1.dp, Color(0xFFA7F3D0)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.CheckCircle,
+                                        contentDescription = null,
+                                        tint = Color(0xFF047857),
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Text(
+                                        text = authInfoMessage,
+                                        color = Color(0xFF065F46),
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                }
+                            }
                         }
 
                         if (!combinedError.isNullOrBlank()) {
@@ -783,10 +887,12 @@ private fun SocialAuthProviderButton(
     badgeColor: Color,
     label: String,
     borderColor: Color,
+    enabled: Boolean = true,
     onClick: () -> Unit
 ) {
     OutlinedButton(
         onClick = onClick,
+        enabled = enabled,
         modifier = Modifier
             .fillMaxWidth()
             .height(48.dp),

@@ -204,8 +204,46 @@ export function decodePolyline(encoded: string): LatLngPoint[] {
   return points;
 }
 
+export function hasValidGeoCoord(lat: number, lng: number): boolean {
+  return (
+    Number.isFinite(lat) &&
+    Number.isFinite(lng) &&
+    (Math.abs(lat) > 0.001 || Math.abs(lng) > 0.001)
+  );
+}
+
 /**
- * Downsamples a polyline to at most maxPoints vertices while preserving start and end points.
+ * Keeps GPS track vertices spaced by at least minSpacingMeters and capped at maxPoints.
+ */
+export function downsampleTrackPoints(
+  points: LatLngPoint[],
+  minSpacingMeters = 15,
+  maxPoints = 150
+): LatLngPoint[] {
+  if (points.length === 0) return [];
+  const spaced: LatLngPoint[] = [points[0]];
+  for (let i = 1; i < points.length - 1; i++) {
+    const prev = spaced[spaced.length - 1];
+    if (haversineMeters(prev, points[i]) >= minSpacingMeters) {
+      spaced.push(points[i]);
+    }
+  }
+  if (points.length > 1) {
+    spaced.push(points[points.length - 1]);
+  }
+  if (spaced.length <= maxPoints) return spaced;
+
+  const step = (spaced.length - 1) / (maxPoints - 1);
+  const result: LatLngPoint[] = [];
+  for (let i = 0; i < maxPoints; i++) {
+    const idx = i === maxPoints - 1 ? spaced.length - 1 : Math.round(i * step);
+    result.push(spaced[idx]);
+  }
+  return result;
+}
+
+/**
+ * Downsamples a polyline to at most maxPoints vertices and computes aspect-preserving xFraction/yFraction.
  */
 export function downsampleRoutePoints(
   points: LatLngPoint[],
@@ -232,13 +270,181 @@ export function downsampleRoutePoints(
     if (pt.lng < minLng) minLng = pt.lng;
     if (pt.lng > maxLng) maxLng = pt.lng;
   }
-  const latSpan = Math.max(0.01, maxLat - minLat);
-  const lngSpan = Math.max(0.01, maxLng - minLng);
+  const avgLatRad = (((minLat + maxLat) / 2) * Math.PI) / 180;
+  const lngScale = Math.max(0.2, Math.cos(avgLatRad));
+  const rawLatSpan = Math.max(0.002, maxLat - minLat);
+  const rawLngSpan = Math.max(0.002, (maxLng - minLng) * lngScale);
+  const maxSpan = Math.max(rawLatSpan, rawLngSpan);
+  const centerLat = (minLat + maxLat) / 2;
+  const centerLng = (minLng + maxLng) / 2;
 
   return sampled.map((pt) => ({
     latitude: pt.lat,
     longitude: pt.lng,
-    xFraction: Math.max(0.08, Math.min(0.92, 0.1 + ((pt.lng - minLng) / lngSpan) * 0.8)),
-    yFraction: Math.max(0.08, Math.min(0.9, 0.9 - ((pt.lat - minLat) / latSpan) * 0.8)),
+    xFraction: Math.max(
+      0.08,
+      Math.min(0.92, 0.5 + (((pt.lng - centerLng) * lngScale) / maxSpan) * 0.8)
+    ),
+    yFraction: Math.max(
+      0.08,
+      Math.min(0.92, 0.5 - ((pt.lat - centerLat) / maxSpan) * 0.8)
+    ),
   }));
+}
+
+export interface ProjectedViewportPoint {
+  x: number;
+  y: number;
+}
+
+export interface ProjectedMapTile {
+  key: string;
+  z: number;
+  x: number;
+  y: number;
+  left: number;
+  top: number;
+  size: number;
+}
+
+export interface TripMapViewportProjection {
+  waypoints: ProjectedViewportPoint[];
+  checkpoints: ProjectedViewportPoint[];
+  tiles: ProjectedMapTile[];
+  hasGeo: boolean;
+  tileZoom: number;
+}
+
+function mercatorNormX(lng: number): number {
+  return (lng + 180) / 360;
+}
+
+function mercatorNormY(lat: number): number {
+  const clamped = Math.max(-85.05112878, Math.min(85.05112878, lat));
+  const sinLat = Math.sin((clamped * Math.PI) / 180);
+  return 0.5 - Math.log((1 + sinLat) / (1 - sinLat)) / (4 * Math.PI);
+}
+
+/**
+ * Projects a trip's waypoints and checkpoints using exact Web Mercator coordinates
+ * and generates the matching TomTom raster tile grid covering the viewport.
+ */
+export function projectTripMapViewport(
+  waypoints: RoutePoint[],
+  checkpoints: Array<{ latitude: number; longitude: number; xFraction: number; yFraction: number }>,
+  width: number,
+  height: number,
+  paddingFraction = 0.14
+): TripMapViewportProjection {
+  const validGeoWaypoints = waypoints.filter((w) =>
+    hasValidGeoCoord(w.latitude, w.longitude)
+  );
+  const validGeoCheckpoints = checkpoints.filter((c) =>
+    hasValidGeoCoord(c.latitude, c.longitude)
+  );
+
+  const allGeo = [
+    ...validGeoWaypoints.map((w) => ({ lat: w.latitude, lng: w.longitude })),
+    ...validGeoCheckpoints.map((c) => ({ lat: c.latitude, lng: c.longitude })),
+  ];
+
+  const padX = width * paddingFraction;
+  const padY = height * paddingFraction;
+  const usableW = Math.max(20, width - padX * 2);
+  const usableH = Math.max(20, height - padY * 2);
+
+  if (allGeo.length === 0) {
+    return {
+      waypoints: waypoints.map((pt) => ({
+        x: padX + pt.xFraction * usableW,
+        y: padY + pt.yFraction * usableH,
+      })),
+      checkpoints: checkpoints.map((cp) => ({
+        x: padX + cp.xFraction * usableW,
+        y: padY + cp.yFraction * usableH,
+      })),
+      tiles: [],
+      hasGeo: false,
+      tileZoom: 12,
+    };
+  }
+
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const pt of allGeo) {
+    const nx = mercatorNormX(pt.lng);
+    const ny = mercatorNormY(pt.lat);
+    if (nx < minX) minX = nx;
+    if (nx > maxX) maxX = nx;
+    if (ny < minY) minY = ny;
+    if (ny > maxY) maxY = ny;
+  }
+
+  // Minimum span ~ 400m so single/short tracks get a sensible street zoom
+  const minNormSpan = 0.000018;
+  const spanX = Math.max(minNormSpan, maxX - minX);
+  const spanY = Math.max(minNormSpan, maxY - minY);
+
+  const worldNeededX = usableW / (spanX * 256);
+  const worldNeededY = usableH / (spanY * 256);
+  const scaleZoom = Math.max(
+    4,
+    Math.min(16.4, Math.log2(Math.min(worldNeededX, worldNeededY)))
+  );
+  const tileZoom = Math.max(4, Math.min(16, Math.floor(scaleZoom)));
+  const tileCountPerAxis = 1 << tileZoom;
+
+  const totalWorldPx = 256 * Math.pow(2, scaleZoom);
+  const centerWorldX = ((minX + maxX) / 2) * totalWorldPx;
+  const centerWorldY = ((minY + maxY) / 2) * totalWorldPx;
+
+  const projectLatLng = (lat: number, lng: number): ProjectedViewportPoint => ({
+    x: width / 2 + (mercatorNormX(lng) * totalWorldPx - centerWorldX),
+    y: height / 2 + (mercatorNormY(lat) * totalWorldPx - centerWorldY),
+  });
+
+  const tileSizePx = 256 * Math.pow(2, scaleZoom - tileZoom);
+  const worldLeftPx = centerWorldX - width / 2;
+  const worldTopPx = centerWorldY - height / 2;
+  const worldRightPx = centerWorldX + width / 2;
+  const worldBottomPx = centerWorldY + height / 2;
+
+  const txStart = Math.floor(worldLeftPx / tileSizePx);
+  const txEnd = Math.floor(worldRightPx / tileSizePx);
+  const tyStart = Math.max(0, Math.floor(worldTopPx / tileSizePx));
+  const tyEnd = Math.min(tileCountPerAxis - 1, Math.floor(worldBottomPx / tileSizePx));
+
+  const tiles: ProjectedMapTile[] = [];
+  for (let ty = tyStart; ty <= tyEnd; ty++) {
+    for (let tx = txStart; tx <= txEnd; tx++) {
+      const wrappedX = ((tx % tileCountPerAxis) + tileCountPerAxis) % tileCountPerAxis;
+      tiles.push({
+        key: `${tileZoom}-${wrappedX}-${ty}-${tx}`,
+        z: tileZoom,
+        x: wrappedX,
+        y: ty,
+        left: width / 2 + (tx * tileSizePx - centerWorldX),
+        top: height / 2 + (ty * tileSizePx - centerWorldY),
+        size: tileSizePx,
+      });
+    }
+  }
+
+  return {
+    waypoints: waypoints.map((pt) =>
+      hasValidGeoCoord(pt.latitude, pt.longitude)
+        ? projectLatLng(pt.latitude, pt.longitude)
+        : { x: padX + pt.xFraction * usableW, y: padY + pt.yFraction * usableH }
+    ),
+    checkpoints: checkpoints.map((cp) =>
+      hasValidGeoCoord(cp.latitude, cp.longitude)
+        ? projectLatLng(cp.latitude, cp.longitude)
+        : { x: padX + cp.xFraction * usableW, y: padY + cp.yFraction * usableH }
+    ),
+    tiles,
+    hasGeo: true,
+    tileZoom,
+  };
 }

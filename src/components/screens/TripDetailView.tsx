@@ -18,7 +18,9 @@ import {
   X,
 } from 'lucide-react';
 import scenicTourPhoto from '../../assets/images/touring_route_backdrop_1794562249497.jpg';
+import { getTomTomTileUrl } from '../../services/tomtomMapService';
 import { TripCardTheme, TripHistoryRecord } from '../../types/convoy';
+import { projectTripMapViewport } from '../../utils/geo';
 import { renderTripCardPngBlob } from '../../utils/tripCardRenderer';
 import {
   buildTripGpxXml,
@@ -87,11 +89,27 @@ export function TripDetailView({ trip, onBack }: TripDetailViewProps) {
   const gpxXml = buildTripGpxXml(trip);
   const jsonLog = buildTripJsonLog(trip);
   const shareSummary = buildTripShareSummaryText(trip);
-  const polylinePts = trip.waypoints
-    .map((pt) => `${pt.xFraction * 320},${pt.yFraction * 180}`)
+  const mapWidth = 320;
+  const mapHeight = 180;
+  const projection = projectTripMapViewport(
+    trip.waypoints,
+    trip.visitedCheckpoints,
+    mapWidth,
+    mapHeight,
+    0.15
+  );
+  const polylinePts = projection.waypoints
+    .map((pt) => `${pt.x.toFixed(2)},${pt.y.toFixed(2)}`)
     .join(' ');
-  const startPt = trip.waypoints[0];
-  const endPt = trip.waypoints[trip.waypoints.length - 1];
+  const startPt = projection.waypoints[0];
+  const endPt = projection.waypoints[projection.waypoints.length - 1];
+  const isDarkDocument =
+    typeof document !== 'undefined' &&
+    document.documentElement.classList.contains('dark');
+  const roadTileTemplate = getTomTomTileUrl(
+    'basic',
+    isDarkDocument ? 'night' : 'main'
+  );
 
   const showToast = (msg: string) => {
     setFeedbackBanner(msg);
@@ -358,17 +376,25 @@ export function TripDetailView({ trip, onBack }: TripDetailViewProps) {
         {/* 1. Mini Polyline Track Replay Map */}
         <div className="rounded-[20px] bg-white dark:bg-[#141C24] border border-[#E2E8F0] dark:border-[#334155] p-4 space-y-3">
           <div className="flex items-center justify-between gap-2">
-            <h3 className="text-sm font-bold">Peta Rekam Jejak Rute</h3>
-            <span className="px-2 py-0.5 rounded-md bg-[#EFF6FF] dark:bg-[#1E3A8A]/60 text-[#1D4ED8] dark:text-[#93C5FD] text-[10px] font-mono font-semibold">
+            <div>
+              <h3 className="text-sm font-bold">Peta Rekam Jejak Rute</h3>
+              <p className="text-[10px] text-[#64748B] dark:text-[#94A3B8]">
+                {projection.hasGeo
+                  ? 'Mengikuti jalur nyata yang ditempuh di atas peta TomTom'
+                  : 'Rekaman jalur perjalanan'}
+              </p>
+            </div>
+            <span className="px-2 py-0.5 rounded-md bg-[#EFF6FF] dark:bg-[#1E3A8A]/60 text-[#1D4ED8] dark:text-[#93C5FD] text-[10px] font-mono font-semibold shrink-0">
               {trip.waypoints.length} Titik GPS
             </span>
           </div>
 
-          <div className="relative w-full h-[180px] rounded-[16px] bg-[#EEF2F6] dark:bg-[#141B22] border border-[#CBD5E1] dark:border-[#334155] overflow-hidden">
+          <div className="relative w-full aspect-[16/9] rounded-[16px] bg-[#EEF2F6] dark:bg-[#141B22] border border-[#CBD5E1] dark:border-[#334155] overflow-hidden">
+            {/* Fallback topographic grid underneath tiles */}
             <svg
-              className="w-full h-full"
+              className="absolute inset-0 w-full h-full"
               viewBox="0 0 320 180"
-              preserveAspectRatio="none"
+              preserveAspectRatio="xMidYMid meet"
             >
               <defs>
                 <pattern
@@ -387,22 +413,57 @@ export function TripDetailView({ trip, onBack }: TripDetailViewProps) {
                 </pattern>
               </defs>
               <rect width="320" height="180" fill="url(#tripReplayGrid)" />
+            </svg>
 
-              {trip.waypoints.length >= 2 && (
+            {/* Real TomTom Map Tiles aligned 1:1 with the traveled GPS route */}
+            {projection.hasGeo &&
+              projection.tiles.map((tile) => {
+                const tileSrc = roadTileTemplate
+                  .replace('{z}', String(tile.z))
+                  .replace('{x}', String(tile.x))
+                  .replace('{y}', String(tile.y));
+                return (
+                  <img
+                    key={tile.key}
+                    src={tileSrc}
+                    alt=""
+                    loading="lazy"
+                    onError={(ev) => {
+                      ev.currentTarget.style.display = 'none';
+                    }}
+                    style={{
+                      left: `${(tile.left / mapWidth) * 100}%`,
+                      top: `${(tile.top / mapHeight) * 100}%`,
+                      width: `${(tile.size / mapWidth) * 100}%`,
+                      height: `${(tile.size / mapHeight) * 100}%`,
+                    }}
+                    className="absolute max-w-none pointer-events-none select-none"
+                  />
+                );
+              })}
+
+            {/* Route Polyline SVG Overlay */}
+            <svg
+              className="relative z-[1] w-full h-full"
+              viewBox="0 0 320 180"
+              preserveAspectRatio="xMidYMid meet"
+            >
+              {projection.waypoints.length >= 2 && (
                 <>
                   <polyline
                     points={polylinePts}
                     fill="none"
                     stroke="#FFFFFF"
-                    strokeWidth="11"
+                    strokeWidth="8.5"
+                    strokeOpacity="0.92"
                     strokeLinecap="round"
                     strokeLinejoin="round"
                   />
                   <polyline
                     points={polylinePts}
                     fill="none"
-                    stroke="#1D4ED8"
-                    strokeWidth="4.5"
+                    stroke="#EA580C"
+                    strokeWidth="4.2"
                     strokeLinecap="round"
                     strokeLinejoin="round"
                   />
@@ -411,55 +472,39 @@ export function TripDetailView({ trip, onBack }: TripDetailViewProps) {
 
               {startPt && (
                 <g>
-                  <circle
-                    cx={startPt.xFraction * 320}
-                    cy={startPt.yFraction * 180}
-                    r="7.5"
-                    fill="#FFFFFF"
-                  />
-                  <circle
-                    cx={startPt.xFraction * 320}
-                    cy={startPt.yFraction * 180}
-                    r="5"
-                    fill="#EA580C"
-                  />
+                  <circle cx={startPt.x} cy={startPt.y} r="7" fill="#FFFFFF" />
+                  <circle cx={startPt.x} cy={startPt.y} r="4.5" fill="#EA580C" />
                 </g>
               )}
 
               {endPt && (
                 <g>
-                  <circle
-                    cx={endPt.xFraction * 320}
-                    cy={endPt.yFraction * 180}
-                    r="7.5"
-                    fill="#FFFFFF"
-                  />
-                  <circle
-                    cx={endPt.xFraction * 320}
-                    cy={endPt.yFraction * 180}
-                    r="5"
-                    fill="#16A34A"
-                  />
+                  <circle cx={endPt.x} cy={endPt.y} r="7" fill="#FFFFFF" />
+                  <circle cx={endPt.x} cy={endPt.y} r="4.5" fill="#16A34A" />
                 </g>
               )}
             </svg>
 
             {/* Checkpoint Coffee Pins */}
-            {trip.visitedCheckpoints.map((cp) => (
-              <div
-                key={cp.id}
-                style={{
-                  left: `${cp.xFraction * 100}%`,
-                  top: `${cp.yFraction * 100}%`,
-                }}
-                title={cp.name}
-                className="absolute -translate-x-1/2 -translate-y-1/2 w-6 h-6 rounded-full bg-[#0F766E] border-2 border-white shadow-sm flex items-center justify-center text-white"
-              >
-                <Coffee className="w-3 h-3" />
-              </div>
-            ))}
+            {trip.visitedCheckpoints.map((cp, idx) => {
+              const projectedCp = projection.checkpoints[idx];
+              if (!projectedCp) return null;
+              return (
+                <div
+                  key={cp.id}
+                  style={{
+                    left: `${(projectedCp.x / mapWidth) * 100}%`,
+                    top: `${(projectedCp.y / mapHeight) * 100}%`,
+                  }}
+                  title={cp.name}
+                  className="absolute z-[2] -translate-x-1/2 -translate-y-1/2 w-6 h-6 rounded-full bg-[#0F766E] border-2 border-white shadow-sm flex items-center justify-center text-white"
+                >
+                  <Coffee className="w-3 h-3" />
+                </div>
+              );
+            })}
 
-            <div className="absolute bottom-2 left-2 px-2 py-0.5 rounded-md bg-[#0F172A]/80 text-white text-[9px] font-medium">
+            <div className="absolute z-[2] bottom-2 left-2 px-2 py-0.5 rounded-md bg-[#0F172A]/80 text-white text-[9px] font-medium">
               Oranye: Start · Hijau: Finish · Teal: Rest Area
             </div>
           </div>

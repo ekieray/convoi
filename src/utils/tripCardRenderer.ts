@@ -1,4 +1,6 @@
+import { getTomTomTileUrl } from '../services/tomtomMapService';
 import { TripCardTheme, TripHistoryRecord } from '../types/convoy';
+import { projectTripMapViewport } from './geo';
 
 interface RenderTripCardOptions {
   trip: TripHistoryRecord;
@@ -116,15 +118,72 @@ export async function renderTripCardPngBlob({
       ctx.stroke();
     }
 
-    ctx.save();
-    ctx.setLineDash([18, 14]);
-    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
-    ctx.lineWidth = 4;
-    ctx.beginPath();
-    ctx.moveTo(0, height * 0.25);
-    ctx.lineTo(width, height * 0.76);
-    ctx.stroke();
-    ctx.restore();
+    // Load real TomTom Satellite + Label tiles aligned to the route map box
+    const satMapPad = 72;
+    const satMapW = width - satMapPad * 2;
+    const satMapH = 620;
+    const satProjection = projectTripMapViewport(
+      trip.waypoints,
+      trip.visitedCheckpoints,
+      satMapW,
+      satMapH,
+      0.13
+    );
+    if (satProjection.hasGeo && satProjection.tiles.length > 0) {
+      const satTpl = getTomTomTileUrl('sat', 'main');
+      const lblTpl = getTomTomTileUrl('labels', 'main');
+      const loadedTiles = await Promise.all(
+        satProjection.tiles.map(async (tile) => {
+          const satSrc = satTpl
+            .replace('{z}', String(tile.z))
+            .replace('{x}', String(tile.x))
+            .replace('{y}', String(tile.y));
+          const lblSrc = lblTpl
+            .replace('{z}', String(tile.z))
+            .replace('{x}', String(tile.x))
+            .replace('{y}', String(tile.y));
+          const [satImg, lblImg] = await Promise.all([
+            loadImageElement(satSrc),
+            loadImageElement(lblSrc),
+          ]);
+          return { tile, satImg, lblImg };
+        })
+      );
+
+      ctx.save();
+      drawRoundedRectPath(ctx, satMapPad, 350, satMapW, satMapH, 36);
+      ctx.clip();
+      for (const item of loadedTiles) {
+        if (item.satImg) {
+          ctx.drawImage(
+            item.satImg,
+            satMapPad + item.tile.left,
+            350 + item.tile.top,
+            item.tile.size + 1,
+            item.tile.size + 1
+          );
+        }
+        if (item.lblImg) {
+          ctx.globalAlpha = 0.85;
+          ctx.drawImage(
+            item.lblImg,
+            satMapPad + item.tile.left,
+            350 + item.tile.top,
+            item.tile.size + 1,
+            item.tile.size + 1
+          );
+          ctx.globalAlpha = 1;
+        }
+      }
+      ctx.fillStyle = 'rgba(7, 19, 21, 0.25)';
+      ctx.fillRect(satMapPad, 350, satMapW, satMapH);
+      ctx.restore();
+
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)';
+      ctx.lineWidth = 3;
+      drawRoundedRectPath(ctx, satMapPad, 350, satMapW, satMapH, 36);
+      ctx.stroke();
+    }
   } else if (theme === 'MINIMAL_LIGHT') {
     ctx.fillStyle = '#FFFFFF';
     ctx.fillRect(0, 0, width, height);
@@ -269,26 +328,33 @@ export async function renderTripCardPngBlob({
     width - pad * 2
   );
 
-  // 4. Polyline Map Area
+  // 4. Polyline Map Area (Web Mercator aspect-preserving projection)
   const mapLeft = pad;
   const mapTop = 350;
   const mapWidth = width - pad * 2;
   const mapHeight = 620;
+  const routeProjection = projectTripMapViewport(
+    trip.waypoints,
+    trip.visitedCheckpoints,
+    mapWidth,
+    mapHeight,
+    0.13
+  );
 
-  if (trip.waypoints.length >= 2) {
+  if (routeProjection.waypoints.length >= 2) {
     ctx.save();
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
 
     ctx.beginPath();
     ctx.moveTo(
-      mapLeft + trip.waypoints[0].xFraction * mapWidth,
-      mapTop + trip.waypoints[0].yFraction * mapHeight
+      mapLeft + routeProjection.waypoints[0].x,
+      mapTop + routeProjection.waypoints[0].y
     );
-    for (let i = 1; i < trip.waypoints.length; i++) {
+    for (let i = 1; i < routeProjection.waypoints.length; i++) {
       ctx.lineTo(
-        mapLeft + trip.waypoints[i].xFraction * mapWidth,
-        mapTop + trip.waypoints[i].yFraction * mapHeight
+        mapLeft + routeProjection.waypoints[i].x,
+        mapTop + routeProjection.waypoints[i].y
       );
     }
 
@@ -304,10 +370,10 @@ export async function renderTripCardPngBlob({
     ctx.restore();
   }
 
-  const startPt = trip.waypoints[0];
+  const startPt = routeProjection.waypoints[0];
   if (startPt) {
-    const cx = mapLeft + startPt.xFraction * mapWidth;
-    const cy = mapTop + startPt.yFraction * mapHeight;
+    const cx = mapLeft + startPt.x;
+    const cy = mapTop + startPt.y;
     ctx.beginPath();
     ctx.arc(cx, cy, 22, 0, Math.PI * 2);
     ctx.fillStyle = '#FFFFFF';
@@ -318,10 +384,10 @@ export async function renderTripCardPngBlob({
     ctx.fill();
   }
 
-  const endPt = trip.waypoints[trip.waypoints.length - 1];
+  const endPt = routeProjection.waypoints[routeProjection.waypoints.length - 1];
   if (endPt) {
-    const cx = mapLeft + endPt.xFraction * mapWidth;
-    const cy = mapTop + endPt.yFraction * mapHeight;
+    const cx = mapLeft + endPt.x;
+    const cy = mapTop + endPt.y;
     ctx.beginPath();
     ctx.arc(cx, cy, 22, 0, Math.PI * 2);
     ctx.fillStyle = '#FFFFFF';
@@ -332,9 +398,9 @@ export async function renderTripCardPngBlob({
     ctx.fill();
   }
 
-  trip.visitedCheckpoints.forEach((cp) => {
-    const cx = mapLeft + cp.xFraction * mapWidth;
-    const cy = mapTop + cp.yFraction * mapHeight;
+  routeProjection.checkpoints.forEach((projectedCp) => {
+    const cx = mapLeft + projectedCp.x;
+    const cy = mapTop + projectedCp.y;
     ctx.beginPath();
     ctx.arc(cx, cy, 18, 0, Math.PI * 2);
     ctx.fillStyle = '#FFFFFF';

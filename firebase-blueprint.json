@@ -223,6 +223,7 @@
         "userRole": { "type": "string", "enum": ["TOUR_LEADER", "MEMBER"] },
         "destinationName": { "type": "string", "maxLength": 120 },
         "destinationAddress": { "type": "string", "maxLength": 240 },
+        "encodedPolyline": { "type": "string", "maxLength": 16384 },
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": [

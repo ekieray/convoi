@@ -913,6 +913,11 @@ export async function saveTripRecordToFirestore(
 ): Promise<void> {
   const safeId = record.id.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64) || `trip-${Date.now()}`;
   const path = `users/${uid}/trips/${safeId}`;
+  const geoPoints = record.waypoints
+    .filter((pt) => Number.isFinite(pt.latitude) && Number.isFinite(pt.longitude) && (Math.abs(pt.latitude) > 0.001 || Math.abs(pt.longitude) > 0.001))
+    .slice(0, 140)
+    .map((pt) => ({ lat: pt.latitude, lng: pt.longitude }));
+  const encodedPolyline = geoPoints.length >= 2 ? encodePolyline(geoPoints).slice(0, 16384) : '';
   try {
     await setDoc(doc(db, 'users', uid, 'trips', safeId), {
       id: safeId,
@@ -929,6 +934,7 @@ export async function saveTripRecordToFirestore(
       userRole: record.userRole,
       destinationName: record.destinationName.slice(0, 120),
       destinationAddress: record.destinationAddress.slice(0, 240),
+      encodedPolyline,
       createdAt: serverTimestamp(),
     });
   } catch (error) {
@@ -949,6 +955,10 @@ export async function loadUserTripsFromFirestore(
     return snap.docs
       .map((docSnap) => {
         const d = docSnap.data();
+        const encoded = typeof d.encodedPolyline === 'string' ? d.encodedPolyline : '';
+        const decodedPoints = encoded ? decodePolyline(encoded) : [];
+        const restoredWaypoints: RoutePoint[] =
+          decodedPoints.length >= 2 ? downsampleRoutePoints(decodedPoints, 120) : [];
         return {
           sortMs: toMillis(d.createdAt),
           record: {
@@ -965,7 +975,7 @@ export async function loadUserTripsFromFirestore(
             userRole: (d.userRole === 'TOUR_LEADER' ? 'TOUR_LEADER' : 'MEMBER') as UserRole,
             destinationName: String(d.destinationName || ''),
             destinationAddress: String(d.destinationAddress || ''),
-            waypoints: [],
+            waypoints: restoredWaypoints,
             visitedCheckpoints: [],
             participants: [],
           } satisfies TripHistoryRecord,

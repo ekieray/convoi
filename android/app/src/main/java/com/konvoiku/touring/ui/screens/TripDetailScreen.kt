@@ -63,16 +63,20 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -82,8 +86,10 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.konvoiku.touring.data.TomTomApiService
 import com.konvoiku.touring.model.TripCardTheme
 import com.konvoiku.touring.model.TripHistoryRecord
 import com.konvoiku.touring.model.UserRole
@@ -95,8 +101,13 @@ import com.konvoiku.touring.ui.components.ConvoyAvatar
 import com.konvoiku.touring.ui.components.StravaStyleTripShareCard
 import com.konvoiku.touring.ui.components.renderTripCardBitmapToFile
 import com.konvoiku.touring.ui.components.shareTripCardImage
+import com.konvoiku.touring.util.GeoUtils
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.supervisorScope
 import java.util.Locale
+import kotlin.math.ceil
 import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -414,11 +425,49 @@ fun TripDetailScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(210.dp)
-                                .background(Color(0xFFEEF2F6), RoundedCornerShape(16.dp))
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(Color(0xFFEEF2F6))
                         ) {
-                            val widthPx = constraints.maxWidth.toFloat()
-                            val heightPx = constraints.maxHeight.toFloat()
+                            val widthPx = constraints.maxWidth.toFloat().coerceAtLeast(1f)
+                            val heightPx = constraints.maxHeight.toFloat().coerceAtLeast(1f)
                             val density = LocalDensity.current
+                            val projection = remember(
+                                trip.id,
+                                trip.waypoints,
+                                trip.visitedCheckpoints,
+                                widthPx,
+                                heightPx
+                            ) {
+                                GeoUtils.projectTripMapViewport(
+                                    waypoints = trip.waypoints,
+                                    checkpoints = trip.visitedCheckpoints,
+                                    width = widthPx,
+                                    height = heightPx,
+                                    paddingFraction = 0.14f
+                                )
+                            }
+                            val tileBitmaps = produceState<Map<String, ImageBitmap>>(
+                                initialValue = emptyMap(),
+                                key1 = projection.tiles
+                            ) {
+                                if (!projection.hasGeo || projection.tiles.isEmpty()) {
+                                    value = emptyMap()
+                                    return@produceState
+                                }
+                                value = supervisorScope {
+                                    projection.tiles.map { tile ->
+                                        async {
+                                            TomTomApiService.fetchMapTileBitmap(
+                                                layer = "basic",
+                                                style = "main",
+                                                z = tile.z,
+                                                x = tile.x,
+                                                y = tile.y
+                                            )?.let { tile.key to it.asImageBitmap() }
+                                        }
+                                    }.awaitAll().filterNotNull().toMap()
+                                }
+                            }.value
 
                             Canvas(modifier = Modifier.fillMaxSize()) {
                                 val step = 36.dp.toPx()
@@ -433,34 +482,50 @@ fun TripDetailScreen(
                                     gy += step
                                 }
 
-                                val pts = trip.waypoints
+                                projection.tiles.forEach { tile ->
+                                    val bmp = tileBitmaps[tile.key]
+                                    if (bmp != null) {
+                                        val tilePx = ceil(tile.size).toInt() + 1
+                                        drawImage(
+                                            image = bmp,
+                                            dstOffset = IntOffset(tile.left.roundToInt(), tile.top.roundToInt()),
+                                            dstSize = IntSize(tilePx, tilePx)
+                                        )
+                                    }
+                                }
+                                if (tileBitmaps.isNotEmpty()) {
+                                    drawRect(Color.White.copy(alpha = 0.10f))
+                                }
+
+                                val pts = projection.waypoints
                                 if (pts.size >= 2) {
                                     val path = Path().apply {
-                                        moveTo(pts.first().xFraction * size.width, pts.first().yFraction * size.height)
+                                        moveTo(pts.first().x, pts.first().y)
                                         for (i in 1 until pts.size) {
-                                            lineTo(pts[i].xFraction * size.width, pts[i].yFraction * size.height)
+                                            lineTo(pts[i].x, pts[i].y)
                                         }
                                     }
-                                    drawPath(path, Color.White, style = Stroke(12.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
-                                    drawPath(path, Color(0xFF1D4ED8), style = Stroke(5.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
+                                    drawPath(path, Color.White, style = Stroke(11.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
+                                    drawPath(path, Color(0xFFEA580C), style = Stroke(4.5.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
                                 }
 
                                 pts.firstOrNull()?.let { start ->
-                                    val c = Offset(start.xFraction * size.width, start.yFraction * size.height)
-                                    drawCircle(Color.White, radius = 9.dp.toPx(), center = c)
-                                    drawCircle(Color(0xFFEA580C), radius = 6.dp.toPx(), center = c)
+                                    val c = Offset(start.x, start.y)
+                                    drawCircle(Color.White, radius = 8.5.dp.toPx(), center = c)
+                                    drawCircle(Color(0xFFEA580C), radius = 5.5.dp.toPx(), center = c)
                                 }
 
                                 pts.lastOrNull()?.let { end ->
-                                    val c = Offset(end.xFraction * size.width, end.yFraction * size.height)
-                                    drawCircle(Color.White, radius = 9.dp.toPx(), center = c)
-                                    drawCircle(Color(0xFF16A34A), radius = 6.dp.toPx(), center = c)
+                                    val c = Offset(end.x, end.y)
+                                    drawCircle(Color.White, radius = 8.5.dp.toPx(), center = c)
+                                    drawCircle(Color(0xFF16A34A), radius = 5.5.dp.toPx(), center = c)
                                 }
                             }
 
-                            trip.visitedCheckpoints.forEach { cp ->
-                                val px = (cp.xFraction * widthPx).roundToInt()
-                                val py = (cp.yFraction * heightPx).roundToInt()
+                            trip.visitedCheckpoints.forEachIndexed { idx, cp ->
+                                val projectedCp = projection.checkpoints.getOrNull(idx) ?: return@forEachIndexed
+                                val px = projectedCp.x.roundToInt()
+                                val py = projectedCp.y.roundToInt()
                                 Surface(
                                     shape = CircleShape,
                                     color = Color(0xFF0F766E),

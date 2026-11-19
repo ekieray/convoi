@@ -9,6 +9,7 @@ import {
   Route,
 } from 'lucide-react';
 import { TripHistoryRecord } from '../../types/convoy';
+import { projectTripMapViewport } from '../../utils/geo';
 import { ConvoyAvatar } from '../ConvoyAvatar';
 
 interface TripHistoryViewProps {
@@ -95,6 +96,18 @@ export function TripHistoryView({
           <div className="space-y-3">
             {filteredTrips.map((trip) => {
               const isLeader = trip.userRole === 'TOUR_LEADER';
+              const miniProj = projectTripMapViewport(
+                trip.waypoints,
+                [],
+                72,
+                50,
+                0.18
+              );
+              const miniPts = miniProj.waypoints
+                .map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`)
+                .join(' ');
+              const miniStart = miniProj.waypoints[0];
+              const miniEnd = miniProj.waypoints[miniProj.waypoints.length - 1];
               return (
                 <button
                   key={trip.id}
@@ -102,7 +115,7 @@ export function TripHistoryView({
                   onClick={() => onSelectTrip(trip.id)}
                   className="w-full text-left rounded-[20px] bg-white dark:bg-[#141C24] border border-[#E2E8F0] dark:border-[#334155] hover:border-[#1D4ED8] p-4 space-y-3 transition-colors cursor-pointer"
                 >
-                  <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-start justify-between gap-2.5">
                     <div className="min-w-0 flex-1 space-y-1">
                       <div className="flex items-center gap-1.5 flex-wrap">
                         <span className="px-2 py-0.5 rounded-md bg-[#EFF6FF] dark:bg-[#1E3A8A]/60 text-[#1D4ED8] dark:text-[#93C5FD] text-[10px] font-mono font-bold">
@@ -131,7 +144,29 @@ export function TripHistoryView({
                       </p>
                     </div>
 
-                    <ArrowRight className="w-4 h-4 text-[#1D4ED8] dark:text-[#60A5FA] shrink-0 mt-1" />
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {miniProj.waypoints.length >= 2 && (
+                        <div className="w-[72px] h-[50px] rounded-xl bg-[#F1F5F9] dark:bg-[#0B1117] border border-[#E2E8F0] dark:border-[#334155] overflow-hidden">
+                          <svg className="w-full h-full" viewBox="0 0 72 50">
+                            <polyline
+                              points={miniPts}
+                              fill="none"
+                              stroke="#EA580C"
+                              strokeWidth="2.5"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                            {miniStart && (
+                              <circle cx={miniStart.x} cy={miniStart.y} r="2.5" fill="#EA580C" />
+                            )}
+                            {miniEnd && (
+                              <circle cx={miniEnd.x} cy={miniEnd.y} r="2.5" fill="#16A34A" />
+                            )}
+                          </svg>
+                        </div>
+                      )}
+                      <ArrowRight className="w-4 h-4 text-[#1D4ED8] dark:text-[#60A5FA] shrink-0" />
+                    </div>
                   </div>
 
                   {/* Metrics Box */}

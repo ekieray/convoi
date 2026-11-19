@@ -1,6 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Coffee, Navigation } from 'lucide-react';
+import { getTomTomTileUrl } from '../services/tomtomMapService';
 import { TripCardTheme, TripHistoryRecord } from '../types/convoy';
+import { projectTripMapViewport } from '../utils/geo';
 import { ConvoyAvatar } from './ConvoyAvatar';
 
 interface TripSummaryShareCardProps {
@@ -17,6 +19,26 @@ export function TripSummaryShareCard({
   defaultScenicPhotoUrl,
 }: TripSummaryShareCardProps) {
   const [imgError, setImgError] = useState(false);
+  const mapContainerRef = useRef<HTMLDivElement | null>(null);
+  const [mapSize, setMapSize] = useState({ width: 300, height: 185 });
+
+  useEffect(() => {
+    const el = mapContainerRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const updateSize = () => {
+      const rect = el.getBoundingClientRect();
+      if (rect.width > 40 && rect.height > 40) {
+        setMapSize({
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+        });
+      }
+    };
+    updateSize();
+    const ro = new ResizeObserver(updateSize);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   const isLight = theme === 'MINIMAL_LIGHT';
   const primaryText = isLight ? 'text-[#0F172A]' : 'text-white';
@@ -32,12 +54,32 @@ export function TripSummaryShareCard({
     trip.participants.find((p) => p.role === 'TOUR_LEADER') ??
     trip.participants[0];
 
-  const polylinePts = trip.waypoints
-    .map((pt) => `${pt.xFraction * 320},${pt.yFraction * 185}`)
+  const projection = projectTripMapViewport(
+    trip.waypoints,
+    trip.visitedCheckpoints,
+    mapSize.width,
+    mapSize.height,
+    0.13
+  );
+  const polylinePts = projection.waypoints
+    .map((pt) => `${pt.x.toFixed(1)},${pt.y.toFixed(1)}`)
     .join(' ');
-  const startPt = trip.waypoints[0];
-  const endPt = trip.waypoints[trip.waypoints.length - 1];
+  const startPt = projection.waypoints[0];
+  const endPt = projection.waypoints[projection.waypoints.length - 1];
   const activePhotoSrc = customPhotoUrl || defaultScenicPhotoUrl;
+
+  // Compute full-card Satellite backdrop projection so TomTom Sat tiles cover entire SATELLITE card cleanly
+  const satCardW = 320;
+  const satCardH = 400;
+  const satBackdropProjection = projectTripMapViewport(
+    trip.waypoints,
+    trip.visitedCheckpoints,
+    satCardW,
+    satCardH,
+    0.22
+  );
+  const satTileTpl = getTomTomTileUrl('sat', 'main');
+  const labelsTileTpl = getTomTomTileUrl('labels', 'main');
 
   return (
     <div
@@ -81,7 +123,7 @@ export function TripSummaryShareCard({
 
       {theme === 'SATELLITE' && (
         <div
-          className="absolute inset-0"
+          className="absolute inset-0 overflow-hidden"
           style={{
             background:
               'linear-gradient(155deg, #0B1F1D 0%, #112A2B 52%, #0B1821 100%)',
@@ -99,16 +141,48 @@ export function TripSummaryShareCard({
                 strokeWidth="1.2"
               />
             ))}
-            <line
-              x1="0"
-              y1="95"
-              x2="320"
-              y2="305"
-              stroke="rgba(255,255,255,0.08)"
-              strokeWidth="2"
-              strokeDasharray="7 6"
-            />
           </svg>
+          {projection.hasGeo &&
+            projection.tiles.map((tile) => {
+              const satSrc = satTileTpl
+                .replace('{z}', String(tile.z))
+                .replace('{x}', String(tile.x))
+                .replace('{y}', String(tile.y));
+              const lblSrc = labelsTileTpl
+                .replace('{z}', String(tile.z))
+                .replace('{x}', String(tile.x))
+                .replace('{y}', String(tile.y));
+              const tileStyle = {
+                left: `${((tile.left + 16) / (mapSize.width + 32)) * 100}%`,
+                top: `${((tile.top + 96) / (mapSize.height + 215)) * 100}%`,
+                width: `${(tile.size / (mapSize.width + 32)) * 100}%`,
+                height: `${(tile.size / (mapSize.height + 215)) * 100}%`,
+              };
+              return (
+                <div key={tile.key} style={tileStyle} className="absolute pointer-events-none">
+                  <img
+                    src={satSrc}
+                    alt=""
+                    loading="lazy"
+                    onError={(ev) => {
+                      ev.currentTarget.style.display = 'none';
+                    }}
+                    className="w-full h-full object-cover"
+                  />
+                  <img
+                    src={lblSrc}
+                    alt=""
+                    loading="lazy"
+                    onError={(ev) => {
+                      ev.currentTarget.style.display = 'none';
+                    }}
+                    className="absolute inset-0 w-full h-full object-cover opacity-80"
+                  />
+                </div>
+              );
+            })}
+          {!projection.hasGeo && satBackdropProjection.tiles.length === 0 && null}
+          <div className="absolute inset-0 bg-gradient-to-b from-[#071315]/85 via-[#071315]/35 to-[#071315]/90" />
         </div>
       )}
 
@@ -217,14 +291,64 @@ export function TripSummaryShareCard({
           </p>
         </div>
 
-        {/* Center Mini Polyline Path */}
-        <div className="relative flex-1 my-2 min-h-[135px]">
+        {/* Center Real-Shape Polyline Path */}
+        <div
+          ref={mapContainerRef}
+          className={`relative flex-1 my-2 min-h-[135px] overflow-hidden ${
+            theme === 'SATELLITE'
+              ? 'rounded-2xl border border-white/15 bg-black/25'
+              : ''
+          }`}
+        >
+          {theme === 'SATELLITE' &&
+            projection.hasGeo &&
+            projection.tiles.map((tile) => {
+              const satSrc = satTileTpl
+                .replace('{z}', String(tile.z))
+                .replace('{x}', String(tile.x))
+                .replace('{y}', String(tile.y));
+              const lblSrc = labelsTileTpl
+                .replace('{z}', String(tile.z))
+                .replace('{x}', String(tile.x))
+                .replace('{y}', String(tile.y));
+              return (
+                <div
+                  key={`box-${tile.key}`}
+                  style={{
+                    left: `${tile.left}px`,
+                    top: `${tile.top}px`,
+                    width: `${tile.size}px`,
+                    height: `${tile.size}px`,
+                  }}
+                  className="absolute pointer-events-none"
+                >
+                  <img
+                    src={satSrc}
+                    alt=""
+                    loading="lazy"
+                    onError={(ev) => {
+                      ev.currentTarget.style.display = 'none';
+                    }}
+                    className="w-full h-full max-w-none select-none"
+                  />
+                  <img
+                    src={lblSrc}
+                    alt=""
+                    loading="lazy"
+                    onError={(ev) => {
+                      ev.currentTarget.style.display = 'none';
+                    }}
+                    className="absolute inset-0 w-full h-full max-w-none select-none opacity-85"
+                  />
+                </div>
+              );
+            })}
+
           <svg
-            className="w-full h-full"
-            viewBox="0 0 320 185"
-            preserveAspectRatio="none"
+            className="relative z-[1] w-full h-full"
+            viewBox={`0 0 ${mapSize.width} ${mapSize.height}`}
           >
-            {trip.waypoints.length >= 2 && (
+            {projection.waypoints.length >= 2 && (
               <>
                 <polyline
                   points={polylinePts}
@@ -232,7 +356,7 @@ export function TripSummaryShareCard({
                   stroke={
                     isLight
                       ? 'rgba(147,197,253,0.55)'
-                      : 'rgba(234,88,12,0.38)'
+                      : 'rgba(234,88,12,0.42)'
                   }
                   strokeWidth="12"
                   strokeLinecap="round"
@@ -251,52 +375,36 @@ export function TripSummaryShareCard({
 
             {startPt && (
               <g>
-                <circle
-                  cx={startPt.xFraction * 320}
-                  cy={startPt.yFraction * 185}
-                  r="7"
-                  fill="#FFFFFF"
-                />
-                <circle
-                  cx={startPt.xFraction * 320}
-                  cy={startPt.yFraction * 185}
-                  r="4.5"
-                  fill="#EA580C"
-                />
+                <circle cx={startPt.x} cy={startPt.y} r="7" fill="#FFFFFF" />
+                <circle cx={startPt.x} cy={startPt.y} r="4.5" fill="#EA580C" />
               </g>
             )}
 
             {endPt && (
               <g>
-                <circle
-                  cx={endPt.xFraction * 320}
-                  cy={endPt.yFraction * 185}
-                  r="7"
-                  fill="#FFFFFF"
-                />
-                <circle
-                  cx={endPt.xFraction * 320}
-                  cy={endPt.yFraction * 185}
-                  r="4.5"
-                  fill="#16A34A"
-                />
+                <circle cx={endPt.x} cy={endPt.y} r="7" fill="#FFFFFF" />
+                <circle cx={endPt.x} cy={endPt.y} r="4.5" fill="#16A34A" />
               </g>
             )}
           </svg>
 
-          {trip.visitedCheckpoints.map((cp) => (
-            <div
-              key={cp.id}
-              style={{
-                left: `${cp.xFraction * 100}%`,
-                top: `${cp.yFraction * 100}%`,
-              }}
-              title={cp.name}
-              className="absolute -translate-x-1/2 -translate-y-1/2 w-5 h-5 rounded-full bg-[#0F766E] border-2 border-white flex items-center justify-center text-white"
-            >
-              <Coffee className="w-2.5 h-2.5" />
-            </div>
-          ))}
+          {trip.visitedCheckpoints.map((cp, idx) => {
+            const projectedCp = projection.checkpoints[idx];
+            if (!projectedCp) return null;
+            return (
+              <div
+                key={cp.id}
+                style={{
+                  left: `${(projectedCp.x / mapSize.width) * 100}%`,
+                  top: `${(projectedCp.y / mapSize.height) * 100}%`,
+                }}
+                title={cp.name}
+                className="absolute z-[2] -translate-x-1/2 -translate-y-1/2 w-5 h-5 rounded-full bg-[#0F766E] border-2 border-white flex items-center justify-center text-white"
+              >
+                <Coffee className="w-2.5 h-2.5" />
+              </div>
+            );
+          })}
         </div>
 
         {/* Bottom Stats Grid & Participants */}

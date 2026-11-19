@@ -41,6 +41,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -60,18 +61,25 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
+import com.konvoiku.touring.data.TomTomApiService
 import com.konvoiku.touring.model.AvatarPreset
 import com.konvoiku.touring.model.TripCardTheme
 import com.konvoiku.touring.model.TripHistoryRecord
 import com.konvoiku.touring.model.UserRole
+import com.konvoiku.touring.util.GeoUtils
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 import java.util.Locale
+import kotlin.math.ceil
 import kotlin.math.roundToInt
 import android.graphics.Color as AndroidColor
 
@@ -359,26 +367,92 @@ fun StravaStyleTripShareCard(
                 }
 
                 // Center Mini Route Polyline Visual
+                val isSatellite = theme == TripCardTheme.SATELLITE
                 BoxWithConstraints(
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f)
                         .padding(vertical = 8.dp)
+                        .then(
+                            if (isSatellite) {
+                                Modifier
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(Color.Black.copy(alpha = 0.25f))
+                            } else {
+                                Modifier
+                            }
+                        )
                 ) {
-                    val widthPx = constraints.maxWidth.toFloat()
-                    val heightPx = constraints.maxHeight.toFloat()
+                    val widthPx = constraints.maxWidth.toFloat().coerceAtLeast(1f)
+                    val heightPx = constraints.maxHeight.toFloat().coerceAtLeast(1f)
                     val density = LocalDensity.current
+
+                    val projection = remember(
+                        trip.id,
+                        trip.waypoints,
+                        trip.visitedCheckpoints,
+                        widthPx,
+                        heightPx
+                    ) {
+                        GeoUtils.projectTripMapViewport(
+                            waypoints = trip.waypoints,
+                            checkpoints = trip.visitedCheckpoints,
+                            width = widthPx,
+                            height = heightPx,
+                            paddingFraction = 0.13f
+                        )
+                    }
+
+                    val satTileBitmaps = produceState<Map<String, Pair<ImageBitmap?, ImageBitmap?>>>(
+                        initialValue = emptyMap(),
+                        key1 = isSatellite,
+                        key2 = projection.tiles
+                    ) {
+                        if (!isSatellite || !projection.hasGeo || projection.tiles.isEmpty()) {
+                            value = emptyMap()
+                            return@produceState
+                        }
+                        value = supervisorScope {
+                            projection.tiles.map { tile ->
+                                async {
+                                    val sat = async { TomTomApiService.fetchMapTileBitmap("sat", "main", tile.z, tile.x, tile.y)?.asImageBitmap() }
+                                    val lbl = async { TomTomApiService.fetchMapTileBitmap("labels", "main", tile.z, tile.x, tile.y)?.asImageBitmap() }
+                                    tile.key to (sat.await() to lbl.await())
+                                }
+                            }.awaitAll().toMap()
+                        }
+                    }.value
 
                     val routeStrokeColor = if (isLight) Color(0xFF1D4ED8) else Color(0xFFFB923C)
                     val routeGlowColor = if (isLight) Color(0xFF93C5FD).copy(alpha = 0.5f) else Color(0xFFEA580C).copy(alpha = 0.35f)
 
                     Canvas(modifier = Modifier.fillMaxSize()) {
-                        val pts = trip.waypoints
+                        if (isSatellite) {
+                            projection.tiles.forEach { tile ->
+                                val pair = satTileBitmaps[tile.key]
+                                val satBmp = pair?.first
+                                val lblBmp = pair?.second
+                                val tilePx = ceil(tile.size).toInt() + 1
+                                val offset = IntOffset(tile.left.roundToInt(), tile.top.roundToInt())
+                                val dstSize = IntSize(tilePx, tilePx)
+                                if (satBmp != null) {
+                                    drawImage(image = satBmp, dstOffset = offset, dstSize = dstSize)
+                                }
+                                if (lblBmp != null) {
+                                    drawImage(image = lblBmp, dstOffset = offset, dstSize = dstSize, alpha = 0.85f)
+                                }
+                            }
+                            if (satTileBitmaps.isNotEmpty()) {
+                                drawRect(Color(0xFF071315).copy(alpha = 0.22f))
+                            }
+                        }
+
+                        val pts = projection.waypoints
                         if (pts.size >= 2) {
                             val path = androidx.compose.ui.graphics.Path().apply {
-                                moveTo(pts.first().xFraction * size.width, pts.first().yFraction * size.height)
+                                moveTo(pts.first().x, pts.first().y)
                                 for (i in 1 until pts.size) {
-                                    lineTo(pts[i].xFraction * size.width, pts[i].yFraction * size.height)
+                                    lineTo(pts[i].x, pts[i].y)
                                 }
                             }
                             drawPath(
@@ -394,20 +468,21 @@ fun StravaStyleTripShareCard(
                         }
 
                         pts.firstOrNull()?.let { start ->
-                            val c = Offset(start.xFraction * size.width, start.yFraction * size.height)
+                            val c = Offset(start.x, start.y)
                             drawCircle(Color.White, radius = 8.dp.toPx(), center = c)
                             drawCircle(Color(0xFFEA580C), radius = 5.dp.toPx(), center = c)
                         }
                         pts.lastOrNull()?.let { end ->
-                            val c = Offset(end.xFraction * size.width, end.yFraction * size.height)
+                            val c = Offset(end.x, end.y)
                             drawCircle(Color.White, radius = 8.dp.toPx(), center = c)
                             drawCircle(Color(0xFF16A34A), radius = 5.dp.toPx(), center = c)
                         }
                     }
 
-                    trip.visitedCheckpoints.forEach { cp ->
-                        val px = (cp.xFraction * widthPx).roundToInt()
-                        val py = (cp.yFraction * heightPx).roundToInt()
+                    trip.visitedCheckpoints.forEachIndexed { idx, cp ->
+                        val projectedCp = projection.checkpoints.getOrNull(idx) ?: return@forEachIndexed
+                        val px = projectedCp.x.roundToInt()
+                        val py = projectedCp.y.roundToInt()
                         Surface(
                             shape = CircleShape,
                             color = Color(0xFF0F766E),
@@ -765,13 +840,69 @@ suspend fun renderTripCardBitmapToFile(
     val mapTop = 350f
     val mapWidth = width - pad * 2f
     val mapHeight = 620f
+    val projection = GeoUtils.projectTripMapViewport(
+        waypoints = trip.waypoints,
+        checkpoints = trip.visitedCheckpoints,
+        width = mapWidth,
+        height = mapHeight,
+        paddingFraction = 0.13f
+    )
 
-    val pts = trip.waypoints
+    if (theme == TripCardTheme.SATELLITE && projection.hasGeo && projection.tiles.isNotEmpty()) {
+        val loadedTiles = supervisorScope {
+            projection.tiles.map { tile ->
+                async {
+                    val sat = async { TomTomApiService.fetchMapTileBitmap("sat", "main", tile.z, tile.x, tile.y) }
+                    val lbl = async { TomTomApiService.fetchMapTileBitmap("labels", "main", tile.z, tile.x, tile.y) }
+                    Triple(tile, sat.await(), lbl.await())
+                }
+            }.awaitAll()
+        }
+
+        val mapBox = RectF(mapLeft, mapTop, mapLeft + mapWidth, mapTop + mapHeight)
+        val clipPath = Path().apply {
+            addRoundRect(mapBox, 32f, 32f, Path.Direction.CW)
+        }
+        canvas.save()
+        canvas.clipPath(clipPath)
+        canvas.translate(mapLeft, mapTop)
+        val tileBmpPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply { alpha = 215 }
+        loadedTiles.forEach { (tile, satBmp, lblBmp) ->
+            val dst = RectF(tile.left, tile.top, tile.left + tile.size + 1f, tile.top + tile.size + 1f)
+            if (satBmp != null) {
+                canvas.drawBitmap(satBmp, null, dst, tileBmpPaint)
+            }
+            if (lblBmp != null) {
+                canvas.drawBitmap(lblBmp, null, dst, labelPaint)
+            }
+        }
+        canvas.restore()
+
+        canvas.drawRoundRect(
+            mapBox,
+            32f,
+            32f,
+            Paint().apply { color = AndroidColor.argb(56, 7, 19, 21) }
+        )
+        canvas.drawRoundRect(
+            mapBox,
+            32f,
+            32f,
+            Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                style = Paint.Style.STROKE
+                strokeWidth = 3f
+                color = AndroidColor.argb(50, 255, 255, 255)
+            }
+        )
+    }
+
+    val pts = projection.waypoints
     if (pts.size >= 2) {
         val routePath = Path().apply {
-            moveTo(mapLeft + pts.first().xFraction * mapWidth, mapTop + pts.first().yFraction * mapHeight)
+            moveTo(mapLeft + pts.first().x, mapTop + pts.first().y)
             for (i in 1 until pts.size) {
-                lineTo(mapLeft + pts[i].xFraction * mapWidth, mapTop + pts[i].yFraction * mapHeight)
+                lineTo(mapLeft + pts[i].x, mapTop + pts[i].y)
             }
         }
         val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -794,21 +925,21 @@ suspend fun renderTripCardBitmapToFile(
     }
 
     pts.firstOrNull()?.let { start ->
-        val cx = mapLeft + start.xFraction * mapWidth
-        val cy = mapTop + start.yFraction * mapHeight
+        val cx = mapLeft + start.x
+        val cy = mapTop + start.y
         canvas.drawCircle(cx, cy, 22f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = AndroidColor.WHITE })
         canvas.drawCircle(cx, cy, 14f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = AndroidColor.parseColor("#EA580C") })
     }
     pts.lastOrNull()?.let { end ->
-        val cx = mapLeft + end.xFraction * mapWidth
-        val cy = mapTop + end.yFraction * mapHeight
+        val cx = mapLeft + end.x
+        val cy = mapTop + end.y
         canvas.drawCircle(cx, cy, 22f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = AndroidColor.WHITE })
         canvas.drawCircle(cx, cy, 14f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = AndroidColor.parseColor("#16A34A") })
     }
 
-    trip.visitedCheckpoints.forEach { cp ->
-        val cx = mapLeft + cp.xFraction * mapWidth
-        val cy = mapTop + cp.yFraction * mapHeight
+    projection.checkpoints.forEach { cp ->
+        val cx = mapLeft + cp.x
+        val cy = mapTop + cp.y
         canvas.drawCircle(cx, cy, 18f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = AndroidColor.WHITE })
         canvas.drawCircle(cx, cy, 13f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = AndroidColor.parseColor("#0F766E") })
     }

@@ -1,5 +1,6 @@
-import { ArrowRight, BadgeCheck, Bike, Car, History, Info, Link2, LogOut, Megaphone, Navigation, ShieldCheck, UserCog, Users, Wrench } from 'lucide-react';
-import { AuthProviderId, GlobalAppConfig, TourRoom, UserRole, VehicleProfile } from '../../types/convoy';
+import { useState } from 'react';
+import { ArrowRight, BadgeCheck, Bike, Car, CheckCircle2, History, Info, Link2, LogOut, Megaphone, Navigation, RotateCcw, ShieldCheck, UserCog, Users, Wrench, X } from 'lucide-react';
+import { AuthProviderId, GlobalAppConfig, TourRoom, TripHistoryRecord, UserRole, VehicleProfile } from '../../types/convoy';
 import { ConvoyAvatar } from '../ConvoyAvatar';
 import {
   TouringCanvasBackdrop,
@@ -8,6 +9,7 @@ import {
 
 interface RoleSelectionViewProps {
   activeRoom: TourRoom | null;
+  lastCompletedTrip?: TripHistoryRecord | null;
   destinationName: string;
   tripHistoryCount: number;
   latestTripTitle?: string;
@@ -25,6 +27,7 @@ interface RoleSelectionViewProps {
   onOpenAdminBackend?: () => void;
   onSelectRole: (role: UserRole) => void;
   onResumeCurrentConvoy: () => void;
+  onRepeatTour?: (trip: TripHistoryRecord) => void;
   onOpenTripHistory: () => void;
   onOpenAboutApp: () => void;
 }
@@ -39,6 +42,7 @@ const PROVIDER_TAG: Record<AuthProviderId, string> = {
 
 export function RoleSelectionView({
   activeRoom,
+  lastCompletedTrip = null,
   destinationName,
   tripHistoryCount,
   latestTripTitle,
@@ -56,13 +60,20 @@ export function RoleSelectionView({
   onOpenAdminBackend,
   onSelectRole,
   onResumeCurrentConvoy,
+  onRepeatTour,
   onOpenTripHistory,
   onOpenAboutApp,
 }: RoleSelectionViewProps) {
+  const [showCompletedModal, setShowCompletedModal] = useState(false);
   const roomCreationPaused = globalConfig?.allowNewRooms === false && !isAdminUser;
-  const activeTourName = activeRoom?.roomTitle || 'Konvoi Puncak Pass Weekend';
-  const activeMemberCount = activeRoom?.members.length ?? 4;
-  const activeStatus = activeRoom ? 'Sedang Berjalan' : 'Siap Bergabung';
+  const isConvoyFinished = !activeRoom && Boolean(lastCompletedTrip);
+  const activeTourName =
+    activeRoom?.roomTitle ||
+    lastCompletedTrip?.tourTitle ||
+    'Belum ada konvoi aktif';
+  const activeMemberCount =
+    activeRoom?.members.length ??
+    Math.max(1, lastCompletedTrip?.participants.length ?? 0);
   const hasAnySession = Boolean(authUserEmail || localUserName);
   const displayName =
     userProfile?.fullName?.trim() || authUserName || localUserName || 'Pengendara KonvoiKu';
@@ -286,43 +297,178 @@ export function RoleSelectionView({
           </button>
         </div>
 
-        {/* Bagian "Konvoi Anda Saat Ini" */}
+        {/* Bagian "Konvoi Anda Saat Ini" / "Status Konvoi Terakhir" */}
         <div className="pt-1 space-y-2.5">
           <h3 className="text-sm font-bold text-[#0F172A] dark:text-[#F1F5F9]">
-            Konvoi Anda Saat Ini
+            {activeRoom ? 'Konvoi Anda Saat Ini' : 'Status Konvoi Terakhir'}
           </h3>
 
           <div
-            onClick={onResumeCurrentConvoy}
+            onClick={() => {
+              if (activeRoom) {
+                onResumeCurrentConvoy();
+              } else if (lastCompletedTrip) {
+                setShowCompletedModal(true);
+              } else {
+                onSelectRole('TOUR_LEADER');
+              }
+            }}
             role="button"
             tabIndex={0}
             onKeyDown={(e) => {
               if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault();
-                onResumeCurrentConvoy();
+                if (activeRoom) {
+                  onResumeCurrentConvoy();
+                } else if (lastCompletedTrip) {
+                  setShowCompletedModal(true);
+                } else {
+                  onSelectRole('TOUR_LEADER');
+                }
               }
             }}
-            className="rounded-[18px] bg-white dark:bg-[#131B26] border border-[#E2E8F0] dark:border-[#2D3A4F] p-3.5 flex items-center gap-3 hover:border-[#1D4ED8] transition-colors cursor-pointer"
+            className={`rounded-[18px] bg-white dark:bg-[#131B26] border p-3.5 flex items-center gap-3 transition-colors cursor-pointer ${
+              activeRoom
+                ? 'border-[#16A34A] dark:border-[#22C55E]/70 hover:border-[#15803D]'
+                : 'border-[#E2E8F0] dark:border-[#2D3A4F] hover:border-[#1D4ED8]'
+            }`}
           >
-            <div className="w-11 h-11 rounded-[12px] bg-[#EFF6FF] dark:bg-[#1E3A8A] flex items-center justify-center text-[#1D4ED8] dark:text-[#60A5FA] shrink-0">
-              <Users className="w-5 h-5" />
+            <div
+              className={`w-11 h-11 rounded-[12px] flex items-center justify-center shrink-0 ${
+                isConvoyFinished
+                  ? 'bg-[#F1F5F9] dark:bg-[#1E293B] text-[#475569] dark:text-[#94A3B8]'
+                  : 'bg-[#EFF6FF] dark:bg-[#1E3A8A] text-[#1D4ED8] dark:text-[#60A5FA]'
+              }`}
+            >
+              {isConvoyFinished ? (
+                <CheckCircle2 className="w-5 h-5" />
+              ) : (
+                <Users className="w-5 h-5" />
+              )}
             </div>
 
             <div className="min-w-0 flex-1">
               <p className="text-sm font-semibold truncate">{activeTourName}</p>
-              <p className="text-xs font-medium text-[#15803D] dark:text-[#4ADE80] truncate tabular-nums">
-                {activeMemberCount} Anggota Aktif · {activeStatus}
+              <p
+                className={`text-xs font-medium truncate tabular-nums ${
+                  activeRoom
+                    ? 'text-[#15803D] dark:text-[#4ADE80]'
+                    : 'text-[#475569] dark:text-[#94A3B8]'
+                }`}
+              >
+                {activeRoom
+                  ? `${activeMemberCount} Anggota Aktif · Sedang Berjalan`
+                  : lastCompletedTrip
+                    ? `${activeMemberCount} Peserta · Status: Selesai (${lastCompletedTrip.timeRangeLabel})`
+                    : 'Belum ada konvoi aktif'}
               </p>
               <p className="text-[11px] text-[#64748B] dark:text-[#94A3B8] truncate">
-                Tujuan: {destinationName}
+                {activeRoom
+                  ? `Tujuan: ${destinationName}`
+                  : lastCompletedTrip
+                    ? `Tujuan: ${lastCompletedTrip.destinationName} · ${lastCompletedTrip.distanceKm.toFixed(1)} km`
+                    : 'Pilih Mulai Konvoi Baru atau Gabung Konvoi'}
               </p>
             </div>
 
-            <span className="px-3 py-2 rounded-[10px] bg-[#EFF6FF] dark:bg-[#1E3A8A] text-[#1D4ED8] dark:text-[#DBEAFE] text-xs font-semibold shrink-0">
-              Buka
+            <span
+              className={`px-3 py-2 rounded-[10px] text-xs font-semibold shrink-0 ${
+                isConvoyFinished
+                  ? 'bg-[#E2E8F0] dark:bg-[#334155] text-[#334155] dark:text-[#E2E8F0]'
+                  : 'bg-[#EFF6FF] dark:bg-[#1E3A8A] text-[#1D4ED8] dark:text-[#DBEAFE]'
+              }`}
+            >
+              {activeRoom ? 'Buka' : isConvoyFinished ? 'Selesai' : 'Mulai'}
             </span>
           </div>
         </div>
+
+        {/* Modal Pilihan Konvoi Selesai */}
+        {showCompletedModal && lastCompletedTrip && (
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="completed-tour-modal-title"
+            className="fixed inset-0 z-50 bg-black/55 backdrop-blur-[2px] flex items-center justify-center p-4"
+            onClick={() => setShowCompletedModal(false)}
+          >
+            <div
+              className="w-full max-w-[340px] rounded-[22px] bg-white dark:bg-[#131B26] border border-[#E2E8F0] dark:border-[#2D3A4F] shadow-2xl p-4 space-y-3.5"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <h4
+                    id="completed-tour-modal-title"
+                    className="text-base font-bold text-[#0F172A] dark:text-white"
+                  >
+                    Konvoi Telah Selesai
+                  </h4>
+                  <p className="text-xs text-[#64748B] dark:text-[#94A3B8] mt-0.5">
+                    Pilih langkah selanjutnya untuk perjalanan ini
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowCompletedModal(false)}
+                  aria-label="Tutup dialog"
+                  className="p-1.5 rounded-lg text-[#64748B] hover:bg-[#F1F5F9] dark:hover:bg-[#1E293B] cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="rounded-xl bg-[#F8FAFC] dark:bg-[#0F172A] border border-[#E2E8F0] dark:border-[#2D3A4F] p-3 space-y-1">
+                <p className="text-sm font-bold text-[#0F172A] dark:text-white truncate">
+                  {lastCompletedTrip.tourTitle}
+                </p>
+                <p className="text-xs text-[#475569] dark:text-[#CBD5E1] truncate">
+                  Tujuan: {lastCompletedTrip.destinationName}
+                </p>
+                <p className="text-[11px] text-[#64748B] dark:text-[#94A3B8]">
+                  {lastCompletedTrip.distanceKm.toFixed(1)} km · {lastCompletedTrip.durationLabel} · {lastCompletedTrip.timeRangeLabel}
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <button
+                  type="button"
+                  disabled={roomCreationPaused}
+                  onClick={() => {
+                    setShowCompletedModal(false);
+                    onRepeatTour?.(lastCompletedTrip);
+                  }}
+                  className="w-full min-h-[44px] px-4 py-2.5 rounded-xl bg-[#EA580C] hover:bg-[#C2410C] disabled:opacity-50 text-white text-xs font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                >
+                  <RotateCcw className="w-4 h-4 shrink-0" />
+                  <span>
+                    {roomCreationPaused ? 'Pembuatan Room Dijeda Admin' : 'Ulangi Tour'}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowCompletedModal(false);
+                    onOpenTripHistory();
+                  }}
+                  className="w-full min-h-[44px] px-4 py-2.5 rounded-xl bg-[#EFF6FF] dark:bg-[#1E3A8A]/50 border border-[#BFDBFE] dark:border-[#3B82F6] text-[#1D4ED8] dark:text-[#93C5FD] text-xs font-semibold flex items-center justify-center gap-2 hover:bg-[#DBEAFE] transition-colors cursor-pointer"
+                >
+                  <History className="w-4 h-4 shrink-0" />
+                  <span>Masuk ke Riwayat Perjalanan</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setShowCompletedModal(false)}
+                  className="w-full py-2 text-xs font-medium text-[#64748B] dark:text-[#94A3B8] hover:text-[#0F172A] dark:hover:text-white cursor-pointer"
+                >
+                  Tutup
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Bagian "Riwayat Tour & Ekspor Log" */}
         <div className="pt-1 space-y-2.5">

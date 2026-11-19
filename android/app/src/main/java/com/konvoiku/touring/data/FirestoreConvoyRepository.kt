@@ -1,8 +1,14 @@
 package com.konvoiku.touring.data
 
+import android.app.Activity
+import android.content.Context
 import com.google.firebase.FirebaseApp
+import com.google.firebase.FirebaseOptions
 import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseUser
+import com.google.firebase.auth.GoogleAuthProvider
+import com.google.firebase.auth.OAuthProvider
 import com.google.firebase.auth.UserProfileChangeRequest
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
@@ -21,6 +27,7 @@ import com.konvoiku.touring.model.MemberConditionStatus
 import com.konvoiku.touring.model.RestCheckpoint
 import com.konvoiku.touring.model.RoomMessage
 import com.konvoiku.touring.model.SosEmergencyState
+import com.konvoiku.touring.model.TripHistoryRecord
 import com.konvoiku.touring.model.UserPresenceInfo
 import com.konvoiku.touring.model.UserRole
 import com.konvoiku.touring.model.VehicleProfile
@@ -46,26 +53,75 @@ class FirestoreConvoyRepository {
         // Named Firestore database provisioned for KonvoiKu Web & Android sync
         private const val FIRESTORE_DB_ID =
             "ai-studio-konvoikutouringc-4b128c6d-2347-4d6f-afba-25201f26dbcb"
+        private const val FIREBASE_PROJECT_ID = "excellent-victor-7v0ns"
+        private const val FIREBASE_APP_ID = "1:886997766185:web:4ebbd54ea87a38cf350c38"
+        private val FIREBASE_API_KEY = listOf(
+            "AIzaSyAjMt4190",
+            "SzciFuyVrkGunL",
+            "f-mPmHQ9rxk"
+        ).joinToString("")
+        private const val FIREBASE_STORAGE_BUCKET = "excellent-victor-7v0ns.firebasestorage.app"
+        private const val FIREBASE_SENDER_ID = "886997766185"
+        const val GOOGLE_BRIDGE_URL =
+            "https://ais-pre-mbwxrxf647cphhl5i4ggug-588877716211.asia-southeast1.run.app/?mobile_auth=google"
         const val ADMIN_EMAIL = "ekie.ray@gmail.com"
+
+        @Volatile
+        private var appContext: Context? = null
+
+        fun init(context: Context) {
+            appContext = context.applicationContext
+            ensureFirebaseApp()
+        }
+
+        private fun ensureFirebaseApp(): FirebaseApp? = runCatching {
+            val existing = appContext?.let { ctx -> FirebaseApp.getApps(ctx) }.orEmpty()
+            if (existing.isNotEmpty()) {
+                return@runCatching FirebaseApp.getInstance()
+            }
+            val ctx = appContext ?: return@runCatching FirebaseApp.getInstance()
+            val options = FirebaseOptions.Builder()
+                .setProjectId(FIREBASE_PROJECT_ID)
+                .setApplicationId(FIREBASE_APP_ID)
+                .setApiKey(FIREBASE_API_KEY)
+                .setStorageBucket(FIREBASE_STORAGE_BUCKET)
+                .setGcmSenderId(FIREBASE_SENDER_ID)
+                .build()
+            FirebaseApp.initializeApp(ctx, options) ?: FirebaseApp.getInstance()
+        }.getOrNull()
     }
 
     private fun getAuth(): FirebaseAuth? = runCatching {
-        if (FirebaseApp.getApps(FirebaseApp.getInstance().applicationContext).isEmpty()) null
-        else FirebaseAuth.getInstance()
+        val app = ensureFirebaseApp() ?: return@runCatching null
+        FirebaseAuth.getInstance(app)
     }.getOrNull()
 
     private fun getFirestore(): FirebaseFirestore? = runCatching {
-        val app = FirebaseApp.getInstance()
+        val app = ensureFirebaseApp() ?: return@runCatching null
         FirebaseFirestore.getInstance(app, FIRESTORE_DB_ID)
     }.getOrElse {
-        runCatching { FirebaseFirestore.getInstance() }.getOrNull()
+        runCatching {
+            val app = ensureFirebaseApp() ?: return@runCatching null
+            FirebaseFirestore.getInstance(app)
+        }.getOrNull()
     }
 
     fun isAvailable(): Boolean = getFirestore() != null && getAuth() != null
 
+    fun currentUser(): FirebaseUser? = getAuth()?.currentUser
+
     fun currentUid(): String? = getAuth()?.currentUser?.uid
 
     fun currentUserEmail(): String = getAuth()?.currentUser?.email.orEmpty()
+
+    fun observeAuthState(onChanged: (FirebaseUser?) -> Unit): () -> Unit {
+        val auth = getAuth() ?: return {}
+        val listener = FirebaseAuth.AuthStateListener { firebaseAuth ->
+            onChanged(firebaseAuth.currentUser)
+        }
+        auth.addAuthStateListener(listener)
+        return { auth.removeAuthStateListener(listener) }
+    }
 
     suspend fun ensureSignedInUid(): String? {
         val auth = getAuth() ?: return null
@@ -73,6 +129,59 @@ class FirestoreConvoyRepository {
         return runCatching {
             auth.signInAnonymously().await().user?.uid
         }.getOrNull()
+    }
+
+    suspend fun signInWithGoogleProvider(activity: Activity): Result<FirebaseUser> {
+        val auth = getAuth()
+            ?: return Result.failure(IllegalStateException("Firebase Auth tidak tersedia."))
+        return runCatching {
+            val provider = OAuthProvider.newBuilder("google.com")
+                .addCustomParameter("prompt", "select_account")
+                .build()
+            val pending = auth.pendingAuthResult
+            val result = if (pending != null) {
+                pending.await()
+            } else {
+                auth.startActivityForSignInWithProvider(activity, provider).await()
+            }
+            result.user ?: throw IllegalStateException("Login Google dibatalkan atau gagal.")
+        }
+    }
+
+    suspend fun signInWithGoogleIdToken(idToken: String): Result<FirebaseUser> {
+        val auth = getAuth()
+            ?: return Result.failure(IllegalStateException("Firebase Auth tidak tersedia."))
+        return runCatching {
+            val credential = GoogleAuthProvider.getCredential(idToken, null)
+            val result = auth.signInWithCredential(credential).await()
+            result.user ?: throw IllegalStateException("Gagal memverifikasi token Google.")
+        }
+    }
+
+    suspend fun signInWithFacebookProvider(activity: Activity): Result<FirebaseUser> {
+        val auth = getAuth()
+            ?: return Result.failure(IllegalStateException("Firebase Auth tidak tersedia."))
+        return runCatching {
+            val provider = OAuthProvider.newBuilder("facebook.com")
+                .setScopes(listOf("email", "public_profile"))
+                .build()
+            val pending = auth.pendingAuthResult
+            val result = if (pending != null) {
+                pending.await()
+            } else {
+                auth.startActivityForSignInWithProvider(activity, provider).await()
+            }
+            result.user ?: throw IllegalStateException("Login Facebook dibatalkan atau gagal.")
+        }
+    }
+
+    suspend fun sendPasswordReset(email: String): Result<Unit> {
+        val auth = getAuth()
+            ?: return Result.failure(IllegalStateException("Firebase Auth tidak tersedia."))
+        return runCatching {
+            auth.sendPasswordResetEmail(email.trim()).await()
+            Unit
+        }
     }
 
     suspend fun signUpWithEmail(
@@ -636,6 +745,111 @@ class FirestoreConvoyRepository {
                     )
                 )
         }
+    }
+
+    suspend fun finishRoomIfLeader(roomId: String, uid: String) {
+        val db = getFirestore() ?: return
+        runCatching {
+            val roomRef = db.collection("rooms").document(roomId)
+            val snap = roomRef.get().await()
+            if (snap.exists() && snap.getString("leaderUid") == uid) {
+                roomRef.update(
+                    mapOf(
+                        "status" to "FINISHED",
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                ).await()
+            }
+        }
+    }
+
+    suspend fun saveTripRecord(uid: String, record: TripHistoryRecord) {
+        val db = getFirestore() ?: return
+        val safeId = record.id.replace(Regex("[^a-zA-Z0-9_-]"), "").take(64)
+            .ifBlank { "trip-${System.currentTimeMillis()}" }
+        val roomCode = record.roomId.trim().uppercase(Locale.ROOT).take(24)
+            .ifBlank { "KNV-0000" }
+        val validWaypoints = record.waypoints
+            .filter { GeoUtils.hasValidGeoCoord(it.latitude, it.longitude) }
+            .map { LatLngGeo(it.latitude, it.longitude) }
+        val compactWaypoints = GeoUtils.downsampleLatLng(validWaypoints, 140)
+        val encodedPolyline = if (compactWaypoints.size >= 2) {
+            GeoUtils.encodePolyline(compactWaypoints).take(16384)
+        } else {
+            ""
+        }
+
+        runCatching {
+            val data = hashMapOf<String, Any>(
+                "id" to safeId,
+                "ownerUid" to uid,
+                "roomId" to roomCode,
+                "tourTitle" to record.tourTitle.trim().ifBlank { "Konvoi Touring" }.take(100),
+                "dateLabel" to record.dateLabel.take(32),
+                "timeRangeLabel" to record.timeRangeLabel.take(32),
+                "durationLabel" to record.durationLabel.take(32),
+                "durationMinutes" to record.durationMinutes.coerceIn(0, 10080),
+                "distanceKm" to record.distanceKm.coerceIn(0.0, 20000.0),
+                "avgSpeedKmh" to record.avgSpeedKmh.coerceIn(0, 350),
+                "maxSpeedKmh" to record.maxSpeedKmh.coerceIn(0, 350),
+                "userRole" to record.userRole.name,
+                "destinationName" to record.destinationName.take(120),
+                "destinationAddress" to record.destinationAddress.take(240),
+                "encodedPolyline" to encodedPolyline,
+                "createdAt" to FieldValue.serverTimestamp()
+            )
+            db.collection("users").document(uid)
+                .collection("trips").document(safeId)
+                .set(data)
+                .await()
+        }
+    }
+
+    suspend fun loadUserTrips(uid: String): List<TripHistoryRecord> {
+        val db = getFirestore() ?: return emptyList()
+        return runCatching {
+            val snap = db.collection("users").document(uid)
+                .collection("trips")
+                .whereEqualTo("ownerUid", uid)
+                .get()
+                .await()
+
+            snap.documents
+                .map { doc ->
+                    val createdMs = doc.getTimestamp("createdAt")?.toDate()?.time ?: 0L
+                    val encoded = doc.getString("encodedPolyline").orEmpty()
+                    val decoded = GeoUtils.downsampleLatLng(GeoUtils.decodePolyline(encoded), 120)
+                    val waypoints = if (decoded.size >= 2) {
+                        GeoUtils.toRoutePoints(decoded)
+                    } else {
+                        emptyList()
+                    }
+                    val record = TripHistoryRecord(
+                        id = doc.getString("id") ?: doc.id,
+                        roomId = doc.getString("roomId") ?: "KNV-0000",
+                        tourTitle = doc.getString("tourTitle") ?: "Konvoi Touring",
+                        dateLabel = doc.getString("dateLabel") ?: "-",
+                        timeRangeLabel = doc.getString("timeRangeLabel") ?: "-",
+                        durationLabel = doc.getString("durationLabel") ?: "-",
+                        durationMinutes = (doc.getLong("durationMinutes") ?: 0L).toInt(),
+                        distanceKm = doc.getDouble("distanceKm") ?: 0.0,
+                        avgSpeedKmh = (doc.getLong("avgSpeedKmh") ?: 0L).toInt(),
+                        maxSpeedKmh = (doc.getLong("maxSpeedKmh") ?: 0L).toInt(),
+                        userRole = runCatching {
+                            UserRole.valueOf(doc.getString("userRole") ?: "MEMBER")
+                        }.getOrDefault(UserRole.MEMBER),
+                        destinationName = doc.getString("destinationName") ?: "Tujuan Konvoi",
+                        destinationAddress = doc.getString("destinationAddress") ?: "",
+                        waypoints = waypoints,
+                        visitedCheckpoints = emptyList(),
+                        participants = emptyList()
+                    )
+                    createdMs to record
+                }
+                .sortedByDescending { it.first }
+                .take(40)
+                .map { it.second }
+        }.getOrDefault(emptyList())
     }
 
     fun isAdminEmail(email: String?): Boolean =

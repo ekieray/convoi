@@ -107,6 +107,18 @@ export async function signInWithGoogle(): Promise<User> {
   return cred.user;
 }
 
+export async function signInWithGoogleForMobileBridge(): Promise<{
+  user: User;
+  idToken: string | null;
+}> {
+  const cred = await signInWithPopup(auth, googleProvider);
+  const oauthCredential = GoogleAuthProvider.credentialFromResult(cred);
+  return {
+    user: cred.user,
+    idToken: oauthCredential?.idToken ?? null,
+  };
+}
+
 export async function signInWithFacebook(): Promise<User> {
   const cred = await signInWithPopup(auth, facebookProvider);
   return cred.user;

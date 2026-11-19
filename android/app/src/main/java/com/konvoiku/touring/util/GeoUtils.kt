@@ -1,11 +1,19 @@
 package com.konvoiku.touring.util
 
 import com.konvoiku.touring.model.RoutePoint
+import com.konvoiku.touring.model.VisitedCheckpointLog
+import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.asin
 import kotlin.math.atan2
 import kotlin.math.cos
+import kotlin.math.floor
 import kotlin.math.hypot
+import kotlin.math.ln
+import kotlin.math.log2
+import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.sqrt
@@ -19,8 +27,34 @@ data class RouteEvaluationResult(
     val offRouteMeters: Int
 )
 
+data class ProjectedViewportPoint(
+    val x: Float,
+    val y: Float
+)
+
+data class ProjectedMapTile(
+    val key: String,
+    val z: Int,
+    val x: Int,
+    val y: Int,
+    val left: Float,
+    val top: Float,
+    val size: Float
+)
+
+data class TripMapViewportProjection(
+    val waypoints: List<ProjectedViewportPoint>,
+    val checkpoints: List<ProjectedViewportPoint>,
+    val tiles: List<ProjectedMapTile>,
+    val hasGeo: Boolean,
+    val tileZoom: Int
+)
+
 object GeoUtils {
     private const val EARTH_RADIUS_METERS = 6_371_000.0
+
+    fun hasValidGeoCoord(lat: Double, lng: Double): Boolean =
+        lat.isFinite() && lng.isFinite() && (abs(lat) > 0.001 || abs(lng) > 0.001)
 
     fun haversineMeters(a: LatLngGeo, b: LatLngGeo): Double {
         val dLat = Math.toRadians(b.lat - a.lat)
@@ -32,6 +66,15 @@ object GeoUtils {
         val sinDLng = sin(dLng / 2.0)
         val h = sinDLat * sinDLat + cos(lat1) * cos(lat2) * sinDLng * sinDLng
         return 2.0 * EARTH_RADIUS_METERS * asin(min(1.0, sqrt(h)))
+    }
+
+    fun computePolylineLengthMeters(points: List<LatLngGeo>): Int {
+        if (points.size < 2) return 0
+        var total = 0.0
+        for (i in 0 until points.size - 1) {
+            total += haversineMeters(points[i], points[i + 1])
+        }
+        return total.roundToInt()
     }
 
     fun evaluatePositionAlongRoute(
@@ -159,6 +202,7 @@ object GeoUtils {
             val dLat = if ((result and 1) != 0) (result shr 1).inv() else result shr 1
             lat += dLat
 
+            if (index >= encoded.length) break
             shift = 0
             result = 0
             do {
@@ -174,6 +218,37 @@ object GeoUtils {
         return points
     }
 
+    fun downsampleTrackPoints(
+        points: List<LatLngGeo>,
+        minSpacingMeters: Double = 15.0,
+        maxPoints: Int = 150
+    ): List<LatLngGeo> {
+        if (points.isEmpty()) return emptyList()
+        val spaced = mutableListOf(points.first())
+        for (i in 1 until points.size - 1) {
+            val prev = spaced.last()
+            if (haversineMeters(prev, points[i]) >= minSpacingMeters) {
+                spaced.add(points[i])
+            }
+        }
+        if (points.size > 1) {
+            spaced.add(points.last())
+        }
+        return downsampleLatLng(spaced, maxPoints)
+    }
+
+    fun downsampleLatLng(
+        points: List<LatLngGeo>,
+        maxPoints: Int = 120
+    ): List<LatLngGeo> {
+        if (points.size <= maxPoints || maxPoints < 2) return points
+        val step = (points.size - 1).toDouble() / (maxPoints - 1).toDouble()
+        return List(maxPoints) { i ->
+            val idx = if (i == maxPoints - 1) points.lastIndex else (i * step).roundToInt().coerceIn(0, points.lastIndex)
+            points[idx]
+        }
+    }
+
     fun toRoutePoints(points: List<LatLngGeo>): List<RoutePoint> {
         if (points.isEmpty()) return emptyList()
         var minLat = Double.POSITIVE_INFINITY
@@ -186,15 +261,147 @@ object GeoUtils {
             if (pt.lng < minLng) minLng = pt.lng
             if (pt.lng > maxLng) maxLng = pt.lng
         }
-        val latSpan = (maxLat - minLat).coerceAtLeast(0.01)
-        val lngSpan = (maxLng - minLng).coerceAtLeast(0.01)
+        val avgLatRad = ((minLat + maxLat) / 2.0) * PI / 180.0
+        val lngScale = max(0.2, cos(avgLatRad))
+        val rawLatSpan = max(0.002, maxLat - minLat)
+        val rawLngSpan = max(0.002, (maxLng - minLng) * lngScale)
+        val maxSpan = max(rawLatSpan, rawLngSpan)
+        val centerLat = (minLat + maxLat) / 2.0
+        val centerLng = (minLng + maxLng) / 2.0
+
         return points.map { pt ->
             RoutePoint(
-                xFraction = (0.1 + ((pt.lng - minLng) / lngSpan) * 0.8).toFloat().coerceIn(0.08f, 0.92f),
-                yFraction = (0.9 - ((pt.lat - minLat) / latSpan) * 0.8).toFloat().coerceIn(0.08f, 0.90f),
+                xFraction = (0.5 + (((pt.lng - centerLng) * lngScale) / maxSpan) * 0.8)
+                    .toFloat().coerceIn(0.08f, 0.92f),
+                yFraction = (0.5 - ((pt.lat - centerLat) / maxSpan) * 0.8)
+                    .toFloat().coerceIn(0.08f, 0.92f),
                 latitude = pt.lat,
                 longitude = pt.lng
             )
         }
+    }
+
+    private fun mercatorNormX(lng: Double): Double = (lng + 180.0) / 360.0
+
+    private fun mercatorNormY(lat: Double): Double {
+        val clamped = lat.coerceIn(-85.05112878, 85.05112878)
+        val sinLat = sin(clamped * PI / 180.0)
+        return 0.5 - ln((1.0 + sinLat) / (1.0 - sinLat)) / (4.0 * PI)
+    }
+
+    fun projectTripMapViewport(
+        waypoints: List<RoutePoint>,
+        checkpoints: List<VisitedCheckpointLog>,
+        width: Float,
+        height: Float,
+        paddingFraction: Float = 0.14f
+    ): TripMapViewportProjection {
+        val validWaypoints = waypoints.filter { hasValidGeoCoord(it.latitude, it.longitude) }
+        val validCheckpoints = checkpoints.filter { hasValidGeoCoord(it.latitude, it.longitude) }
+        val allGeo = buildList {
+            validWaypoints.forEach { add(LatLngGeo(it.latitude, it.longitude)) }
+            validCheckpoints.forEach { add(LatLngGeo(it.latitude, it.longitude)) }
+        }
+
+        val padX = width * paddingFraction
+        val padY = height * paddingFraction
+        val usableW = max(20f, width - padX * 2f)
+        val usableH = max(20f, height - padY * 2f)
+
+        if (allGeo.isEmpty() || width <= 1f || height <= 1f) {
+            return TripMapViewportProjection(
+                waypoints = waypoints.map {
+                    ProjectedViewportPoint(padX + it.xFraction * usableW, padY + it.yFraction * usableH)
+                },
+                checkpoints = checkpoints.map {
+                    ProjectedViewportPoint(padX + it.xFraction * usableW, padY + it.yFraction * usableH)
+                },
+                tiles = emptyList(),
+                hasGeo = false,
+                tileZoom = 12
+            )
+        }
+
+        var minX = Double.POSITIVE_INFINITY
+        var maxX = Double.NEGATIVE_INFINITY
+        var minY = Double.POSITIVE_INFINITY
+        var maxY = Double.NEGATIVE_INFINITY
+        for (pt in allGeo) {
+            val nx = mercatorNormX(pt.lng)
+            val ny = mercatorNormY(pt.lat)
+            if (nx < minX) minX = nx
+            if (nx > maxX) maxX = nx
+            if (ny < minY) minY = ny
+            if (ny > maxY) maxY = ny
+        }
+
+        val minNormSpan = 0.000018
+        val spanX = max(minNormSpan, maxX - minX)
+        val spanY = max(minNormSpan, maxY - minY)
+
+        val worldNeededX = usableW / (spanX * 256.0)
+        val worldNeededY = usableH / (spanY * 256.0)
+        val scaleZoom = log2(min(worldNeededX, worldNeededY)).coerceIn(4.0, 16.4)
+        val tileZoom = floor(scaleZoom).toInt().coerceIn(4, 16)
+        val tileCountPerAxis = 1 shl tileZoom
+
+        val totalWorldPx = 256.0 * 2.0.pow(scaleZoom)
+        val centerWorldX = ((minX + maxX) / 2.0) * totalWorldPx
+        val centerWorldY = ((minY + maxY) / 2.0) * totalWorldPx
+
+        fun projectLatLng(lat: Double, lng: Double): ProjectedViewportPoint = ProjectedViewportPoint(
+            x = (width / 2.0 + (mercatorNormX(lng) * totalWorldPx - centerWorldX)).toFloat(),
+            y = (height / 2.0 + (mercatorNormY(lat) * totalWorldPx - centerWorldY)).toFloat()
+        )
+
+        val tileSizePx = (256.0 * 2.0.pow(scaleZoom - tileZoom)).toFloat()
+        val worldLeftPx = centerWorldX - width / 2.0
+        val worldTopPx = centerWorldY - height / 2.0
+        val worldRightPx = centerWorldX + width / 2.0
+        val worldBottomPx = centerWorldY + height / 2.0
+
+        val txStart = floor(worldLeftPx / tileSizePx).toInt()
+        val txEnd = floor(worldRightPx / tileSizePx).toInt()
+        val tyStart = max(0, floor(worldTopPx / tileSizePx).toInt())
+        val tyEnd = min(tileCountPerAxis - 1, floor(worldBottomPx / tileSizePx).toInt())
+
+        val tiles = buildList {
+            for (ty in tyStart..tyEnd) {
+                for (tx in txStart..txEnd) {
+                    val wrappedX = ((tx % tileCountPerAxis) + tileCountPerAxis) % tileCountPerAxis
+                    add(
+                        ProjectedMapTile(
+                            key = "$tileZoom-$wrappedX-$ty-$tx",
+                            z = tileZoom,
+                            x = wrappedX,
+                            y = ty,
+                            left = (width / 2.0 + (tx * tileSizePx - centerWorldX)).toFloat(),
+                            top = (height / 2.0 + (ty * tileSizePx - centerWorldY)).toFloat(),
+                            size = tileSizePx
+                        )
+                    )
+                }
+            }
+        }
+
+        return TripMapViewportProjection(
+            waypoints = waypoints.map { pt ->
+                if (hasValidGeoCoord(pt.latitude, pt.longitude)) {
+                    projectLatLng(pt.latitude, pt.longitude)
+                } else {
+                    ProjectedViewportPoint(padX + pt.xFraction * usableW, padY + pt.yFraction * usableH)
+                }
+            },
+            checkpoints = checkpoints.map { cp ->
+                if (hasValidGeoCoord(cp.latitude, cp.longitude)) {
+                    projectLatLng(cp.latitude, cp.longitude)
+                } else {
+                    ProjectedViewportPoint(padX + cp.xFraction * usableW, padY + cp.yFraction * usableH)
+                }
+            },
+            tiles = tiles,
+            hasGeo = true,
+            tileZoom = tileZoom
+        )
     }
 }

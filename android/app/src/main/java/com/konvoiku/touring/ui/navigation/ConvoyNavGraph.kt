@@ -5,6 +5,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -76,13 +77,37 @@ fun ConvoyNavGraph(
         }
     ) {
         composable(ConvoyRoute.Login.route) {
+            LaunchedEffect(uiState.isLoggedIn) {
+                if (uiState.isLoggedIn) {
+                    navController.navigate(ConvoyRoute.RoleSelection.route) {
+                        popUpTo(ConvoyRoute.Login.route) { inclusive = true }
+                    }
+                }
+            }
             LoginScreen(
                 initialName = uiState.authUserName.ifBlank { uiState.vehicleProfile.fullName },
                 initialEmail = uiState.authUserEmail,
                 isAuthLoading = uiState.isAuthLoading,
                 authError = uiState.authError,
+                authInfoMessage = uiState.authInfoMessage,
+                showGoogleBrowserFallback = uiState.showGoogleBrowserFallback,
                 globalConfig = uiState.globalConfig,
                 onClearAuthError = viewModel::clearAuthError,
+                onGoogleSignIn = { activity ->
+                    viewModel.signInWithGoogle(activity) {
+                        navController.navigate(ConvoyRoute.RoleSelection.route) {
+                            popUpTo(ConvoyRoute.Login.route) { inclusive = true }
+                        }
+                    }
+                },
+                onFacebookSignIn = { activity ->
+                    viewModel.signInWithFacebook(activity) {
+                        navController.navigate(ConvoyRoute.RoleSelection.route) {
+                            popUpTo(ConvoyRoute.Login.route) { inclusive = true }
+                        }
+                    }
+                },
+                onForgotPassword = viewModel::sendPasswordReset,
                 onEmailSignIn = { email, password ->
                     viewModel.signInWithEmail(email, password) {
                         navController.navigate(ConvoyRoute.RoleSelection.route) {
@@ -119,6 +144,7 @@ fun ConvoyNavGraph(
         composable(ConvoyRoute.RoleSelection.route) {
             RoleSelectionScreen(
                 activeRoom = uiState.activeRoom,
+                lastCompletedTrip = uiState.lastCompletedTrip ?: uiState.tripHistory.firstOrNull(),
                 destinationName = uiState.routeConfig.destinationName,
                 tripHistoryCount = uiState.tripHistory.size,
                 latestTripTitle = uiState.tripHistory.firstOrNull()?.tourTitle,
@@ -128,17 +154,22 @@ fun ConvoyNavGraph(
                 userProfile = uiState.vehicleProfile,
                 isGuestMode = uiState.isGuestMode,
                 globalConfig = uiState.globalConfig,
-                isAdminUser = viewModel.isAdminEmailSession(),
+                isAdminUser = uiState.isVerifiedAdmin || viewModel.isAdminEmailSession(),
+                isVerifiedAdmin = uiState.isVerifiedAdmin,
+                isCloudSyncConnected = uiState.isCloudSyncConnected,
                 onRoleSelected = { role ->
                     viewModel.selectRole(role)
                     navController.navigate(ConvoyRoute.VehicleProfile.route)
                 },
                 onResumeCurrentConvoy = {
-                    if (uiState.activeRoom == null) {
-                        viewModel.selectRole(UserRole.TOUR_LEADER)
-                        viewModel.createNewTourRoom()
+                    if (uiState.activeRoom != null) {
+                        navController.navigate(ConvoyRoute.LiveMap.route)
                     }
-                    navController.navigate(ConvoyRoute.LiveMap.route)
+                },
+                onRepeatTour = { trip ->
+                    viewModel.repeatCompletedTrip(trip) {
+                        navController.navigate(ConvoyRoute.LiveMap.route)
+                    }
                 },
                 onOpenCustomizeProfile = {
                     viewModel.clearProfileSyncMessage()
@@ -165,8 +196,12 @@ fun ConvoyNavGraph(
 
         composable(ConvoyRoute.AdminBackend.route) {
             AdminBackendScreen(
-                isVerifiedAdmin = viewModel.isVerifiedAdminSession(),
+                isVerifiedAdmin = uiState.isVerifiedAdmin,
                 authUserEmail = uiState.authUserEmail,
+                isCloudConnected = uiState.isCloudSyncConnected,
+                isAuthLoading = uiState.isAuthLoading,
+                authError = uiState.authError,
+                isMonitoringLoading = uiState.isAdminMonitoringLoading,
                 globalConfig = uiState.globalConfig,
                 presenceList = uiState.adminPresenceList,
                 rooms = uiState.adminRooms,
@@ -174,6 +209,7 @@ fun ConvoyNavGraph(
                 monitorError = uiState.adminMonitorError,
                 isSavingConfig = uiState.isSavingGlobalConfig,
                 configFeedback = uiState.globalConfigFeedback,
+                onGoogleSignIn = { activity -> viewModel.signInWithGoogle(activity) },
                 onStartMonitoring = viewModel::startAdminMonitoring,
                 onStopMonitoring = viewModel::stopAdminMonitoring,
                 onSaveGlobalConfig = viewModel::saveGlobalConfig,
@@ -335,7 +371,8 @@ fun ConvoyNavGraph(
                         route = ConvoyRoute.RoleSelection.route,
                         inclusive = false
                     )
-                }
+                },
+                onRouteComputed = viewModel::updateComputedTomTomRoute
             )
         }
 
