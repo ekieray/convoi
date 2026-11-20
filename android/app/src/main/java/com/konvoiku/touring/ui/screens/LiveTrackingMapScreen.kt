@@ -1451,7 +1451,7 @@ fun LiveTrackingMapScreen(
                     )
                 }
 
-                AnimatedVisibility(
+                androidx.compose.animation.AnimatedVisibility(
                     visible = showSideInfoDrawer,
                     enter = slideInHorizontally(initialOffsetX = { -it }) + fadeIn(),
                     exit = slideOutHorizontally(targetOffsetX = { -it }) + fadeOut(),
