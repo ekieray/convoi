@@ -8,6 +8,7 @@ import com.konvoiku.touring.model.RouteInstruction
 import com.konvoiku.touring.model.RoutePoint
 import com.konvoiku.touring.model.UserRole
 import com.konvoiku.touring.model.VisitedCheckpointLog
+import java.util.Locale
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.asin
