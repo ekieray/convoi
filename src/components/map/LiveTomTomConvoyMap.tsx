@@ -47,6 +47,7 @@ interface LiveTomTomConvoyMapProps {
   isPickingDestination: boolean;
   isPickingCheckpoint: boolean;
   isNavigationMode?: boolean;
+  cleanNavMode?: boolean;
   canPingTomTomRouting?: boolean;
   onToggleNavigationMode?: () => void;
   onSelectMember: (memberId: string) => void;
@@ -116,6 +117,7 @@ export function LiveTomTomConvoyMap({
   isPickingDestination,
   isPickingCheckpoint,
   isNavigationMode = false,
+  cleanNavMode = false,
   canPingTomTomRouting = true,
   onToggleNavigationMode,
   onSelectMember,
@@ -728,26 +730,29 @@ export function LiveTomTomConvoyMap({
 
       {/* Bottom-Left: Digital Speedometer & Compass in Nav Mode OR Attribution */}
       {activeNavMode ? (
-        <div className="absolute bottom-3 left-2.5 z-20 pointer-events-none rounded-2xl bg-[#0F172A]/90 backdrop-blur-md border border-white/15 text-white px-3 py-2 shadow-lg flex items-center gap-2.5">
-          <div>
-            <div className="flex items-baseline gap-1">
-              <span className="text-2xl font-extrabold font-mono tabular-nums leading-none">
-                {navGuidance.speedKmh}
+        <div className="absolute bottom-3 left-2.5 z-20 pointer-events-none rounded-2xl bg-[#0F172A]/90 backdrop-blur-md border border-white/15 text-white px-3 py-2 shadow-lg">
+          <div className="flex items-baseline gap-1">
+            <span className="text-2xl font-extrabold font-mono tabular-nums leading-none">
+              {navGuidance.speedKmh}
+            </span>
+            <span className="text-[10px] font-semibold text-white/75">
+              km/j
+            </span>
+            {cleanNavMode && (
+              <span className="ml-1.5 pl-1.5 border-l border-white/20 text-[10px] font-mono tabular-nums text-[#86EFAC] font-semibold">
+                {etaInfo.arrivalClockLabel} · {etaInfo.distanceLabel}
               </span>
-              <span className="text-[10px] font-semibold text-white/75">
-                km/j
-              </span>
-            </div>
-            <div className="mt-1 flex items-center gap-1 text-[10px] font-mono text-[#38BDF8]">
-              <Navigation
-                className="w-2.5 h-2.5"
-                style={{ transform: `rotate(${navHeadingDeg}deg)` }}
-              />
-              <span>
-                {navHeadingDeg}° {compassDirectionLabel(navHeadingDeg)}
-              </span>
-              <span className="text-white/45">· TomTom</span>
-            </div>
+            )}
+          </div>
+          <div className="mt-1 flex items-center gap-1 text-[10px] font-mono text-[#38BDF8]">
+            <Navigation
+              className="w-2.5 h-2.5"
+              style={{ transform: `rotate(${navHeadingDeg}deg)` }}
+            />
+            <span>
+              {navHeadingDeg}° {compassDirectionLabel(navHeadingDeg)}
+            </span>
+            <span className="text-white/45">· TomTom</span>
           </div>
         </div>
       ) : (
@@ -792,35 +797,39 @@ export function LiveTomTomConvoyMap({
         >
           <Layers className="w-4 h-4" />
         </button>
-        <button
-          type="button"
-          onClick={() => setShowTraffic((t) => !t)}
-          aria-label="Toggle Lalu Lintas TomTom"
-          title={showTraffic ? 'Sembunyikan Traffic' : 'Tampilkan Traffic Live'}
-          className={`w-9 h-9 rounded-xl border shadow-sm flex items-center justify-center cursor-pointer transition-colors ${
-            showTraffic
-              ? 'bg-[#0F766E] text-white border-[#115E59]'
-              : 'bg-white dark:bg-[#141C24] border-[#E2E8F0] dark:border-[#334155] text-[#0F172A] dark:text-[#F1F5F9]'
-          }`}
-        >
-          <Activity className="w-4 h-4" />
-        </button>
-        <button
-          type="button"
-          onClick={() => adjustZoom(1)}
-          aria-label="Perbesar Peta"
-          className="w-9 h-9 rounded-xl bg-white dark:bg-[#141C24] border border-[#E2E8F0] dark:border-[#334155] shadow-sm flex items-center justify-center cursor-pointer"
-        >
-          <Plus className="w-4 h-4" />
-        </button>
-        <button
-          type="button"
-          onClick={() => adjustZoom(-1)}
-          aria-label="Perkecil Peta"
-          className="w-9 h-9 rounded-xl bg-white dark:bg-[#141C24] border border-[#E2E8F0] dark:border-[#334155] shadow-sm flex items-center justify-center cursor-pointer"
-        >
-          <Minus className="w-4 h-4" />
-        </button>
+        {!cleanNavMode && (
+          <>
+            <button
+              type="button"
+              onClick={() => setShowTraffic((t) => !t)}
+              aria-label="Toggle Lalu Lintas TomTom"
+              title={showTraffic ? 'Sembunyikan Traffic' : 'Tampilkan Traffic Live'}
+              className={`w-9 h-9 rounded-xl border shadow-sm flex items-center justify-center cursor-pointer transition-colors ${
+                showTraffic
+                  ? 'bg-[#0F766E] text-white border-[#115E59]'
+                  : 'bg-white dark:bg-[#141C24] border-[#E2E8F0] dark:border-[#334155] text-[#0F172A] dark:text-[#F1F5F9]'
+              }`}
+            >
+              <Activity className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => adjustZoom(1)}
+              aria-label="Perbesar Peta"
+              className="w-9 h-9 rounded-xl bg-white dark:bg-[#141C24] border border-[#E2E8F0] dark:border-[#334155] shadow-sm flex items-center justify-center cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => adjustZoom(-1)}
+              aria-label="Perkecil Peta"
+              className="w-9 h-9 rounded-xl bg-white dark:bg-[#141C24] border border-[#E2E8F0] dark:border-[#334155] shadow-sm flex items-center justify-center cursor-pointer"
+            >
+              <Minus className="w-4 h-4" />
+            </button>
+          </>
+        )}
         <button
           type="button"
           onClick={() => {
@@ -841,21 +850,23 @@ export function LiveTomTomConvoyMap({
         >
           <LocateFixed className="w-4 h-4" />
         </button>
-        <button
-          type="button"
-          onClick={() => {
-            if (isNavigationMode && onToggleNavigationMode) {
-              onToggleNavigationMode();
-            }
-            setIsAutoFollowing(false);
-            setFitAllTrigger((n) => n + 1);
-          }}
-          aria-label="Lihat Seluruh Rute"
-          title="Lihat Seluruh Rute"
-          className="w-9 h-9 rounded-xl bg-white dark:bg-[#141C24] border border-[#E2E8F0] dark:border-[#334155] shadow-sm flex items-center justify-center text-[#EA580C] cursor-pointer"
-        >
-          <Compass className="w-4 h-4" />
-        </button>
+        {!cleanNavMode && (
+          <button
+            type="button"
+            onClick={() => {
+              if (isNavigationMode && onToggleNavigationMode) {
+                onToggleNavigationMode();
+              }
+              setIsAutoFollowing(false);
+              setFitAllTrigger((n) => n + 1);
+            }}
+            aria-label="Lihat Seluruh Rute"
+            title="Lihat Seluruh Rute"
+            className="w-9 h-9 rounded-xl bg-white dark:bg-[#141C24] border border-[#E2E8F0] dark:border-[#334155] shadow-sm flex items-center justify-center text-[#EA580C] cursor-pointer"
+          >
+            <Compass className="w-4 h-4" />
+          </button>
+        )}
       </div>
     </div>
   );

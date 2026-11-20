@@ -7,12 +7,16 @@ import {
   Car,
   CheckCircle2,
   ChevronDown,
+  ChevronRight,
   ChevronUp,
   Clock,
   Cloud,
   Coffee,
+  Eye,
+  EyeOff,
   Flag,
   Gauge,
+  Info,
   LocateFixed,
   MapPin,
   MessageCircle,
@@ -348,6 +352,10 @@ export function LiveTrackingMapView({
   onExitRoom,
 }: LiveTrackingMapViewProps) {
   const [isNavigationMode, setIsNavigationMode] = useState(true);
+  const [isNavInfoHidden, setIsNavInfoHidden] = useState(true);
+  const [showSideInfoDrawer, setShowSideInfoDrawer] = useState(false);
+  const [sideInfoTouchTick, setSideInfoTouchTick] = useState(0);
+  const [sideInfoSecondsLeft, setSideInfoSecondsLeft] = useState(7);
   const [participantsExpanded, setParticipantsExpanded] = useState(false);
   const [showChatSheet, setShowChatSheet] = useState(false);
   const [showLeaderSettings, setShowLeaderSettings] = useState(false);
@@ -364,12 +372,37 @@ export function LiveTrackingMapView({
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
   const prevAlertKeyRef = useRef('');
 
-  // Auto-transition to Turn-by-Turn GPS Navigation Mode whenever a convoy starts/opens
+  // Auto-transition to Clean Turn-by-Turn GPS Navigation Mode whenever a convoy starts/opens
   useEffect(() => {
     if (activeRoom?.roomId) {
       setIsNavigationMode(true);
+      setIsNavInfoHidden(true);
+      setShowSideInfoDrawer(false);
     }
   }, [activeRoom?.roomId]);
+
+  // Auto-hide Side Info Drawer after 7 seconds of inactivity
+  useEffect(() => {
+    if (!showSideInfoDrawer) return;
+    setSideInfoSecondsLeft(7);
+    const intervalId = window.setInterval(() => {
+      setSideInfoSecondsLeft((prev) => {
+        if (prev <= 1) {
+          window.clearInterval(intervalId);
+          setShowSideInfoDrawer(false);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => window.clearInterval(intervalId);
+  }, [showSideInfoDrawer, sideInfoTouchTick]);
+
+  const touchSideDrawer = () => setSideInfoTouchTick((t) => t + 1);
+  const openSideDrawer = () => {
+    setShowSideInfoDrawer(true);
+    setSideInfoTouchTick((t) => t + 1);
+  };
 
   const members = [...(activeRoom?.members ?? [])].sort(
     (a, b) => a.convoyOrderRank - b.convoyOrderRank
@@ -494,6 +527,9 @@ export function LiveTrackingMapView({
     0.5,
     Math.min(5.0, routeConfig.maxStragglerDistanceMeters / 1000)
   );
+  const activeNavMode =
+    isNavigationMode && !isPickingDestinationOnMap && !isPickingCheckpointOnMap;
+  const isCleanNavHud = activeNavMode && isNavInfoHidden;
 
   return (
     <div
@@ -524,7 +560,13 @@ export function LiveTrackingMapView({
         <div className="flex items-center gap-1 shrink-0">
           <button
             type="button"
-            onClick={() => setIsNavigationMode((v) => !v)}
+            onClick={() =>
+              setIsNavigationMode((prev) => {
+                const next = !prev;
+                if (next) setIsNavInfoHidden(true);
+                return next;
+              })
+            }
             className={`px-2 py-1.5 rounded-lg text-[10px] font-semibold transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1 ${
               isNavigationMode
                 ? 'bg-[#EA580C] text-white'
@@ -534,6 +576,30 @@ export function LiveTrackingMapView({
             <Navigation className="w-3 h-3 shrink-0" />
             <span>{isNavigationMode ? 'Pantau Peta' : 'Navigasi GPS'}</span>
           </button>
+
+          {activeNavMode && (
+            <button
+              type="button"
+              onClick={() => setIsNavInfoHidden((v) => !v)}
+              title={
+                isNavInfoHidden
+                  ? 'Tampilkan Info Lengkap di Layar'
+                  : 'Sembunyikan Info (Layar Navigasi Bersih)'
+              }
+              className={`px-2 py-1.5 rounded-lg text-[10px] font-semibold transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1 border ${
+                isNavInfoHidden
+                  ? 'bg-[#0F172A] dark:bg-[#1E293B] text-white border-[#334155]'
+                  : 'bg-[#EFF6FF] dark:bg-[#1E3A8A]/50 text-[#1D4ED8] dark:text-[#93C5FD] border-[#BFDBFE] dark:border-[#1E40AF]'
+              }`}
+            >
+              {isNavInfoHidden ? (
+                <EyeOff className="w-3 h-3 shrink-0" />
+              ) : (
+                <Eye className="w-3 h-3 shrink-0" />
+              )}
+              <span>{isNavInfoHidden ? 'Bersih' : 'Info HUD'}</span>
+            </button>
+          )}
 
           <button
             type="button"
@@ -568,8 +634,9 @@ export function LiveTrackingMapView({
         </div>
       </div>
 
-      {/* Collapsible Top Participant Strip & Expanded Drawer */}
-      <div className="shrink-0 bg-white dark:bg-[#141C24] border-b border-[#E2E8F0] dark:border-[#334155] z-20">
+      {/* Collapsible Top Participant Strip & Expanded Drawer (Hidden during Clean Navigation Mode) */}
+      {!isCleanNavHud && (
+        <div className="shrink-0 bg-white dark:bg-[#141C24] border-b border-[#E2E8F0] dark:border-[#334155] z-20">
         <button
           type="button"
           onClick={() => setParticipantsExpanded((prev) => !prev)}
@@ -805,7 +872,8 @@ export function LiveTrackingMapView({
             </div>
           </div>
         )}
-      </div>
+        </div>
+      )}
 
       {/* SOS Emergency Banner */}
       {sosState.isActive && (
@@ -905,140 +973,600 @@ export function LiveTrackingMapView({
             isPickingDestination={isPickingDestinationOnMap}
             isPickingCheckpoint={isPickingCheckpointOnMap}
             isNavigationMode={isNavigationMode}
+            cleanNavMode={isCleanNavHud}
             canPingTomTomRouting={canPingTomTomRouting}
-            onToggleNavigationMode={() => setIsNavigationMode((v) => !v)}
+            onToggleNavigationMode={() =>
+              setIsNavigationMode((prev) => {
+                const next = !prev;
+                if (next) setIsNavInfoHidden(true);
+                return next;
+              })
+            }
             onSelectMember={onSelectMember}
             onPickCoordinateOnMap={handlePickCoordinateOnMap}
             onRouteComputed={onRouteComputed}
           />
         </div>
 
-        {/* Top-Left Live GPS, Sync Badge, Economical API Indicator & Optional Offline Controls */}
-        <div
-          className={`absolute left-2.5 z-20 flex flex-col gap-1.5 max-w-[68%] transition-all ${
-            isNavigationMode && !isPickingDestinationOnMap && !isPickingCheckpointOnMap
-              ? 'top-[78px]'
-              : 'top-3'
-          }`}
-        >
-          <div className="flex flex-wrap items-center gap-1.5">
-            <button
-              type="button"
-              onClick={onRetryGps}
-              className={`px-2.5 py-1 rounded-xl text-[10px] font-semibold border shadow-sm flex items-center gap-1.5 cursor-pointer ${
-                gpsStatus === 'active'
-                  ? 'bg-[#ECFDF5]/95 dark:bg-[#064E3B]/95 text-[#15803D] dark:text-[#4ADE80] border-[#86EFAC] dark:border-[#166534]'
-                  : gpsStatus === 'denied' || gpsStatus === 'unavailable'
-                    ? 'bg-[#FEF2F2]/95 dark:bg-[#450A0A]/95 text-[#DC2626] dark:text-[#FCA5A5] border-[#FCA5A5] dark:border-[#991B1B]'
-                    : 'bg-white/95 dark:bg-[#141C24]/95 text-[#1D4ED8] dark:text-[#60A5FA] border-[#E2E8F0] dark:border-[#334155]'
-              }`}
-            >
-              <LocateFixed className="w-3 h-3 shrink-0" />
-              <span>
-                {gpsStatus === 'active'
-                  ? `GPS Aktif ±${gpsAccuracyMeters ?? 15}m`
-                  : gpsStatus === 'requesting'
-                    ? 'Mencari Sinyal GPS...'
-                    : gpsStatus === 'denied'
-                      ? 'Izin GPS Ditolak (Coba Lagi)'
-                      : gpsStatus === 'unavailable'
-                        ? 'GPS Tidak Tersedia'
-                        : 'GPS Siap'}
-              </span>
-            </button>
+        {/* Top-Left Live GPS, Sync Badge, Economical API Indicator & Sim Controls (Hidden when Clean Nav HUD active) */}
+        {!isCleanNavHud ? (
+          <div
+            className={`absolute left-2.5 z-20 flex flex-col gap-1.5 max-w-[68%] transition-all ${
+              activeNavMode ? 'top-[78px]' : 'top-3'
+            }`}
+          >
+            <div className="flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                onClick={onRetryGps}
+                className={`px-2.5 py-1 rounded-xl text-[10px] font-semibold border shadow-sm flex items-center gap-1.5 cursor-pointer ${
+                  gpsStatus === 'active'
+                    ? 'bg-[#ECFDF5]/95 dark:bg-[#064E3B]/95 text-[#15803D] dark:text-[#4ADE80] border-[#86EFAC] dark:border-[#166534]'
+                    : gpsStatus === 'denied' || gpsStatus === 'unavailable'
+                      ? 'bg-[#FEF2F2]/95 dark:bg-[#450A0A]/95 text-[#DC2626] dark:text-[#FCA5A5] border-[#FCA5A5] dark:border-[#991B1B]'
+                      : 'bg-white/95 dark:bg-[#141C24]/95 text-[#1D4ED8] dark:text-[#60A5FA] border-[#E2E8F0] dark:border-[#334155]'
+                }`}
+              >
+                <LocateFixed className="w-3 h-3 shrink-0" />
+                <span>
+                  {gpsStatus === 'active'
+                    ? `GPS Aktif ±${gpsAccuracyMeters ?? 15}m`
+                    : gpsStatus === 'requesting'
+                      ? 'Mencari Sinyal GPS...'
+                      : gpsStatus === 'denied'
+                        ? 'Izin GPS Ditolak (Coba Lagi)'
+                        : gpsStatus === 'unavailable'
+                          ? 'GPS Tidak Tersedia'
+                          : 'GPS Siap'}
+                </span>
+              </button>
 
-            {activeRoom?.isSyncedRoom && (
-              <span className="px-2 py-1 rounded-xl text-[10px] font-semibold bg-[#1D4ED8]/95 text-white shadow-sm flex items-center gap-1">
-                <Cloud className="w-3 h-3 shrink-0" />
-                <span>Room Sync</span>
+              {activeRoom?.isSyncedRoom && (
+                <span className="px-2 py-1 rounded-xl text-[10px] font-semibold bg-[#1D4ED8]/95 text-white shadow-sm flex items-center gap-1">
+                  <Cloud className="w-3 h-3 shrink-0" />
+                  <span>Room Sync</span>
+                </span>
+              )}
+
+              <span
+                className={`px-2 py-1 rounded-xl text-[10px] font-semibold shadow-sm border flex items-center gap-1 ${
+                  canPingTomTomRouting
+                    ? 'bg-[#EFF6FF]/95 dark:bg-[#1E3A8A]/90 text-[#1D4ED8] dark:text-[#DBEAFE] border-[#BFDBFE] dark:border-[#1E40AF]'
+                    : 'bg-[#F5F3FF]/95 dark:bg-[#2E1065]/90 text-[#6D28D9] dark:text-[#DDD6FE] border-[#DDD6FE] dark:border-[#5B21B6]'
+                }`}
+              >
+                <Route className="w-3 h-3 shrink-0" />
+                <span>
+                  {canPingTomTomRouting
+                    ? activeRoom?.leaderTroubleActive
+                      ? 'Ping TomTom: Plt. Leader'
+                      : 'Ping TomTom: HP Leader'
+                    : 'Salinan Rute Leader (Hemat API)'}
+                </span>
               </span>
+            </div>
+
+            {gpsStatus === 'denied' && gpsErrorMessage && (
+              <div className="px-2.5 py-1.5 rounded-xl bg-[#FEF2F2]/95 dark:bg-[#450A0A]/95 border border-[#FCA5A5] dark:border-[#991B1B] text-[10px] leading-snug text-[#991B1B] dark:text-[#FECACA] shadow-sm">
+                {gpsErrorMessage}
+              </div>
             )}
 
-            <span
-              className={`px-2 py-1 rounded-xl text-[10px] font-semibold shadow-sm border flex items-center gap-1 ${
-                canPingTomTomRouting
-                  ? 'bg-[#EFF6FF]/95 dark:bg-[#1E3A8A]/90 text-[#1D4ED8] dark:text-[#DBEAFE] border-[#BFDBFE] dark:border-[#1E40AF]'
-                  : 'bg-[#F5F3FF]/95 dark:bg-[#2E1065]/90 text-[#6D28D9] dark:text-[#DDD6FE] border-[#DDD6FE] dark:border-[#5B21B6]'
-              }`}
+            {!activeRoom?.isSyncedRoom && (
+              <div className="flex flex-wrap gap-1.5">
+                <button
+                  type="button"
+                  onClick={onToggleOffRouteSim}
+                  className={`px-2 py-1 rounded-xl text-[10px] font-semibold border shadow-sm transition-colors cursor-pointer whitespace-nowrap ${
+                    isOffRouteSimActive
+                      ? 'bg-[#DC2626] text-white border-[#991B1B]'
+                      : 'bg-white/95 dark:bg-[#141C24]/95 text-[#334155] dark:text-[#CBD5E1] border-[#E2E8F0] dark:border-[#334155]'
+                  }`}
+                >
+                  {isOffRouteSimActive ? 'Keluar Jalur: Aktif' : 'Uji Keluar Jalur'}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={onToggleStragglerSim}
+                  className={`px-2 py-1 rounded-xl text-[10px] font-semibold border shadow-sm transition-colors cursor-pointer whitespace-nowrap ${
+                    isStragglerSimActive
+                      ? 'bg-[#B45309] text-white border-[#92400E]'
+                      : 'bg-white/95 dark:bg-[#141C24]/95 text-[#334155] dark:text-[#CBD5E1] border-[#E2E8F0] dark:border-[#334155]'
+                  }`}
+                >
+                  {isStragglerSimActive ? 'Tertinggal: Aktif' : 'Uji Tertinggal'}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={onToggleLeaderTroubleSim}
+                  className={`px-2 py-1 rounded-xl text-[10px] font-semibold border shadow-sm transition-colors cursor-pointer whitespace-nowrap ${
+                    isLeaderTroubleSimActive
+                      ? 'bg-[#6D28D9] text-white border-[#5B21B6]'
+                      : 'bg-white/95 dark:bg-[#141C24]/95 text-[#6D28D9] dark:text-[#C4B5FD] border-[#DDD6FE] dark:border-[#5B21B6]'
+                  }`}
+                >
+                  {isLeaderTroubleSimActive
+                    ? 'Trouble Leader: Aktif'
+                    : 'Uji Trouble Leader'}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={onToggleSimulation}
+                  aria-label={isSimulationRunning ? 'Jeda Simulasi' : 'Lanjut Simulasi'}
+                  className="px-2 py-1 rounded-xl bg-white/95 dark:bg-[#141C24]/95 border border-[#E2E8F0] dark:border-[#334155] shadow-sm text-[10px] font-semibold text-[#1D4ED8] dark:text-[#60A5FA] flex items-center gap-1 cursor-pointer"
+                >
+                  {isSimulationRunning ? (
+                    <>
+                      <Pause className="w-3 h-3" />
+                      <span>Jeda</span>
+                    </>
+                  ) : (
+                    <>
+                      <Play className="w-3 h-3" />
+                      <span>Simulasi</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            )}
+          </div>
+        ) : gpsStatus === 'denied' ? (
+          <button
+            type="button"
+            onClick={onRetryGps}
+            className="absolute left-2.5 top-[78px] z-20 px-2.5 py-1.5 rounded-xl bg-[#FEF2F2]/95 dark:bg-[#450A0A]/95 border border-[#FCA5A5] dark:border-[#991B1B] text-[10px] font-semibold text-[#DC2626] dark:text-[#FCA5A5] shadow-sm flex items-center gap-1.5 cursor-pointer"
+          >
+            <LocateFixed className="w-3 h-3 shrink-0" />
+            <span>Izin GPS Ditolak · Ketuk</span>
+          </button>
+        ) : null}
+
+        {/* Left-Edge Handle for Auto-Hiding Side Info Drawer */}
+        {!showSideInfoDrawer &&
+          !isPickingDestinationOnMap &&
+          !isPickingCheckpointOnMap && (
+            <button
+              type="button"
+              onClick={openSideDrawer}
+              aria-label="Buka Panel Info & Data Perjalanan"
+              className="absolute left-0 top-1/2 -translate-y-1/2 z-20 min-h-[58px] pl-2 pr-2.5 py-2 rounded-r-2xl bg-white/92 dark:bg-[#141C24]/92 backdrop-blur-md border border-l-0 border-[#CBD5E1] dark:border-[#334155] shadow-lg flex flex-col items-center justify-center gap-1 text-[#0F172A] dark:text-[#F1F5F9] hover:bg-white dark:hover:bg-[#1E293B] transition-colors cursor-pointer"
             >
-              <Route className="w-3 h-3 shrink-0" />
-              <span>
-                {canPingTomTomRouting
-                  ? activeRoom?.leaderTroubleActive
-                    ? 'Ping TomTom: Plt. Leader'
-                    : 'Ping TomTom: HP Leader'
-                  : 'Salinan Rute Leader (Hemat API)'}
-              </span>
-            </span>
+              <div className="relative">
+                <Info className="w-4 h-4 text-[#1D4ED8] dark:text-[#60A5FA]" />
+                {(sosState.isActive ||
+                  offRouteAlert.isOffRoute ||
+                  stragglerAlert.isTriggered ||
+                  activeRoom?.leaderTroubleActive) && (
+                  <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-[#EA580C]" />
+                )}
+              </div>
+              <span className="text-[9px] font-bold tracking-tight">Info</span>
+              <ChevronRight className="w-3 h-3 text-[#64748B] dark:text-[#94A3B8]" />
+            </button>
+          )}
+
+        {/* Collapsible Auto-Hiding Side Info Drawer (7s inactivity auto-collapse) */}
+        {showSideInfoDrawer && (
+          <div
+            onClick={() => setShowSideInfoDrawer(false)}
+            aria-hidden="true"
+            className="absolute inset-0 z-30 bg-black/25 backdrop-blur-[1px]"
+          />
+        )}
+        <aside
+          aria-label="Panel Info & Data Perjalanan"
+          onPointerDown={touchSideDrawer}
+          onScroll={touchSideDrawer}
+          className={`absolute inset-y-0 left-0 z-30 w-[294px] max-w-[85%] bg-white/98 dark:bg-[#141C24]/98 backdrop-blur-md border-r border-[#E2E8F0] dark:border-[#334155] shadow-2xl flex flex-col transition-transform duration-200 ease-out ${
+            showSideInfoDrawer
+              ? 'translate-x-0'
+              : '-translate-x-full pointer-events-none'
+          }`}
+        >
+          {/* Drawer Header with Auto-Hide Countdown */}
+          <div className="shrink-0 px-3.5 py-2.5 border-b border-[#E2E8F0] dark:border-[#334155] flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5">
+                <Info className="w-4 h-4 text-[#1D4ED8] dark:text-[#60A5FA] shrink-0" />
+                <h3 className="text-xs font-bold truncate">
+                  Info & Data Perjalanan
+                </h3>
+              </div>
+              <p className="text-[10px] text-[#64748B] dark:text-[#94A3B8] font-mono tabular-nums mt-0.5">
+                {activeRoom?.roomId || 'KNV-8492'} · Auto-hide {sideInfoSecondsLeft}d
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowSideInfoDrawer(false)}
+              aria-label="Tutup Panel Info"
+              className="w-8 h-8 rounded-full flex items-center justify-center hover:bg-[#F1F5F9] dark:hover:bg-[#1E293B] cursor-pointer shrink-0"
+            >
+              <X className="w-4 h-4" />
+            </button>
           </div>
 
-          {gpsStatus === 'denied' && gpsErrorMessage && (
-            <div className="px-2.5 py-1.5 rounded-xl bg-[#FEF2F2]/95 dark:bg-[#450A0A]/95 border border-[#FCA5A5] dark:border-[#991B1B] text-[10px] leading-snug text-[#991B1B] dark:text-[#FECACA] shadow-sm">
-              {gpsErrorMessage}
-            </div>
-          )}
-
-          {!activeRoom?.isSyncedRoom && (
-            <div className="flex flex-wrap gap-1.5">
+          <div
+            onScroll={touchSideDrawer}
+            className="flex-1 overflow-y-auto px-3.5 py-3 space-y-3.5 text-xs"
+          >
+            {/* Clean Navigation HUD Toggle */}
+            <div className="flex items-center justify-between gap-2 pb-2.5 border-b border-[#E2E8F0] dark:border-[#334155]">
+              <div className="min-w-0">
+                <p className="text-[11px] font-semibold">
+                  Layar Navigasi Bersih
+                </p>
+                <p className="text-[10px] text-[#64748B] dark:text-[#94A3B8]">
+                  Sembunyikan strip & grafik saat navigasi
+                </p>
+              </div>
               <button
                 type="button"
-                onClick={onToggleOffRouteSim}
-                className={`px-2 py-1 rounded-xl text-[10px] font-semibold border shadow-sm transition-colors cursor-pointer whitespace-nowrap ${
-                  isOffRouteSimActive
-                    ? 'bg-[#DC2626] text-white border-[#991B1B]'
-                    : 'bg-white/95 dark:bg-[#141C24]/95 text-[#334155] dark:text-[#CBD5E1] border-[#E2E8F0] dark:border-[#334155]'
+                role="switch"
+                aria-checked={isNavInfoHidden}
+                onClick={() => {
+                  touchSideDrawer();
+                  setIsNavInfoHidden((v) => !v);
+                }}
+                className={`w-10 h-6 rounded-full p-0.5 transition-colors cursor-pointer shrink-0 ${
+                  isNavInfoHidden
+                    ? 'bg-[#1D4ED8]'
+                    : 'bg-[#CBD5E1] dark:bg-[#334155]'
                 }`}
               >
-                {isOffRouteSimActive ? 'Keluar Jalur: Aktif' : 'Uji Keluar Jalur'}
-              </button>
-
-              <button
-                type="button"
-                onClick={onToggleStragglerSim}
-                className={`px-2 py-1 rounded-xl text-[10px] font-semibold border shadow-sm transition-colors cursor-pointer whitespace-nowrap ${
-                  isStragglerSimActive
-                    ? 'bg-[#B45309] text-white border-[#92400E]'
-                    : 'bg-white/95 dark:bg-[#141C24]/95 text-[#334155] dark:text-[#CBD5E1] border-[#E2E8F0] dark:border-[#334155]'
-                }`}
-              >
-                {isStragglerSimActive ? 'Tertinggal: Aktif' : 'Uji Tertinggal'}
-              </button>
-
-              <button
-                type="button"
-                onClick={onToggleLeaderTroubleSim}
-                className={`px-2 py-1 rounded-xl text-[10px] font-semibold border shadow-sm transition-colors cursor-pointer whitespace-nowrap ${
-                  isLeaderTroubleSimActive
-                    ? 'bg-[#6D28D9] text-white border-[#5B21B6]'
-                    : 'bg-white/95 dark:bg-[#141C24]/95 text-[#6D28D9] dark:text-[#C4B5FD] border-[#DDD6FE] dark:border-[#5B21B6]'
-                }`}
-              >
-                {isLeaderTroubleSimActive
-                  ? 'Trouble Leader: Aktif'
-                  : 'Uji Trouble Leader'}
-              </button>
-
-              <button
-                type="button"
-                onClick={onToggleSimulation}
-                aria-label={isSimulationRunning ? 'Jeda Simulasi' : 'Lanjut Simulasi'}
-                className="px-2 py-1 rounded-xl bg-white/95 dark:bg-[#141C24]/95 border border-[#E2E8F0] dark:border-[#334155] shadow-sm text-[10px] font-semibold text-[#1D4ED8] dark:text-[#60A5FA] flex items-center gap-1 cursor-pointer"
-              >
-                {isSimulationRunning ? (
-                  <>
-                    <Pause className="w-3 h-3" />
-                    <span>Jeda</span>
-                  </>
-                ) : (
-                  <>
-                    <Play className="w-3 h-3" />
-                    <span>Simulasi</span>
-                  </>
-                )}
+                <span
+                  className={`block w-5 h-5 rounded-full bg-white transition-transform ${
+                    isNavInfoHidden ? 'translate-x-4' : 'translate-x-0'
+                  }`}
+                />
               </button>
             </div>
-          )}
-        </div>
+
+            {/* Trip Telemetry & 10-Min Avg Speed Chart */}
+            <div className="space-y-2 pb-2.5 border-b border-[#E2E8F0] dark:border-[#334155]">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-[#64748B] dark:text-[#94A3B8]">
+                    Tujuan & ETA
+                  </p>
+                  <p className="text-xs font-bold truncate mt-0.5">
+                    {routeConfig.destinationName}
+                  </p>
+                  <p className="text-[10px] text-[#64748B] dark:text-[#94A3B8] truncate">
+                    {!trackedMember || trackedMember.id === currentUser?.id
+                      ? 'Fokus: Posisi Anda'
+                      : `Fokus: ${trackedMember.fullName}`}
+                    {currentUser &&
+                      trackedMember &&
+                      trackedMember.id !== currentUser.id && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            touchSideDrawer();
+                            onSelectMember(currentUser.id);
+                          }}
+                          className="ml-1 font-semibold text-[#1D4ED8] dark:text-[#60A5FA] hover:underline cursor-pointer"
+                        >
+                          · Kembali
+                        </button>
+                      )}
+                  </p>
+                </div>
+                <div className="text-right shrink-0">
+                  <p className="text-xs font-bold font-mono tabular-nums text-[#1D4ED8] dark:text-[#60A5FA]">
+                    ETA {etaInfo.arrivalClockLabel}
+                  </p>
+                  <p className="text-[10px] text-[#64748B] dark:text-[#94A3B8]">
+                    {etaInfo.durationLabel}
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2 py-1.5 text-center rounded-xl bg-[#F8FAFC] dark:bg-[#0B1117] border border-[#E2E8F0] dark:border-[#334155]">
+                <div>
+                  <p className="text-[9px] text-[#64748B] dark:text-[#94A3B8]">
+                    Sisa Jarak
+                  </p>
+                  <p className="text-[11px] font-bold font-mono tabular-nums">
+                    {etaInfo.distanceLabel}
+                  </p>
+                </div>
+                <div className="border-x border-[#E2E8F0] dark:border-[#334155]">
+                  <p className="text-[9px] text-[#64748B] dark:text-[#94A3B8]">
+                    Kecepatan
+                  </p>
+                  <p className="text-[11px] font-bold font-mono tabular-nums">
+                    {etaInfo.speedKmh} km/j
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[9px] text-[#64748B] dark:text-[#94A3B8]">
+                    Rata² 10m
+                  </p>
+                  <p className="text-[11px] font-bold font-mono tabular-nums text-[#1D4ED8] dark:text-[#60A5FA]">
+                    {avgTenMinSpeed} km/j
+                  </p>
+                </div>
+              </div>
+
+              <div className="h-[52px] w-full rounded-xl bg-[#F8FAFC] dark:bg-[#0B1117] border border-[#E2E8F0] dark:border-[#334155] px-2 py-1">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart
+                    data={speedHistory}
+                    margin={{ top: 4, right: 2, left: 2, bottom: 1 }}
+                  >
+                    <defs>
+                      <linearGradient id="sideDrawerSpeedGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#1D4ED8" stopOpacity={0.35} />
+                        <stop offset="95%" stopColor="#1D4ED8" stopOpacity={0.02} />
+                      </linearGradient>
+                    </defs>
+                    <YAxis domain={['dataMin - 8', 'dataMax + 8']} hide />
+                    <Area
+                      type="monotone"
+                      dataKey="avgSpeed"
+                      stroke="#1D4ED8"
+                      strokeWidth={2}
+                      fill="url(#sideDrawerSpeedGrad)"
+                      isAnimationActive={false}
+                      dot={false}
+                    />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            {/* GPS, Sync & TomTom API Key Status */}
+            <div className="space-y-1.5 pb-2.5 border-b border-[#E2E8F0] dark:border-[#334155] text-[11px]">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-[#64748B] dark:text-[#94A3B8]">
+                Sistem & Rute API
+              </p>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[#64748B] dark:text-[#94A3B8]">Sinyal GPS</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    touchSideDrawer();
+                    onRetryGps();
+                  }}
+                  className={`font-semibold cursor-pointer hover:underline ${
+                    gpsStatus === 'active'
+                      ? 'text-[#16A34A] dark:text-[#4ADE80]'
+                      : gpsStatus === 'denied'
+                        ? 'text-[#DC2626] dark:text-[#FCA5A5]'
+                        : 'text-[#1D4ED8] dark:text-[#60A5FA]'
+                  }`}
+                >
+                  {gpsStatus === 'active'
+                    ? `Aktif ±${gpsAccuracyMeters ?? 15}m`
+                    : gpsStatus === 'denied'
+                      ? 'Ditolak (Segarkan)'
+                      : 'Segarkan GPS'}
+                </button>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[#64748B] dark:text-[#94A3B8]">Sinkronisasi</span>
+                <span className="font-semibold">
+                  {activeRoom?.isSyncedRoom ? 'Room Sync Aktif' : 'Simulasi Lokal'}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[#64748B] dark:text-[#94A3B8]">Ping TomTom</span>
+                <span className="font-semibold text-[#1D4ED8] dark:text-[#60A5FA]">
+                  {canPingTomTomRouting
+                    ? activeRoom?.leaderTroubleActive
+                      ? 'Plt. Leader'
+                      : 'HP Leader'
+                    : 'Salinan Leader'}
+                </span>
+              </div>
+              {(actingLeaderMember && activeRoom?.leaderTroubleActive) || coLeaderMember ? (
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[#64748B] dark:text-[#94A3B8]">
+                    {actingLeaderMember && activeRoom?.leaderTroubleActive
+                      ? 'Plt. Leader'
+                      : 'Co-Leader'}
+                  </span>
+                  <span className="font-semibold truncate max-w-[150px]">
+                    {actingLeaderMember && activeRoom?.leaderTroubleActive
+                      ? actingLeaderMember.fullName
+                      : coLeaderMember?.fullName}
+                  </span>
+                </div>
+              ) : null}
+            </div>
+
+            {/* Convoy Participants & Quick Self Condition */}
+            <div className="space-y-2 pb-2.5 border-b border-[#E2E8F0] dark:border-[#334155]">
+              <div className="flex items-center justify-between">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-[#64748B] dark:text-[#94A3B8]">
+                  Peserta Konvoi ({members.length})
+                </p>
+              </div>
+
+              <div className="grid grid-cols-3 gap-1">
+                {(
+                  [
+                    { status: 'AMAN', label: 'Aman' },
+                    { status: 'ISTIRAHAT', label: 'Istirahat' },
+                    { status: 'MOGOK', label: 'Mogok' },
+                  ] as Array<{ status: MemberConditionStatus; label: string }>
+                ).map((item) => {
+                  const active = currentUser?.conditionStatus === item.status;
+                  return (
+                    <button
+                      key={item.status}
+                      type="button"
+                      onClick={() => {
+                        touchSideDrawer();
+                        onUpdateOwnCondition(item.status);
+                      }}
+                      className={`py-1.5 rounded-lg text-[10px] font-semibold border transition-colors cursor-pointer ${
+                        active
+                          ? item.status === 'MOGOK'
+                            ? 'bg-[#FEF2F2] dark:bg-[#450A0A] border-[#DC2626] text-[#DC2626] dark:text-[#F87171]'
+                            : item.status === 'ISTIRAHAT'
+                              ? 'bg-[#FFFBEB] dark:bg-[#451A03] border-[#D97706] text-[#B45309] dark:text-[#FBBF24]'
+                              : 'bg-[#ECFDF5] dark:bg-[#064E3B] border-[#16A34A] text-[#15803D] dark:text-[#4ADE80]'
+                          : 'bg-[#F8FAFC] dark:bg-[#0B1117] border-[#E2E8F0] dark:border-[#334155] text-[#475569] dark:text-[#CBD5E1]'
+                      }`}
+                    >
+                      {item.label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="space-y-1.5">
+                {members.map((member) => {
+                  const selected = member.id === focusedMember?.id;
+                  const roleLabel = member.isActingLeader
+                    ? 'Plt. Leader'
+                    : member.isCoLeader
+                      ? 'Co-Leader'
+                      : member.isSweeper
+                        ? 'Sweeper'
+                        : member.role === 'TOUR_LEADER'
+                          ? 'Leader'
+                          : 'Anggota';
+                  return (
+                    <div
+                      key={member.id}
+                      onClick={() => {
+                        touchSideDrawer();
+                        onSelectMember(member.id);
+                      }}
+                      className={`rounded-xl border px-2.5 py-2 flex items-center gap-2 cursor-pointer transition-colors ${
+                        selected
+                          ? 'bg-[#EFF6FF] dark:bg-[#1E3A8A]/40 border-[#1D4ED8]'
+                          : 'bg-[#F8FAFC] dark:bg-[#0B1117] border-[#E2E8F0] dark:border-[#334155]'
+                      }`}
+                    >
+                      <ConvoyAvatar
+                        preset={member.avatarPreset}
+                        photoUrl={member.avatarPhotoUrl}
+                        name={member.fullName}
+                        sizeClass="w-7 h-7"
+                        ringClass={
+                          member.isCurrentUser
+                            ? 'ring-2 ring-[#EA580C]'
+                            : 'ring-1 ring-[#1D4ED8]'
+                        }
+                      />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-[11px] font-semibold truncate">
+                          {member.fullName}
+                          {member.isCurrentUser ? ' (Anda)' : ''}
+                        </p>
+                        <p className="text-[10px] text-[#64748B] dark:text-[#94A3B8] truncate">
+                          {roleLabel}
+                          {typeof member.distanceToLeaderMeters === 'number'
+                            ? ` · ${formatDistanceLabel(member.distanceToLeaderMeters)}`
+                            : ''}
+                          {` · ${conditionLabel(member.conditionStatus)}`}
+                        </p>
+                        {isEffectiveLeader &&
+                          member.role !== 'TOUR_LEADER' &&
+                          !member.isActingLeader && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                touchSideDrawer();
+                                onAssignSweeper(member.id);
+                              }}
+                              className="text-[9px] font-semibold text-[#1D4ED8] dark:text-[#60A5FA] hover:underline cursor-pointer"
+                            >
+                              {member.isSweeper ? 'Sweeper Aktif' : 'Jadikan Sweeper'}
+                            </button>
+                          )}
+                      </div>
+                      <span className="text-[10px] font-mono tabular-nums text-[#64748B] dark:text-[#94A3B8] shrink-0">
+                        {member.mapPosition.speedKmh} km/j
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Offline Simulation Controls (Hidden from main map when Clean HUD is active) */}
+            {!activeRoom?.isSyncedRoom && (
+              <div className="space-y-1.5">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-[#64748B] dark:text-[#94A3B8]">
+                  Simulasi & Uji Konvoi
+                </p>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      touchSideDrawer();
+                      onToggleSimulation();
+                    }}
+                    className="py-1.5 px-2 rounded-lg bg-[#EFF6FF] dark:bg-[#1E3A8A]/40 border border-[#BFDBFE] dark:border-[#1E40AF] text-[10px] font-semibold text-[#1D4ED8] dark:text-[#93C5FD] flex items-center justify-center gap-1 cursor-pointer"
+                  >
+                    {isSimulationRunning ? (
+                      <>
+                        <Pause className="w-3 h-3" />
+                        <span>Jeda Sim</span>
+                      </>
+                    ) : (
+                      <>
+                        <Play className="w-3 h-3" />
+                        <span>Lanjut Sim</span>
+                      </>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      touchSideDrawer();
+                      onToggleOffRouteSim();
+                    }}
+                    className={`py-1.5 px-2 rounded-lg border text-[10px] font-semibold cursor-pointer ${
+                      isOffRouteSimActive
+                        ? 'bg-[#DC2626] text-white border-[#991B1B]'
+                        : 'bg-[#F8FAFC] dark:bg-[#0B1117] border-[#E2E8F0] dark:border-[#334155]'
+                    }`}
+                  >
+                    {isOffRouteSimActive ? 'Keluar Jalur ✓' : 'Uji Keluar Jalur'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      touchSideDrawer();
+                      onToggleStragglerSim();
+                    }}
+                    className={`py-1.5 px-2 rounded-lg border text-[10px] font-semibold cursor-pointer ${
+                      isStragglerSimActive
+                        ? 'bg-[#B45309] text-white border-[#92400E]'
+                        : 'bg-[#F8FAFC] dark:bg-[#0B1117] border-[#E2E8F0] dark:border-[#334155]'
+                    }`}
+                  >
+                    {isStragglerSimActive ? 'Tertinggal ✓' : 'Uji Tertinggal'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      touchSideDrawer();
+                      onToggleLeaderTroubleSim();
+                    }}
+                    className={`py-1.5 px-2 rounded-lg border text-[10px] font-semibold cursor-pointer ${
+                      isLeaderTroubleSimActive
+                        ? 'bg-[#6D28D9] text-white border-[#5B21B6]'
+                        : 'bg-[#F8FAFC] dark:bg-[#0B1117] border-[#E2E8F0] dark:border-[#334155]'
+                    }`}
+                  >
+                    {isLeaderTroubleSimActive ? 'Trouble ✓' : 'Uji Trouble Ldr'}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </aside>
 
         {/* Custom Destination / Checkpoint Placement Hint */}
         {(isPickingDestinationOnMap || isPickingCheckpointOnMap) && (
@@ -1114,145 +1642,147 @@ export function LiveTrackingMapView({
         </div>
       </div>
 
-      {/* Docked Destination ETA & 10-Min Avg Speed Telemetry Bar */}
-      <div
-        aria-label="Estimasi Waktu Tiba (ETA)"
-        className="mt-auto shrink-0 bg-white dark:bg-[#141C24] border-t border-[#E2E8F0] dark:border-[#334155] px-3.5 pt-2.5 pb-[calc(2rem+env(safe-area-inset-bottom))] space-y-2 z-20"
-      >
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2.5 min-w-0 flex-1">
-            <div
-              className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
-                etaInfo.isArrived
-                  ? 'bg-[#DCFCE7] dark:bg-[#064E3B] text-[#16A34A] dark:text-[#4ADE80]'
-                  : 'bg-[#EFF6FF] dark:bg-[#1E3A8A]/60 text-[#1D4ED8] dark:text-[#60A5FA]'
-              }`}
-            >
-              <Clock className="w-4 h-4" />
+      {/* Docked Destination ETA & 10-Min Avg Speed Telemetry Bar (Hidden in Clean Nav HUD) */}
+      {!isCleanNavHud && (
+        <div
+          aria-label="Estimasi Waktu Tiba (ETA)"
+          className="mt-auto shrink-0 bg-white dark:bg-[#141C24] border-t border-[#E2E8F0] dark:border-[#334155] px-3.5 pt-2.5 pb-[calc(2rem+env(safe-area-inset-bottom))] space-y-2 z-20"
+        >
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2.5 min-w-0 flex-1">
+              <div
+                className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+                  etaInfo.isArrived
+                    ? 'bg-[#DCFCE7] dark:bg-[#064E3B] text-[#16A34A] dark:text-[#4ADE80]'
+                    : 'bg-[#EFF6FF] dark:bg-[#1E3A8A]/60 text-[#1D4ED8] dark:text-[#60A5FA]'
+                }`}
+              >
+                <Clock className="w-4 h-4" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-bold truncate">
+                  {routeConfig.destinationName}
+                </p>
+                <div className="flex items-center gap-1.5 text-[10px] text-[#64748B] dark:text-[#94A3B8] truncate">
+                  <span>
+                    {!trackedMember || trackedMember.id === currentUser?.id
+                      ? 'Posisi Anda'
+                      : trackedMember.fullName}
+                  </span>
+                  {currentUser && trackedMember && trackedMember.id !== currentUser.id && (
+                    <button
+                      type="button"
+                      onClick={() => onSelectMember(currentUser.id)}
+                      className="font-semibold text-[#1D4ED8] dark:text-[#60A5FA] hover:underline cursor-pointer shrink-0"
+                    >
+                      · Fokus Anda
+                    </button>
+                  )}
+                </div>
+              </div>
             </div>
-            <div className="min-w-0 flex-1">
-              <p className="text-xs font-bold truncate">
-                {routeConfig.destinationName}
-              </p>
-              <div className="flex items-center gap-1.5 text-[10px] text-[#64748B] dark:text-[#94A3B8] truncate">
-                <span>
-                  {!trackedMember || trackedMember.id === currentUser?.id
-                    ? 'Posisi Anda'
-                    : trackedMember.fullName}
-                </span>
-                {currentUser && trackedMember && trackedMember.id !== currentUser.id && (
-                  <button
-                    type="button"
-                    onClick={() => onSelectMember(currentUser.id)}
-                    className="font-semibold text-[#1D4ED8] dark:text-[#60A5FA] hover:underline cursor-pointer shrink-0"
-                  >
-                    · Fokus Anda
-                  </button>
-                )}
+
+            <div className="flex items-center gap-3 shrink-0">
+              <div className="text-right">
+                <p
+                  className={`text-xs font-bold font-mono tabular-nums ${
+                    etaInfo.isArrived
+                      ? 'text-[#16A34A] dark:text-[#4ADE80]'
+                      : etaInfo.isStopped
+                        ? 'text-[#D97706] dark:text-[#FBBF24]'
+                        : 'text-[#1D4ED8] dark:text-[#60A5FA]'
+                  }`}
+                >
+                  ETA {etaInfo.arrivalClockLabel}
+                </p>
+                <p
+                  className={`text-[10px] font-semibold ${
+                    etaInfo.isStopped
+                      ? 'text-[#D97706] dark:text-[#FBBF24]'
+                      : 'text-[#64748B] dark:text-[#94A3B8]'
+                  }`}
+                >
+                  {etaInfo.durationLabel}
+                </p>
+              </div>
+
+              <div className="text-right border-l border-[#E2E8F0] dark:border-[#334155] pl-3">
+                <p className="text-xs font-bold font-mono tabular-nums">
+                  {etaInfo.distanceLabel}
+                </p>
+                <p className="text-[10px] font-mono tabular-nums text-[#64748B] dark:text-[#94A3B8] flex items-center justify-end gap-1">
+                  <Gauge className="w-3 h-3 shrink-0" />
+                  <span>{etaInfo.speedKmh} km/j</span>
+                </p>
               </div>
             </div>
           </div>
 
-          <div className="flex items-center gap-3 shrink-0">
-            <div className="text-right">
-              <p
-                className={`text-xs font-bold font-mono tabular-nums ${
-                  etaInfo.isArrived
-                    ? 'text-[#16A34A] dark:text-[#4ADE80]'
-                    : etaInfo.isStopped
-                      ? 'text-[#D97706] dark:text-[#FBBF24]'
-                      : 'text-[#1D4ED8] dark:text-[#60A5FA]'
-                }`}
-              >
-                ETA {etaInfo.arrivalClockLabel}
+          {/* Mini-Graph: Average Convoy Speed (Last 10 Minutes) via Recharts */}
+          <div className="rounded-xl bg-[#F8FAFC] dark:bg-[#0B1117] border border-[#E2E8F0] dark:border-[#334155] px-2.5 py-1.5 flex items-center gap-2.5">
+            <div className="shrink-0 min-w-[108px]">
+              <p className="text-[9px] font-semibold uppercase tracking-wide text-[#64748B] dark:text-[#94A3B8]">
+                Rata² Konvoi · 10 Mnt
               </p>
-              <p
-                className={`text-[10px] font-semibold ${
-                  etaInfo.isStopped
-                    ? 'text-[#D97706] dark:text-[#FBBF24]'
-                    : 'text-[#64748B] dark:text-[#94A3B8]'
-                }`}
-              >
-                {etaInfo.durationLabel}
-              </p>
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-xs font-bold font-mono tabular-nums text-[#1D4ED8] dark:text-[#60A5FA]">
+                  {avgTenMinSpeed} km/j
+                </span>
+                <span
+                  className={`text-[9px] font-mono font-semibold ${
+                    speedDeltaTenMin >= 0
+                      ? 'text-[#16A34A] dark:text-[#4ADE80]'
+                      : 'text-[#D97706] dark:text-[#FBBF24]'
+                  }`}
+                >
+                  {speedDeltaTenMin >= 0 ? `+${speedDeltaTenMin}` : speedDeltaTenMin}
+                </span>
+              </div>
             </div>
 
-            <div className="text-right border-l border-[#E2E8F0] dark:border-[#334155] pl-3">
-              <p className="text-xs font-bold font-mono tabular-nums">
-                {etaInfo.distanceLabel}
-              </p>
-              <p className="text-[10px] font-mono tabular-nums text-[#64748B] dark:text-[#94A3B8] flex items-center justify-end gap-1">
-                <Gauge className="w-3 h-3 shrink-0" />
-                <span>{etaInfo.speedKmh} km/j</span>
-              </p>
+            <div className="flex-1 h-[36px] min-w-[120px]">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart
+                  data={speedHistory}
+                  margin={{ top: 3, right: 2, left: 2, bottom: 1 }}
+                >
+                  <defs>
+                    <linearGradient id="convoyAvgSpeedGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#1D4ED8" stopOpacity={0.35} />
+                      <stop offset="95%" stopColor="#1D4ED8" stopOpacity={0.02} />
+                    </linearGradient>
+                  </defs>
+                  <YAxis domain={['dataMin - 8', 'dataMax + 8']} hide />
+                  <Tooltip
+                    formatter={(value: unknown) => [`${value} km/j`, 'Rata-rata']}
+                    labelFormatter={(label: unknown, payload: ReadonlyArray<{ payload?: SpeedHistoryPoint }>) =>
+                      payload?.[0]?.payload?.timeLabel ?? String(label)
+                    }
+                    contentStyle={{
+                      fontSize: '10px',
+                      padding: '4px 8px',
+                      borderRadius: '8px',
+                      border: '1px solid #CBD5E1',
+                      backgroundColor: darkMode ? '#141C24' : '#FFFFFF',
+                      color: darkMode ? '#F1F5F9' : '#0F172A',
+                    }}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="avgSpeed"
+                    stroke="#1D4ED8"
+                    strokeWidth={2}
+                    fill="url(#convoyAvgSpeedGrad)"
+                    isAnimationActive={false}
+                    dot={false}
+                    activeDot={{ r: 3, fill: '#EA580C', strokeWidth: 0 }}
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
             </div>
           </div>
         </div>
-
-        {/* Mini-Graph: Average Convoy Speed (Last 10 Minutes) via Recharts */}
-        <div className="rounded-xl bg-[#F8FAFC] dark:bg-[#0B1117] border border-[#E2E8F0] dark:border-[#334155] px-2.5 py-1.5 flex items-center gap-2.5">
-          <div className="shrink-0 min-w-[108px]">
-            <p className="text-[9px] font-semibold uppercase tracking-wide text-[#64748B] dark:text-[#94A3B8]">
-              Rata² Konvoi · 10 Mnt
-            </p>
-            <div className="flex items-baseline gap-1.5">
-              <span className="text-xs font-bold font-mono tabular-nums text-[#1D4ED8] dark:text-[#60A5FA]">
-                {avgTenMinSpeed} km/j
-              </span>
-              <span
-                className={`text-[9px] font-mono font-semibold ${
-                  speedDeltaTenMin >= 0
-                    ? 'text-[#16A34A] dark:text-[#4ADE80]'
-                    : 'text-[#D97706] dark:text-[#FBBF24]'
-                }`}
-              >
-                {speedDeltaTenMin >= 0 ? `+${speedDeltaTenMin}` : speedDeltaTenMin}
-              </span>
-            </div>
-          </div>
-
-          <div className="flex-1 h-[36px] min-w-[120px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart
-                data={speedHistory}
-                margin={{ top: 3, right: 2, left: 2, bottom: 1 }}
-              >
-                <defs>
-                  <linearGradient id="convoyAvgSpeedGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#1D4ED8" stopOpacity={0.35} />
-                    <stop offset="95%" stopColor="#1D4ED8" stopOpacity={0.02} />
-                  </linearGradient>
-                </defs>
-                <YAxis domain={['dataMin - 8', 'dataMax + 8']} hide />
-                <Tooltip
-                  formatter={(value: unknown) => [`${value} km/j`, 'Rata-rata']}
-                  labelFormatter={(label: unknown, payload: ReadonlyArray<{ payload?: SpeedHistoryPoint }>) =>
-                    payload?.[0]?.payload?.timeLabel ?? String(label)
-                  }
-                  contentStyle={{
-                    fontSize: '10px',
-                    padding: '4px 8px',
-                    borderRadius: '8px',
-                    border: '1px solid #CBD5E1',
-                    backgroundColor: darkMode ? '#141C24' : '#FFFFFF',
-                    color: darkMode ? '#F1F5F9' : '#0F172A',
-                  }}
-                />
-                <Area
-                  type="monotone"
-                  dataKey="avgSpeed"
-                  stroke="#1D4ED8"
-                  strokeWidth={2}
-                  fill="url(#convoyAvgSpeedGrad)"
-                  isAnimationActive={false}
-                  dot={false}
-                  activeDot={{ r: 3, fill: '#EA580C', strokeWidth: 0 }}
-                />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-      </div>
+      )}
 
       {/* Modern Messenger Chat & Interactive Waveform PTT Sheet */}
       {showChatSheet && (

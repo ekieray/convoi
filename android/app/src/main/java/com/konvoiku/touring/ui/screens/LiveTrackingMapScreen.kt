@@ -16,6 +16,10 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -26,6 +30,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -45,12 +50,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.automirrored.rounded.Chat
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AddLocationAlt
 import androidx.compose.material.icons.rounded.Build
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CloudDone
 import androidx.compose.material.icons.rounded.Coffee
 import androidx.compose.material.icons.rounded.DeleteOutline
@@ -60,6 +67,7 @@ import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Flag
 import androidx.compose.material.icons.rounded.GpsFixed
+import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Layers
 import androidx.compose.material.icons.rounded.LocalCafe
 import androidx.compose.material.icons.rounded.Mic
@@ -76,6 +84,8 @@ import androidx.compose.material.icons.rounded.Sos
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.TwoWheeler
+import androidx.compose.material.icons.rounded.Visibility
+import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material.icons.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.Warning
 import androidx.compose.material3.AlertDialog
@@ -123,6 +133,8 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -160,6 +172,7 @@ import com.konvoiku.touring.util.LatLngGeo
 import com.konvoiku.touring.viewmodel.ConvoyViewModel
 import java.util.Locale
 import kotlin.math.roundToInt
+import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -220,12 +233,32 @@ fun LiveTrackingMapScreen(
     var mapStyle by remember { mutableStateOf(TomTomMapStyle.ROAD) }
     var showTraffic by remember { mutableStateOf(true) }
     var isNavigationMode by remember(activeRoom?.roomId) { mutableStateOf(true) }
+    var isNavInfoHidden by remember(activeRoom?.roomId) { mutableStateOf(true) }
+    var showSideInfoDrawer by remember(activeRoom?.roomId) { mutableStateOf(false) }
+    var sideInfoTouchTick by remember { mutableStateOf(0) }
+    var sideInfoSecondsLeft by remember { mutableStateOf(7) }
     var isParticipantsExpanded by remember { mutableStateOf(false) }
     var showChatSheet by remember { mutableStateOf(false) }
     var showLeaderSettingsSheet by remember { mutableStateOf(false) }
     var showSosConfirmDialog by remember { mutableStateOf(false) }
     var showFinishTripDialog by remember { mutableStateOf(false) }
     var chatInputText by remember { mutableStateOf("") }
+
+    val touchSideDrawer: () -> Unit = { sideInfoTouchTick += 1 }
+    val openSideDrawer: () -> Unit = {
+        showSideInfoDrawer = true
+        sideInfoTouchTick += 1
+    }
+
+    LaunchedEffect(showSideInfoDrawer, sideInfoTouchTick) {
+        if (!showSideInfoDrawer) return@LaunchedEffect
+        sideInfoSecondsLeft = 7
+        for (sec in 7 downTo 1) {
+            sideInfoSecondsLeft = sec
+            delay(1000L)
+        }
+        showSideInfoDrawer = false
+    }
 
     var checkpointDraftName by remember { mutableStateOf("") }
     var tappedCheckpointLatLng by remember { mutableStateOf<LatLngGeo?>(null) }
@@ -318,6 +351,7 @@ fun LiveTrackingMapScreen(
     val mapController = rememberTomTomMapController()
     var isAutoFollowing by remember { mutableStateOf(true) }
     val activeNavMode = isNavigationMode && !isPickingDestinationOnMap && !isPickingCheckpointOnMap
+    val isCleanNavHud = activeNavMode && isNavInfoHidden
 
     val navSubject = currentUser ?: trackedMember
     val navGuidance = remember(
@@ -469,6 +503,7 @@ fun LiveTrackingMapScreen(
                             val next = !isNavigationMode
                             isNavigationMode = next
                             if (next) {
+                                isNavInfoHidden = true
                                 isAutoFollowing = true
                                 val m = navSubject
                                 if (m != null) {
@@ -504,6 +539,15 @@ fun LiveTrackingMapScreen(
                             )
                         }
                     }
+                    if (activeNavMode) {
+                        IconButton(onClick = { isNavInfoHidden = !isNavInfoHidden }) {
+                            Icon(
+                                imageVector = if (isNavInfoHidden) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
+                                contentDescription = if (isNavInfoHidden) "Tampilkan Info Lengkap" else "Sembunyikan Info Navigasi",
+                                tint = if (isNavInfoHidden) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
                     TextButton(onClick = { showFinishTripDialog = true }) {
                         Text("Selesai", fontWeight = FontWeight.SemiBold)
                     }
@@ -528,98 +572,46 @@ fun LiveTrackingMapScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
-            // Top Collapsible Participant Strip + Expanded Panel
-            Surface(
-                color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 1.dp,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { isParticipantsExpanded = !isParticipantsExpanded }
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "Peserta Konvoi (${members.size}) · Ketuk untuk detail",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Icon(
-                            imageVector = if (isParticipantsExpanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
-                            contentDescription = "Buka atau Tutup Daftar Peserta",
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                    }
-
-                    if (!isParticipantsExpanded) {
-                        LazyRow(
-                            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 10.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            items(members, key = { it.id }) { member ->
-                                TopParticipantChip(
-                                    member = member,
-                                    isSelected = member.id == focusedMember?.id,
-                                    onClick = {
-                                        onSelectMember(member.id)
-                                        isAutoFollowing = true
-                                        mapController.animateTo(
-                                            member.mapPosition.latitude,
-                                            member.mapPosition.longitude,
-                                            15.0
-                                        )
-                                    }
-                                )
-                            }
-                        }
-                    }
-
-                    AnimatedVisibility(visible = isParticipantsExpanded) {
-                        Column(
+            // Top Collapsible Participant Strip + Expanded Panel (Hidden when Clean Navigation HUD is active)
+            if (!isCleanNavHud) {
+                Surface(
+                    color = MaterialTheme.colorScheme.surface,
+                    tonalElevation = 1.dp,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 16.dp)
-                                .padding(bottom = 12.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                                .clickable { isParticipantsExpanded = !isParticipantsExpanded }
+                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
+                            Text(
+                                text = "Peserta Konvoi (${members.size}) · Ketuk untuk detail",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Icon(
+                                imageVector = if (isParticipantsExpanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                                contentDescription = "Buka atau Tutup Daftar Peserta",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+
+                        if (!isParticipantsExpanded) {
+                            LazyRow(
+                                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 10.dp),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                listOf(
-                                    MemberConditionStatus.AMAN to "Aman",
-                                    MemberConditionStatus.ISTIRAHAT to "Istirahat",
-                                    MemberConditionStatus.MOGOK to "Mogok"
-                                ).forEach { (status, shortLabel) ->
-                                    FilterChip(
-                                        selected = currentUser?.conditionStatus == status,
-                                        onClick = { onUpdateOwnCondition(status) },
-                                        label = { Text(shortLabel, fontSize = 11.sp) },
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                }
-                            }
-
-                            LazyColumn(
-                                modifier = Modifier.heightIn(max = 180.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
                                 items(members, key = { it.id }) { member ->
-                                    val memberEta = calculateDestinationEta(member, routeConfig)
-                                    ParticipantExpandedRow(
+                                    TopParticipantChip(
                                         member = member,
-                                        etaInfo = memberEta,
-                                        viewerIsLeader = isEffectiveLeader,
                                         isSelected = member.id == focusedMember?.id,
-                                        onAssignSweeper = { onAssignSweeper(member.id) },
                                         onClick = {
                                             onSelectMember(member.id)
                                             isAutoFollowing = true
-                                            isParticipantsExpanded = false
                                             mapController.animateTo(
                                                 member.mapPosition.latitude,
                                                 member.mapPosition.longitude,
@@ -630,9 +622,63 @@ fun LiveTrackingMapScreen(
                                 }
                             }
                         }
-                    }
 
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                        AnimatedVisibility(visible = isParticipantsExpanded) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp)
+                                    .padding(bottom = 12.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    listOf(
+                                        MemberConditionStatus.AMAN to "Aman",
+                                        MemberConditionStatus.ISTIRAHAT to "Istirahat",
+                                        MemberConditionStatus.MOGOK to "Mogok"
+                                    ).forEach { (status, shortLabel) ->
+                                        FilterChip(
+                                            selected = currentUser?.conditionStatus == status,
+                                            onClick = { onUpdateOwnCondition(status) },
+                                            label = { Text(shortLabel, fontSize = 11.sp) },
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                    }
+                                }
+
+                                LazyColumn(
+                                    modifier = Modifier.heightIn(max = 180.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    items(members, key = { it.id }) { member ->
+                                        val memberEta = calculateDestinationEta(member, routeConfig)
+                                        ParticipantExpandedRow(
+                                            member = member,
+                                            etaInfo = memberEta,
+                                            viewerIsLeader = isEffectiveLeader,
+                                            isSelected = member.id == focusedMember?.id,
+                                            onAssignSweeper = { onAssignSweeper(member.id) },
+                                            onClick = {
+                                                onSelectMember(member.id)
+                                                isAutoFollowing = true
+                                                isParticipantsExpanded = false
+                                                mapController.animateTo(
+                                                    member.mapPosition.latitude,
+                                                    member.mapPosition.longitude,
+                                                    15.0
+                                                )
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                    }
                 }
             }
 
@@ -938,71 +984,45 @@ fun LiveTrackingMapScreen(
                     }
                 }
 
-                // Top-Left GPS & Cloud Sync Status + Offline Sim Triggers
-                Column(
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .padding(
-                            start = 12.dp,
-                            top = if (activeNavMode) 88.dp else 12.dp
-                        ),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Surface(
-                            onClick = {
-                                if (gpsStatus == GpsTrackingStatus.DENIED) {
-                                    if (isPermanentlyDenied) {
-                                        val intent = Intent(
-                                            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                                            Uri.fromParts("package", context.packageName, null)
-                                        )
-                                        context.startActivity(intent)
-                                    } else {
-                                        permissionLauncher.launch(
-                                            arrayOf(
-                                                Manifest.permission.ACCESS_FINE_LOCATION,
-                                                Manifest.permission.ACCESS_COARSE_LOCATION
-                                            )
-                                        )
-                                    }
-                                } else {
-                                    onRetryGps()
-                                }
-                            },
-                            shape = RoundedCornerShape(10.dp),
-                            color = when (gpsStatus) {
-                                GpsTrackingStatus.ACTIVE -> Color(0xE6059669)
-                                GpsTrackingStatus.DENIED -> Color(0xE6DC2626)
-                                else -> Color(0xCC0F172A)
-                            },
-                            contentColor = Color.White,
-                            shadowElevation = 3.dp
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                Icon(Icons.Rounded.GpsFixed, contentDescription = null, modifier = Modifier.size(13.dp))
-                                Text(
-                                    text = if (gpsStatus == GpsTrackingStatus.ACTIVE) {
-                                        "GPS ±${gpsAccuracyMeters}m"
-                                    } else if (gpsStatus == GpsTrackingStatus.DENIED && isPermanentlyDenied) {
-                                        "Buka Pengaturan Lokasi"
-                                    } else {
-                                        gpsStatus.label
-                                    },
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                            }
-                        }
-
-                        if (activeRoom?.isSyncedRoom == true) {
+                // Top-Left GPS & Cloud Sync Status + Offline Sim Triggers (Hidden in Clean Nav HUD)
+                if (!isCleanNavHud) {
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(
+                                start = 12.dp,
+                                top = if (activeNavMode) 88.dp else 12.dp
+                            ),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             Surface(
+                                onClick = {
+                                    if (gpsStatus == GpsTrackingStatus.DENIED) {
+                                        if (isPermanentlyDenied) {
+                                            val intent = Intent(
+                                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                                Uri.fromParts("package", context.packageName, null)
+                                            )
+                                            context.startActivity(intent)
+                                        } else {
+                                            permissionLauncher.launch(
+                                                arrayOf(
+                                                    Manifest.permission.ACCESS_FINE_LOCATION,
+                                                    Manifest.permission.ACCESS_COARSE_LOCATION
+                                                )
+                                            )
+                                        }
+                                    } else {
+                                        onRetryGps()
+                                    }
+                                },
                                 shape = RoundedCornerShape(10.dp),
-                                color = Color(0xE61D4ED8),
+                                color = when (gpsStatus) {
+                                    GpsTrackingStatus.ACTIVE -> Color(0xE6059669)
+                                    GpsTrackingStatus.DENIED -> Color(0xE6DC2626)
+                                    else -> Color(0xCC0F172A)
+                                },
                                 contentColor = Color.White,
                                 shadowElevation = 3.dp
                             ) {
@@ -1011,82 +1031,144 @@ fun LiveTrackingMapScreen(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
-                                    Icon(Icons.Rounded.CloudDone, contentDescription = null, modifier = Modifier.size(13.dp))
-                                    Text("Room Sync", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                                    Icon(Icons.Rounded.GpsFixed, contentDescription = null, modifier = Modifier.size(13.dp))
+                                    Text(
+                                        text = if (gpsStatus == GpsTrackingStatus.ACTIVE) {
+                                            "GPS ±${gpsAccuracyMeters}m"
+                                        } else if (gpsStatus == GpsTrackingStatus.DENIED && isPermanentlyDenied) {
+                                            "Buka Pengaturan Lokasi"
+                                        } else {
+                                            gpsStatus.label
+                                        },
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
+
+                            if (activeRoom?.isSyncedRoom == true) {
+                                Surface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = Color(0xE61D4ED8),
+                                    contentColor = Color.White,
+                                    shadowElevation = 3.dp
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Icon(Icons.Rounded.CloudDone, contentDescription = null, modifier = Modifier.size(13.dp))
+                                        Text("Room Sync", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                                    }
                                 }
                             }
                         }
-                    }
 
-                    // Economical TomTom API Key Ping Indicator Badge
+                        // Economical TomTom API Key Ping Indicator Badge
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (canPingTomTomRouting) Color(0xEB4338CA) else Color(0xEB0F766E),
+                            contentColor = Color.White,
+                            shadowElevation = 3.dp
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                Icon(Icons.Rounded.Route, contentDescription = null, modifier = Modifier.size(12.dp))
+                                Text(
+                                    text = if (canPingTomTomRouting) {
+                                        if (activeRoom?.leaderTroubleActive == true) "Ping TomTom: Plt. Leader" else "Ping TomTom: HP Leader"
+                                    } else {
+                                        "Salinan Rute Leader (Hemat API)"
+                                    },
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+
+                        if (gpsStatus == GpsTrackingStatus.DENIED) {
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = Color(0xEBFEF2F2),
+                                border = BorderStroke(1.dp, Color(0xFFFCA5A5)),
+                                shadowElevation = 2.dp
+                            ) {
+                                Text(
+                                    text = if (isPermanentlyDenied) {
+                                        "Izin lokasi diblokir permanen di Android. Ketuk tombol merah untuk buka Pengaturan > Izin > Lokasi."
+                                    } else {
+                                        "Izin GPS belum aktif. Pastikan Lokasi HP nyala & ketuk tombol merah untuk mengizinkan."
+                                    },
+                                    fontSize = 10.sp,
+                                    lineHeight = 13.sp,
+                                    color = Color(0xFF991B1B),
+                                    modifier = Modifier
+                                        .widthIn(max = 240.dp)
+                                        .padding(horizontal = 9.dp, vertical = 6.dp)
+                                )
+                            }
+                        }
+
+                        if (activeRoom?.isSyncedRoom != true) {
+                            FilterChip(
+                                selected = isOffRouteSimActive,
+                                onClick = onToggleOffRouteSim,
+                                label = { Text("Uji Keluar Jalur", fontSize = 11.sp) }
+                            )
+                            FilterChip(
+                                selected = isStragglerSimActive,
+                                onClick = onToggleStragglerSim,
+                                label = { Text("Uji Tertinggal", fontSize = 11.sp) }
+                            )
+                            FilterChip(
+                                selected = isLeaderTroubleSimActive,
+                                onClick = onToggleLeaderTroubleSim,
+                                label = { Text("Uji Trouble Leader", fontSize = 11.sp) }
+                            )
+                        }
+                    }
+                } else if (gpsStatus == GpsTrackingStatus.DENIED) {
                     Surface(
+                        onClick = {
+                            if (isPermanentlyDenied) {
+                                val intent = Intent(
+                                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                    Uri.fromParts("package", context.packageName, null)
+                                )
+                                context.startActivity(intent)
+                            } else {
+                                permissionLauncher.launch(
+                                    arrayOf(
+                                        Manifest.permission.ACCESS_FINE_LOCATION,
+                                        Manifest.permission.ACCESS_COARSE_LOCATION
+                                    )
+                                )
+                            }
+                        },
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(start = 12.dp, top = 88.dp),
                         shape = RoundedCornerShape(10.dp),
-                        color = if (canPingTomTomRouting) Color(0xEB4338CA) else Color(0xEB0F766E),
+                        color = Color(0xE6DC2626),
                         contentColor = Color.White,
                         shadowElevation = 3.dp
                     ) {
                         Row(
                             modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            Icon(Icons.Rounded.Route, contentDescription = null, modifier = Modifier.size(12.dp))
-                            Text(
-                                text = if (canPingTomTomRouting) {
-                                    if (activeRoom?.leaderTroubleActive == true) "Ping TomTom: Plt. Leader" else "Ping TomTom: HP Leader"
-                                } else {
-                                    "Salinan Rute Leader (Hemat API)"
-                                },
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.SemiBold
-                            )
+                            Icon(Icons.Rounded.GpsFixed, contentDescription = null, modifier = Modifier.size(13.dp))
+                            Text("Izin GPS Ditolak · Ketuk", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                         }
                     }
-
-                    if (gpsStatus == GpsTrackingStatus.DENIED) {
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = Color(0xEBFEF2F2),
-                            border = BorderStroke(1.dp, Color(0xFFFCA5A5)),
-                            shadowElevation = 2.dp
-                        ) {
-                            Text(
-                                text = if (isPermanentlyDenied) {
-                                    "Izin lokasi diblokir permanen di Android. Ketuk tombol merah untuk buka Pengaturan > Izin > Lokasi."
-                                } else {
-                                    "Izin GPS belum aktif. Pastikan Lokasi HP nyala & ketuk tombol merah untuk mengizinkan."
-                                },
-                                fontSize = 10.sp,
-                                lineHeight = 13.sp,
-                                color = Color(0xFF991B1B),
-                                modifier = Modifier
-                                    .widthIn(max = 240.dp)
-                                    .padding(horizontal = 9.dp, vertical = 6.dp)
-                            )
-                        }
-                    }
-
-                    if (activeRoom?.isSyncedRoom != true) {
-                        FilterChip(
-                            selected = isOffRouteSimActive,
-                            onClick = onToggleOffRouteSim,
-                            label = { Text("Uji Keluar Jalur", fontSize = 11.sp) }
-                        )
-                        FilterChip(
-                            selected = isStragglerSimActive,
-                            onClick = onToggleStragglerSim,
-                            label = { Text("Uji Tertinggal", fontSize = 11.sp) }
-                        )
-                        FilterChip(
-                            selected = isLeaderTroubleSimActive,
-                            onClick = onToggleLeaderTroubleSim,
-                            label = { Text("Uji Trouble Leader", fontSize = 11.sp) }
-                        )
-                    }
-
                 }
 
-                // Bottom-Left Digital Speedometer & Compass in GPS Navigation Mode
+                // Bottom-Left Digital Speedometer, Compass & Compact ETA in GPS Navigation Mode
                 if (activeNavMode) {
                     Surface(
                         modifier = Modifier
@@ -1120,6 +1202,16 @@ fun LiveTrackingMapScreen(
                                     color = Color.White.copy(alpha = 0.78f),
                                     modifier = Modifier.padding(bottom = 2.dp)
                                 )
+                                if (isCleanNavHud) {
+                                    Text(
+                                        text = "· ${etaInfo.arrivalClockLabel} · ${etaInfo.distanceLabel}",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = Color(0xFF86EFAC),
+                                        modifier = Modifier.padding(bottom = 2.dp, start = 4.dp)
+                                    )
+                                }
                             }
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
@@ -1140,7 +1232,7 @@ fun LiveTrackingMapScreen(
                     }
                 }
 
-                // Top-Right Layer, Zoom & Center Controls
+                // Top-Right Layer, Zoom & Center Controls (Streamlined during Clean Nav HUD)
                 Column(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
@@ -1152,6 +1244,7 @@ fun LiveTrackingMapScreen(
                             val next = !isNavigationMode
                             isNavigationMode = next
                             if (next) {
+                                isNavInfoHidden = true
                                 isAutoFollowing = true
                                 val m = navSubject
                                 if (m != null) {
@@ -1182,33 +1275,35 @@ fun LiveTrackingMapScreen(
                     ) {
                         Icon(Icons.Rounded.Layers, contentDescription = "Ubah Lapisan Peta")
                     }
-                    SmallFloatingActionButton(
-                        onClick = { showTraffic = !showTraffic },
-                        containerColor = if (showTraffic) Color(0xFF0F766E) else MaterialTheme.colorScheme.surface,
-                        contentColor = if (showTraffic) Color.White else MaterialTheme.colorScheme.primary
-                    ) {
-                        Icon(Icons.Rounded.Route, contentDescription = "Lalu Lintas Live")
-                    }
-                    if (activeRoom?.isSyncedRoom != true) {
+                    if (!isCleanNavHud) {
                         SmallFloatingActionButton(
-                            onClick = onToggleSimulation,
-                            containerColor = MaterialTheme.colorScheme.surface,
-                            contentColor = MaterialTheme.colorScheme.primary
+                            onClick = { showTraffic = !showTraffic },
+                            containerColor = if (showTraffic) Color(0xFF0F766E) else MaterialTheme.colorScheme.surface,
+                            contentColor = if (showTraffic) Color.White else MaterialTheme.colorScheme.primary
                         ) {
-                            Icon(if (isSimulationRunning) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, contentDescription = null)
+                            Icon(Icons.Rounded.Route, contentDescription = "Lalu Lintas Live")
                         }
-                    }
-                    SmallFloatingActionButton(
-                        onClick = { mapController.zoomIn() },
-                        containerColor = MaterialTheme.colorScheme.surface
-                    ) {
-                        Icon(Icons.Rounded.Add, contentDescription = "Perbesar")
-                    }
-                    SmallFloatingActionButton(
-                        onClick = { mapController.zoomOut() },
-                        containerColor = MaterialTheme.colorScheme.surface
-                    ) {
-                        Icon(Icons.Rounded.Remove, contentDescription = "Perkecil")
+                        if (activeRoom?.isSyncedRoom != true) {
+                            SmallFloatingActionButton(
+                                onClick = onToggleSimulation,
+                                containerColor = MaterialTheme.colorScheme.surface,
+                                contentColor = MaterialTheme.colorScheme.primary
+                            ) {
+                                Icon(if (isSimulationRunning) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, contentDescription = null)
+                            }
+                        }
+                        SmallFloatingActionButton(
+                            onClick = { mapController.zoomIn() },
+                            containerColor = MaterialTheme.colorScheme.surface
+                        ) {
+                            Icon(Icons.Rounded.Add, contentDescription = "Perbesar")
+                        }
+                        SmallFloatingActionButton(
+                            onClick = { mapController.zoomOut() },
+                            containerColor = MaterialTheme.colorScheme.surface
+                        ) {
+                            Icon(Icons.Rounded.Remove, contentDescription = "Perkecil")
+                        }
                     }
                     SmallFloatingActionButton(
                         onClick = {
@@ -1236,6 +1331,49 @@ fun LiveTrackingMapScreen(
                         contentColor = if (isAutoFollowing) Color.White else MaterialTheme.colorScheme.primary
                     ) {
                         Icon(Icons.Rounded.MyLocation, contentDescription = "Pusatkan & Ikuti Live")
+                    }
+                }
+
+                // Left-Edge Trigger Handle for Auto-Hiding Side Info Drawer
+                if (!showSideInfoDrawer && !isPickingDestinationOnMap && !isPickingCheckpointOnMap) {
+                    Surface(
+                        onClick = openSideDrawer,
+                        shape = RoundedCornerShape(topEnd = 16.dp, bottomEnd = 16.dp),
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+                        contentColor = MaterialTheme.colorScheme.onSurface,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                        shadowElevation = 6.dp,
+                        modifier = Modifier.align(Alignment.CenterStart)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(start = 8.dp, end = 10.dp, top = 12.dp, bottom = 12.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Box {
+                                Icon(
+                                    imageVector = Icons.Rounded.Info,
+                                    contentDescription = "Buka Panel Info Perjalanan",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                if (sosState.isActive || offRouteAlert.isOffRoute || stragglerAlert.isTriggered || activeRoom?.leaderTroubleActive == true) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(7.dp)
+                                            .align(Alignment.TopEnd)
+                                            .background(Color(0xFFEA580C), CircleShape)
+                                    )
+                                }
+                            }
+                            Text("Info", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(12.dp)
+                            )
+                        }
                     }
                 }
 
@@ -1302,19 +1440,501 @@ fun LiveTrackingMapScreen(
                         }
                     }
                 }
+
+                // Backdrop scrim + Auto-Hiding Side Info Drawer (7s inactivity auto-collapse)
+                if (showSideInfoDrawer) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.25f))
+                            .clickable { showSideInfoDrawer = false }
+                    )
+                }
+
+                AnimatedVisibility(
+                    visible = showSideInfoDrawer,
+                    enter = slideInHorizontally(initialOffsetX = { -it }) + fadeIn(),
+                    exit = slideOutHorizontally(targetOffsetX = { -it }) + fadeOut(),
+                    modifier = Modifier.align(Alignment.CenterStart)
+                ) {
+                    val actingLeaderMember = members.firstOrNull {
+                        it.isActingLeader || (activeRoom?.actingLeaderUid?.isNotBlank() == true && it.id == activeRoom.actingLeaderUid)
+                    }
+                    val coLeaderMember = members.firstOrNull {
+                        it.isCoLeader || (activeRoom?.coLeaderUid?.isNotBlank() == true && it.id == activeRoom.coLeaderUid)
+                    }
+                    val avgTenMin = if (speedHistory.isNotEmpty()) speedHistory.average().roundToInt() else etaInfo.speedKmh
+
+                    Surface(
+                        shape = RoundedCornerShape(topEnd = 20.dp, bottomEnd = 20.dp),
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.98f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                        shadowElevation = 14.dp,
+                        modifier = Modifier
+                            .width(296.dp)
+                            .fillMaxHeight()
+                            .pointerInput(Unit) {
+                                awaitPointerEventScope {
+                                    while (true) {
+                                        awaitPointerEvent(PointerEventPass.Initial)
+                                        touchSideDrawer()
+                                    }
+                                }
+                            }
+                    ) {
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            // Header with countdown
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = 14.dp, end = 6.dp, top = 10.dp, bottom = 8.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Info,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Text(
+                                            text = "Info & Data Perjalanan",
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                    Text(
+                                        text = "${activeRoom?.roomId ?: "KNV-0000"} · Auto-hide ${sideInfoSecondsLeft}d",
+                                        fontSize = 10.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                IconButton(onClick = { showSideInfoDrawer = false }) {
+                                    Icon(Icons.Rounded.Close, contentDescription = "Tutup Panel Info")
+                                }
+                            }
+
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .verticalScroll(rememberScrollState())
+                                    .padding(14.dp),
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                // Toggle Clean Navigation HUD
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "Layar Navigasi Bersih",
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        Text(
+                                            text = "Sembunyikan strip & grafik saat navigasi",
+                                            fontSize = 10.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Switch(
+                                        checked = isNavInfoHidden,
+                                        onCheckedChange = {
+                                            touchSideDrawer()
+                                            isNavInfoHidden = it
+                                        }
+                                    )
+                                }
+
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+
+                                // Trip Telemetry & 10-Min Speed Sparkline
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.Top
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = "TUJUAN & ETA",
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                            Text(
+                                                text = routeConfig.destinationName,
+                                                fontSize = 13.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                Text(
+                                                    text = if (trackedMember == null || trackedMember.id == currentUser?.id) "Fokus: Posisi Anda" else "Fokus: ${trackedMember.fullName}",
+                                                    fontSize = 10.sp,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                                if (currentUser != null && trackedMember != null && trackedMember.id != currentUser.id) {
+                                                    Text(
+                                                        text = "· Kembali",
+                                                        fontSize = 10.sp,
+                                                        fontWeight = FontWeight.SemiBold,
+                                                        color = MaterialTheme.colorScheme.primary,
+                                                        modifier = Modifier.clickable {
+                                                            touchSideDrawer()
+                                                            onSelectMember(currentUser.id)
+                                                        }
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        Column(horizontalAlignment = Alignment.End) {
+                                            Text(
+                                                text = "ETA ${etaInfo.arrivalClockLabel}",
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                fontFamily = FontFamily.Monospace,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                            Text(
+                                                text = etaInfo.durationLabel,
+                                                fontSize = 10.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+
+                                    Surface(
+                                        shape = RoundedCornerShape(12.dp),
+                                        color = MaterialTheme.colorScheme.background,
+                                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween
+                                            ) {
+                                                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
+                                                    Text("Sisa Jarak", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                    Text(etaInfo.distanceLabel, fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                                                }
+                                                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
+                                                    Text("Kecepatan", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                    Text("${etaInfo.speedKmh} km/j", fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                                                }
+                                                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
+                                                    Text("Rata² 10m", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                    Text("$avgTenMin km/j", fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.primary)
+                                                }
+                                            }
+                                            Canvas(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .height(26.dp)
+                                            ) {
+                                                if (speedHistory.size >= 2) {
+                                                    val minVal = (speedHistory.minOrNull() ?: 0).toFloat()
+                                                    val maxVal = ((speedHistory.maxOrNull() ?: 60).toFloat()).coerceAtLeast(minVal + 10f)
+                                                    val stepX = size.width / (speedHistory.size - 1)
+                                                    val linePath = Path()
+                                                    speedHistory.forEachIndexed { idx, value ->
+                                                        val x = idx * stepX
+                                                        val norm = ((value - minVal) / (maxVal - minVal)).coerceIn(0f, 1f)
+                                                        val y = size.height - norm * (size.height - 6f) - 3f
+                                                        if (idx == 0) linePath.moveTo(x, y) else linePath.lineTo(x, y)
+                                                    }
+                                                    drawPath(
+                                                        path = linePath,
+                                                        color = Color(0xFF1D4ED8),
+                                                        style = Stroke(width = 4f, cap = StrokeCap.Round)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+
+                                // System GPS, Cloud Sync & TomTom API Status
+                                Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                    Text(
+                                        text = "SISTEM & RUTE API",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                        Text("Sinyal GPS", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        Text(
+                                            text = if (gpsStatus == GpsTrackingStatus.ACTIVE) "Aktif ±${gpsAccuracyMeters}m" else gpsStatus.label,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = if (gpsStatus == GpsTrackingStatus.ACTIVE) Color(0xFF16A34A) else if (gpsStatus == GpsTrackingStatus.DENIED) Color(0xFFDC2626) else MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.clickable {
+                                                touchSideDrawer()
+                                                if (gpsStatus == GpsTrackingStatus.DENIED && isPermanentlyDenied) {
+                                                    val intent = Intent(
+                                                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                                        Uri.fromParts("package", context.packageName, null)
+                                                    )
+                                                    context.startActivity(intent)
+                                                } else {
+                                                    onRetryGps()
+                                                }
+                                            }
+                                        )
+                                    }
+                                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                        Text("Sinkronisasi", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        Text(
+                                            text = if (activeRoom?.isSyncedRoom == true) "Room Sync Aktif" else "Simulasi Lokal",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    }
+                                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                        Text("Ping TomTom", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        Text(
+                                            text = if (canPingTomTomRouting) {
+                                                if (activeRoom?.leaderTroubleActive == true) "Plt. Leader" else "HP Leader"
+                                            } else {
+                                                "Salinan Leader"
+                                            },
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                    if (actingLeaderMember != null && activeRoom?.leaderTroubleActive == true) {
+                                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                            Text("Plt. Leader", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            Text(actingLeaderMember.fullName, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                                        }
+                                    } else if (coLeaderMember != null) {
+                                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                            Text("Co-Leader", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            Text(coLeaderMember.fullName, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                                        }
+                                    }
+                                }
+
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+
+                                // Convoy Participants & Quick Self Condition
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Text(
+                                        text = "PESERTA KONVOI (${members.size})",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        listOf(
+                                            MemberConditionStatus.AMAN to "Aman",
+                                            MemberConditionStatus.ISTIRAHAT to "Istirahat",
+                                            MemberConditionStatus.MOGOK to "Mogok"
+                                        ).forEach { (status, shortLabel) ->
+                                            FilterChip(
+                                                selected = currentUser?.conditionStatus == status,
+                                                onClick = {
+                                                    touchSideDrawer()
+                                                    onUpdateOwnCondition(status)
+                                                },
+                                                label = { Text(shortLabel, fontSize = 10.sp, maxLines = 1) },
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                        }
+                                    }
+
+                                    members.forEach { member ->
+                                        val isSel = member.id == focusedMember?.id
+                                        val roleLabel = when {
+                                            member.isActingLeader && member.role != UserRole.TOUR_LEADER -> "Plt. Leader"
+                                            member.isCoLeader -> "Co-Leader"
+                                            member.isSweeper -> "Sweeper"
+                                            member.role == UserRole.TOUR_LEADER -> "Leader"
+                                            else -> "Anggota"
+                                        }
+                                        val distText = member.distanceToLeaderMeters?.let { " · ${formatDistanceLabel(it)}" }.orEmpty()
+                                        Surface(
+                                            onClick = {
+                                                touchSideDrawer()
+                                                onSelectMember(member.id)
+                                                isAutoFollowing = true
+                                                mapController.animateTo(
+                                                    member.mapPosition.latitude,
+                                                    member.mapPosition.longitude,
+                                                    if (activeNavMode) 16.8 else 15.0
+                                                )
+                                            },
+                                            shape = RoundedCornerShape(12.dp),
+                                            color = if (isSel) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f) else MaterialTheme.colorScheme.background,
+                                            border = BorderStroke(1.dp, if (isSel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline),
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                ConvoyAvatar(
+                                                    preset = member.avatarPreset,
+                                                    photoUri = member.avatarPhotoUri,
+                                                    displayName = member.fullName,
+                                                    size = 28.dp,
+                                                    borderColor = if (member.isCurrentUser) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary
+                                                )
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(
+                                                        text = if (member.isCurrentUser) "${member.fullName} (Anda)" else member.fullName,
+                                                        fontSize = 12.sp,
+                                                        fontWeight = FontWeight.SemiBold,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                    Text(
+                                                        text = "$roleLabel$distText · ${member.conditionStatus.label}",
+                                                        fontSize = 10.sp,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                    if (isEffectiveLeader && member.role != UserRole.TOUR_LEADER && !member.isActingLeader) {
+                                                        Text(
+                                                            text = if (member.isSweeper) "Sweeper Aktif" else "Jadikan Sweeper",
+                                                            fontSize = 10.sp,
+                                                            fontWeight = FontWeight.SemiBold,
+                                                            color = MaterialTheme.colorScheme.primary,
+                                                            modifier = Modifier
+                                                                .padding(top = 2.dp)
+                                                                .clickable {
+                                                                    touchSideDrawer()
+                                                                    onAssignSweeper(member.id)
+                                                                }
+                                                        )
+                                                    }
+                                                }
+                                                Text(
+                                                    text = "${member.mapPosition.speedKmh} km/j",
+                                                    fontSize = 10.sp,
+                                                    fontFamily = FontFamily.Monospace,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+
+                                // Traffic & Offline Simulation Controls inside Side Drawer
+                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Text(
+                                        text = "KONTROL PETA & SIMULASI",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        FilterChip(
+                                            selected = showTraffic,
+                                            onClick = {
+                                                touchSideDrawer()
+                                                showTraffic = !showTraffic
+                                            },
+                                            label = { Text("Traffic Live", fontSize = 10.sp) },
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        if (activeRoom?.isSyncedRoom != true) {
+                                            FilterChip(
+                                                selected = isSimulationRunning,
+                                                onClick = {
+                                                    touchSideDrawer()
+                                                    onToggleSimulation()
+                                                },
+                                                label = { Text(if (isSimulationRunning) "Jeda Sim" else "Lanjut Sim", fontSize = 10.sp) },
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                        }
+                                    }
+                                    if (activeRoom?.isSyncedRoom != true) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            FilterChip(
+                                                selected = isOffRouteSimActive,
+                                                onClick = {
+                                                    touchSideDrawer()
+                                                    onToggleOffRouteSim()
+                                                },
+                                                label = { Text("Keluar Jalur", fontSize = 10.sp, maxLines = 1) },
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                            FilterChip(
+                                                selected = isStragglerSimActive,
+                                                onClick = {
+                                                    touchSideDrawer()
+                                                    onToggleStragglerSim()
+                                                },
+                                                label = { Text("Tertinggal", fontSize = 10.sp, maxLines = 1) },
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                        }
+                                        FilterChip(
+                                            selected = isLeaderTroubleSimActive,
+                                            onClick = {
+                                                touchSideDrawer()
+                                                onToggleLeaderTroubleSim()
+                                            },
+                                            label = { Text("Uji Trouble HP Leader", fontSize = 10.sp) },
+                                            modifier = Modifier.fillMaxWidth()
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
-            // Docked Destination ETA & 10-Min Avg Speed Telemetry Bar
-            DestinationEtaHudBar(
-                destinationName = routeConfig.destinationName,
-                trackedMember = trackedMember,
-                currentUserId = currentUser?.id,
-                etaInfo = etaInfo,
-                speedHistory = speedHistory,
-                onFocusSelf = if (currentUser != null && trackedMember?.id != currentUser.id) {
-                    { onSelectMember(currentUser.id) }
-                } else null
-            )
+            // Docked Destination ETA & 10-Min Avg Speed Telemetry Bar (Hidden in Clean Nav HUD)
+            if (!isCleanNavHud) {
+                DestinationEtaHudBar(
+                    destinationName = routeConfig.destinationName,
+                    trackedMember = trackedMember,
+                    currentUserId = currentUser?.id,
+                    etaInfo = etaInfo,
+                    speedHistory = speedHistory,
+                    onFocusSelf = if (currentUser != null && trackedMember?.id != currentUser.id) {
+                        { onSelectMember(currentUser.id) }
+                    } else null
+                )
+            }
         }
     }
 
