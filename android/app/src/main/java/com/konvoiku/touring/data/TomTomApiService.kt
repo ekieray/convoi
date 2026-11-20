@@ -4,7 +4,9 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.util.LruCache
 import com.konvoiku.touring.BuildConfig
+import com.konvoiku.touring.model.RouteInstruction
 import com.konvoiku.touring.model.RoutePoint
+import com.konvoiku.touring.model.RoutePreference
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -22,7 +24,8 @@ data class TomTomRouteResult(
     val distanceMeters: Int,
     val durationMillis: Long,
     val trafficDelaySeconds: Int,
-    val path: List<TomTomRoutePoint>
+    val path: List<TomTomRoutePoint>,
+    val instructions: List<RouteInstruction> = emptyList()
 )
 
 data class TomTomPlaceResult(
@@ -84,7 +87,8 @@ object TomTomApiService {
 
     suspend fun calculateRoute(
         waypoints: List<RoutePoint>,
-        travelMode: String = "motorcycle"
+        travelMode: String = "motorcycle",
+        routePreference: RoutePreference = RoutePreference.FASTEST
     ): TomTomRouteResult? = withContext(Dispatchers.IO) {
         if (waypoints.size < 2 || apiKey.isBlank()) return@withContext null
 
@@ -106,9 +110,11 @@ object TomTomApiService {
             String.format(Locale.US, "%.6f,%.6f", it.latitude, it.longitude)
         }
 
+        val routeTypeParam = if (routePreference == RoutePreference.SHORTEST) "shortest" else "fastest"
+        val avoidParam = if (routePreference == RoutePreference.NO_TOLL) "&avoid=tollRoads" else ""
         val url = "https://api.tomtom.com/routing/1/calculateRoute/${
             URLEncoder.encode(pointsParam, "UTF-8")
-        }/json?key=${URLEncoder.encode(apiKey, "UTF-8")}&traffic=true&travelMode=$travelMode&routeType=fastest"
+        }/json?key=${URLEncoder.encode(apiKey, "UTF-8")}&traffic=true&travelMode=$travelMode&routeType=$routeTypeParam&instructionsType=text&language=id-ID$avoidParam"
 
         runCatching {
             val body = httpGet(url) ?: return@runCatching null
@@ -138,12 +144,41 @@ object TomTomApiService {
                 }
             }
 
+            val instructionsArray = primary.optJSONObject("guidance")?.optJSONArray("instructions")
+            val parsedInstructions = buildList {
+                if (instructionsArray != null) {
+                    for (k in 0 until instructionsArray.length()) {
+                        val ins = instructionsArray.getJSONObject(k)
+                        val ptObj = ins.optJSONObject("point")
+                        val lat = ptObj?.optDouble("latitude", Double.NaN) ?: Double.NaN
+                        val lng = ptObj?.optDouble("longitude", Double.NaN) ?: Double.NaN
+                        val offsetMeters = ins.optInt("routeOffsetInMeters", 0)
+                        val maneuver = ins.optString("maneuver", "STRAIGHT").trim()
+                        val message = ins.optString("message", "").trim()
+                        val street = ins.optString("street", "").trim()
+                        if (!lat.isNaN() && !lng.isNaN() && message.isNotBlank()) {
+                            add(
+                                RouteInstruction(
+                                    latitude = lat,
+                                    longitude = lng,
+                                    routeOffsetInMeters = offsetMeters,
+                                    maneuver = maneuver,
+                                    message = message,
+                                    street = street
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+
             if (path.isEmpty()) null
             else TomTomRouteResult(
                 distanceMeters = distanceMeters,
                 durationMillis = travelTimeSeconds * 1000L,
                 trafficDelaySeconds = trafficDelaySeconds,
-                path = path
+                path = path,
+                instructions = parsedInstructions
             )
         }.getOrNull()
     }

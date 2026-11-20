@@ -283,12 +283,19 @@ fun ConvoyNavGraph(
                 activeRoom = uiState.activeRoom,
                 routeConfig = uiState.routeConfig,
                 destinationPresets = viewModel.destinationPresets,
+                vehicleType = uiState.vehicleProfile.vehicleType,
                 userGpsLat = uiState.userGpsLat,
                 userGpsLng = uiState.userGpsLng,
+                onPickOriginLatLng = { lat, lng, placeName, addressLabel ->
+                    viewModel.setCustomOriginLatLng(lat, lng, placeName, addressLabel)
+                },
+                onUseGpsAsOrigin = viewModel::useCurrentGpsAsOrigin,
                 onSelectPreset = viewModel::selectDestinationPreset,
                 onPickDestinationLatLng = { lat, lng, placeName, addressLabel ->
                     viewModel.setCustomDestinationLatLng(lat, lng, placeName, addressLabel)
                 },
+                onSelectRoutePreference = viewModel::selectRoutePreference,
+                onRouteComputed = viewModel::updateComputedTomTomRoute,
                 onUpdateWaypoints = viewModel::updateCustomWaypoints,
                 onResetDefaultWaypoints = viewModel::resetDefaultWaypoints,
                 onAddCheckpointAtPoint = viewModel::addRestCheckpointAtPoint,
@@ -325,6 +332,7 @@ fun ConvoyNavGraph(
         }
 
         composable(ConvoyRoute.LiveMap.route) {
+            val isEffectiveLeader = viewModel.isCurrentUserEffectiveLeader()
             LiveTrackingMapScreen(
                 activeRoom = uiState.activeRoom,
                 role = uiState.selectedRole ?: UserRole.MEMBER,
@@ -343,6 +351,9 @@ fun ConvoyNavGraph(
                 pendingCheckpointName = uiState.pendingCheckpointName,
                 isOffRouteSimActive = uiState.isOffRouteSimActive,
                 isStragglerSimActive = uiState.isStragglerSimActive,
+                canPingTomTomRouting = isEffectiveLeader,
+                isEffectiveLeader = isEffectiveLeader,
+                isLeaderTroubleSimActive = uiState.isLeaderTroubleSimActive,
                 gpsStatus = uiState.gpsStatus,
                 gpsAccuracyMeters = uiState.gpsAccuracyMeters,
                 destinationPresets = viewModel.destinationPresets,
@@ -364,6 +375,8 @@ fun ConvoyNavGraph(
                 onToggleSoundAlert = viewModel::toggleSoundAlert,
                 onToggleOffRouteSim = viewModel::toggleOffRouteSimulation,
                 onToggleStragglerSim = viewModel::toggleStragglerSimulation,
+                onToggleLeaderTroubleSim = viewModel::toggleLeaderTroubleSimulation,
+                onReclaimLeader = viewModel::reclaimLeaderAuthority,
                 onTriggerSos = viewModel::triggerSosEmergency,
                 onResolveSos = viewModel::resolveSosEmergency,
                 onSendTextMessage = viewModel::sendTextMessage,

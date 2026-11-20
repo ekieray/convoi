@@ -47,6 +47,7 @@ interface LiveTomTomConvoyMapProps {
   isPickingDestination: boolean;
   isPickingCheckpoint: boolean;
   isNavigationMode?: boolean;
+  canPingTomTomRouting?: boolean;
   onToggleNavigationMode?: () => void;
   onSelectMember: (memberId: string) => void;
   onPickCoordinateOnMap: (lat: number, lng: number) => void;
@@ -115,6 +116,7 @@ export function LiveTomTomConvoyMap({
   isPickingDestination,
   isPickingCheckpoint,
   isNavigationMode = false,
+  canPingTomTomRouting = true,
   onToggleNavigationMode,
   onSelectMember,
   onPickCoordinateOnMap,
@@ -346,7 +348,7 @@ export function LiveTomTomConvoyMap({
     ]);
     drawPolylines(fallbackPts);
 
-    if (waypoints.length < 2) return;
+    if (waypoints.length < 2 || !canPingTomTomRouting) return;
 
     let cancelled = false;
     fetchTomTomRoute(
@@ -369,7 +371,7 @@ export function LiveTomTomConvoyMap({
     return () => {
       cancelled = true;
     };
-  }, [routeKey, activeNavMode]);
+  }, [routeKey, canPingTomTomRouting]);
 
   // Sync checkpoints, destination ETA flag, and convoy member markers
   useEffect(() => {
@@ -447,9 +449,13 @@ export function LiveTomTomConvoyMap({
         (member.vehicleType === 'MOBIL' ? 'Mobil' : 'Motor');
       const prefix = isSosBeacon
         ? 'SOS · '
-        : member.isSweeper
-          ? 'Sweeper · '
-          : '';
+        : member.isActingLeader
+          ? 'Plt.Leader · '
+          : member.isCoLeader
+            ? 'Co-Leader · '
+            : member.isSweeper
+              ? 'Sweeper · '
+              : '';
       const labelText = `${prefix}${member.fullName} · ${vehicleLabel}${member.isCurrentUser ? ' (Anda)' : ''}`;
 
       const pillBg = isSosBeacon
@@ -458,13 +464,22 @@ export function LiveTomTomConvoyMap({
           ? '#DC2626'
           : isStraggler
             ? '#B45309'
-            : isSelected
-              ? '#1D4ED8'
-              : darkMode
-                ? '#141C24'
-                : '#FFFFFF';
+            : member.isActingLeader
+              ? '#0369A1'
+              : member.isCoLeader
+                ? '#6D28D9'
+                : isSelected
+                  ? '#1D4ED8'
+                  : darkMode
+                    ? '#141C24'
+                    : '#FFFFFF';
       const pillText =
-        isSosBeacon || isOffRoute || isStraggler || isSelected
+        isSosBeacon ||
+        isOffRoute ||
+        isStraggler ||
+        member.isActingLeader ||
+        member.isCoLeader ||
+        isSelected
           ? '#FFFFFF'
           : darkMode
             ? '#F1F5F9'
@@ -474,20 +489,28 @@ export function LiveTomTomConvoyMap({
           ? '#7F1D1D'
           : isStraggler
             ? '#92400E'
-            : isSelected
-              ? '#1E40AF'
-              : darkMode
-                ? '#334155'
-                : '#CBD5E1';
+            : member.isActingLeader
+              ? '#075985'
+              : member.isCoLeader
+                ? '#5B21B6'
+                : isSelected
+                  ? '#1E40AF'
+                  : darkMode
+                    ? '#334155'
+                    : '#CBD5E1';
 
       const pinBg =
         isSosBeacon || isOffRoute
           ? '#DC2626'
-          : member.isCurrentUser
-            ? '#EA580C'
-            : member.role === 'TOUR_LEADER'
-              ? '#1D4ED8'
-              : '#334155';
+          : member.isActingLeader
+            ? '#0284C7'
+            : member.isCoLeader
+              ? '#7C3AED'
+              : member.isCurrentUser
+                ? '#EA580C'
+                : member.role === 'TOUR_LEADER'
+                  ? '#1D4ED8'
+                  : '#334155';
 
       const vehicleEmoji = isSosBeacon
         ? '⚠️'

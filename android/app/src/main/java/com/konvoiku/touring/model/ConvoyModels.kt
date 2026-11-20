@@ -89,6 +89,37 @@ data class SosEmergencyState(
     val triggeredAtLabel: String = ""
 )
 
+enum class RoutePreference(val id: String, val label: String, val subtitle: String) {
+    FASTEST("fastest", "Tercepat", "Hindari macet & rute utama"),
+    SHORTEST("shortest", "Terpendek", "Jarak tempuh paling singkat"),
+    NO_TOLL("no_toll", "Bebas Tol", "Cocok motor & jalur non-tol");
+
+    companion object {
+        fun fromId(raw: String?): RoutePreference =
+            entries.firstOrNull { it.id.equals(raw?.trim(), ignoreCase = true) } ?: FASTEST
+    }
+}
+
+data class RouteInstruction(
+    val latitude: Double,
+    val longitude: Double,
+    val routeOffsetInMeters: Int,
+    val maneuver: String,
+    val message: String,
+    val street: String = ""
+)
+
+data class NavigationGuidanceUiState(
+    val instructionText: String,
+    val streetName: String,
+    val maneuver: String,
+    val distanceToTurnLabel: String,
+    val distanceToTurnMeters: Int,
+    val headingDegrees: Int,
+    val speedKmh: Int,
+    val isOffRoute: Boolean
+)
+
 data class RoutePoint(
     val xFraction: Float,
     val yFraction: Float,
@@ -106,9 +137,14 @@ data class RestCheckpoint(
 )
 
 data class ConvoyRouteConfig(
+    val originName: String = "Simpang Gadog / Tol Jagorawi",
+    val originAddress: String = "Tol Jagorawi KM 45, Ciawi · -6.7100, 106.8500",
+    val originLockedByLeader: Boolean = false,
     val destinationName: String = "Puncak Pass Resort",
     val destinationAddress: String = "Jl. Raya Puncak KM 90, Cisarua · -6.6450, 106.9900",
+    val routePreference: RoutePreference = RoutePreference.FASTEST,
     val waypoints: List<RoutePoint> = defaultWaypoints(),
+    val routeInstructions: List<RouteInstruction> = emptyList(),
     val checkpoints: List<RestCheckpoint> = defaultCheckpoints(),
     val totalRouteMeters: Int = 12000,
     val offRouteToleranceMeters: Int = 50,
@@ -205,6 +241,10 @@ data class ConvoyMember(
     val joinedAtLabel: String,
     val isCurrentUser: Boolean = false,
     val isSweeper: Boolean = false,
+    val isCoLeader: Boolean = false,
+    val isActingLeader: Boolean = false,
+    val distanceToLeaderMeters: Int? = null,
+    val lastUpdatedEpochMs: Long = 0L,
     val avatarPreset: AvatarPreset = AvatarPreset.HELMET_TOURING,
     val avatarPhotoUri: String? = null,
     val conditionStatus: MemberConditionStatus = MemberConditionStatus.AMAN,
@@ -534,7 +574,11 @@ data class TourRoom(
     val createdAtLabel: String,
     val members: List<ConvoyMember>,
     val isSyncedRoom: Boolean = false,
-    val leaderUid: String = ""
+    val leaderUid: String = "",
+    val coLeaderUid: String = "",
+    val actingLeaderUid: String = "",
+    val leaderTroubleActive: Boolean = false,
+    val leaderTroubleReason: String = ""
 )
 
 data class ConvoyUiState(
@@ -558,6 +602,7 @@ data class ConvoyUiState(
     val pendingCheckpointName: String = "",
     val isOffRouteSimActive: Boolean = false,
     val isStragglerSimActive: Boolean = false,
+    val isLeaderTroubleSimActive: Boolean = false,
     val tripHistory: List<TripHistoryRecord> = emptyList(),
     val selectedTripId: String? = null,
     val lastCompletedTrip: TripHistoryRecord? = null,

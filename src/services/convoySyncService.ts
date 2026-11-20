@@ -31,7 +31,9 @@ import {
   MemberConditionStatus,
   RestCheckpoint,
   RoomMessage,
+  RouteInstruction,
   RoutePoint,
+  RoutePreference,
   SosEmergencyState,
   TourRoom,
   TripHistoryRecord,
@@ -40,7 +42,12 @@ import {
   VehicleProfile,
   VehicleType,
 } from '../types/convoy';
-import { decodePolyline, downsampleRoutePoints, encodePolyline } from '../utils/geo';
+import {
+  compactInstructionsForSync,
+  decodePolyline,
+  downsampleRoutePoints,
+  encodePolyline,
+} from '../utils/geo';
 
 const EMAIL_PROFILE_PREFIX = 'konvoiku_email_profile_v1:';
 const ACTIVE_SESSION_KEY = 'konvoiku_active_session_v1';
@@ -275,12 +282,22 @@ export async function createSyncedRoom(params: {
     waypoints.map((w) => ({ lat: w.latitude, lng: w.longitude }))
   ).slice(0, 16000);
 
+  const routePreference: RoutePreference =
+    routeConfig.routePreference === 'shortest' || routeConfig.routePreference === 'no_toll'
+      ? routeConfig.routePreference
+      : 'fastest';
+  const routeInstructions = compactInstructionsForSync(routeConfig.routeInstructions, 50);
+
   const roomPath = `rooms/${roomId}`;
   try {
     await setDoc(doc(db, 'rooms', roomId), {
       roomId,
       roomTitle: (roomTitle.trim() || 'Konvoi Touring').slice(0, 100),
       leaderUid,
+      coLeaderUid: '',
+      actingLeaderUid: leaderUid,
+      leaderTroubleActive: false,
+      leaderTroubleReason: '',
       destinationName: routeConfig.destinationName.slice(0, 120),
       destinationAddress: routeConfig.destinationAddress.slice(0, 240),
       destLat: dest.latitude,
@@ -290,7 +307,10 @@ export async function createSyncedRoom(params: {
       originLat: origin.latitude,
       originLng: origin.longitude,
       encodedPolyline,
+      routePreference,
+      routeInstructions,
       totalRouteMeters: Math.max(100, Math.min(5000000, Math.round(routeConfig.totalRouteMeters))),
+      estimatedDurationMillis: Math.max(0, Math.min(604800000, Math.round(routeConfig.estimatedDurationMillis ?? 0))),
       offRouteToleranceMeters: Math.max(10, Math.min(5000, Math.round(routeConfig.offRouteToleranceMeters))),
       maxStragglerDistanceMeters: Math.max(100, Math.min(50000, Math.round(routeConfig.maxStragglerDistanceMeters))),
       soundAlertEnabled: Boolean(routeConfig.soundAlertEnabled),
@@ -499,22 +519,56 @@ export function subscribeToSyncedRoom(
               },
             ];
 
+      const rawPref = typeof d.routePreference === 'string' ? d.routePreference : '';
+      const syncedPreference: RoutePreference =
+        rawPref === 'shortest' || rawPref === 'no_toll' || rawPref === 'fastest'
+          ? rawPref
+          : (cachedExistingConfig?.routePreference ?? 'fastest');
+      const parsedInstructions: RouteInstruction[] | undefined = Array.isArray(d.routeInstructions)
+        ? d.routeInstructions
+            .map((item: unknown) => {
+              const obj = item as Record<string, unknown>;
+              return {
+                latitude: Number(obj?.latitude ?? 0),
+                longitude: Number(obj?.longitude ?? 0),
+                routeOffsetInMeters: Number(obj?.routeOffsetInMeters ?? 0),
+                maneuver: String(obj?.maneuver ?? 'STRAIGHT'),
+                message: String(obj?.message ?? 'Ikuti rute'),
+                street: typeof obj?.street === 'string' ? obj.street : '',
+              };
+            })
+            .filter((ins: RouteInstruction) => Boolean(ins.message))
+        : cachedExistingConfig?.routeInstructions;
+
       const nextConfig: ConvoyRouteConfig = {
         originName: typeof d.originName === 'string' && d.originName ? d.originName : cachedExistingConfig?.originName,
         originAddress: typeof d.originAddress === 'string' && d.originAddress ? d.originAddress : cachedExistingConfig?.originAddress,
         originLockedByLeader: Boolean(d.originName || cachedExistingConfig?.originLockedByLeader),
-        routePreference: cachedExistingConfig?.routePreference ?? 'fastest',
-        routeInstructions: cachedExistingConfig?.routeInstructions,
+        routePreference: syncedPreference,
+        routeInstructions: parsedInstructions,
         destinationName: String(d.destinationName || 'Tujuan Konvoi'),
         destinationAddress: String(d.destinationAddress || ''),
         waypoints,
         checkpoints: cachedExistingConfig?.checkpoints ?? [],
         totalRouteMeters: Number(d.totalRouteMeters || 12000),
+        estimatedDurationMillis:
+          typeof d.estimatedDurationMillis === 'number' && d.estimatedDurationMillis > 0
+            ? d.estimatedDurationMillis
+            : cachedExistingConfig?.estimatedDurationMillis,
         offRouteToleranceMeters: Number(d.offRouteToleranceMeters || 50),
         maxStragglerDistanceMeters: Number(d.maxStragglerDistanceMeters || 1000),
         soundAlertEnabled: Boolean(d.soundAlertEnabled ?? true),
       };
       cachedExistingConfig = nextConfig;
+
+      const leaderUid = String(d.leaderUid || '');
+      const coLeaderUid = typeof d.coLeaderUid === 'string' ? d.coLeaderUid : '';
+      const rawActingLeaderUid = typeof d.actingLeaderUid === 'string' ? d.actingLeaderUid : '';
+      const leaderTroubleActive = Boolean(d.leaderTroubleActive);
+      const actingLeaderUid =
+        rawActingLeaderUid && (leaderTroubleActive || rawActingLeaderUid === leaderUid)
+          ? rawActingLeaderUid
+          : leaderUid;
 
       callbacks.onRoomUpdate({
         room: {
@@ -522,7 +576,11 @@ export function subscribeToSyncedRoom(
           roomTitle: String(d.roomTitle || 'Konvoi Live'),
           inviteLink: `https://konvoiku.id/join/${roomId}`,
           createdAtLabel: toClockLabel(d.createdAt, 'Aktif sekarang'),
-          leaderUid: String(d.leaderUid || ''),
+          leaderUid,
+          coLeaderUid,
+          actingLeaderUid,
+          leaderTroubleActive,
+          leaderTroubleReason: typeof d.leaderTroubleReason === 'string' ? d.leaderTroubleReason : '',
           status: d.status === 'FINISHED' ? 'FINISHED' : 'ACTIVE',
         },
         routeConfig: nextConfig,
@@ -567,6 +625,7 @@ export function subscribeToSyncedRoom(
           connectionStatus: (d.connectionStatus || 'CONNECTED') as ConnectionStatus,
           lastLocationText: String(d.lastLocationText || 'GPS Aktif'),
           lastUpdatedLabel: toClockLabel(d.updatedAt, 'Baru saja'),
+          lastUpdatedMs: toMillis(d.updatedAt),
           routeDistanceMeters: 0,
           offRouteMeters: 0,
           convoyOrderRank: idx + 1,
@@ -755,6 +814,11 @@ export async function updateSyncedRoomRoute(
   const encodedPolyline = encodePolyline(
     config.waypoints.map((w) => ({ lat: w.latitude, lng: w.longitude }))
   ).slice(0, 16000);
+  const routePreference: RoutePreference =
+    config.routePreference === 'shortest' || config.routePreference === 'no_toll'
+      ? config.routePreference
+      : 'fastest';
+  const routeInstructions = compactInstructionsForSync(config.routeInstructions, 50);
 
   try {
     await updateDoc(doc(db, 'rooms', roomId), {
@@ -765,10 +829,63 @@ export async function updateSyncedRoomRoute(
       ...(origin ? { originLat: origin.latitude, originLng: origin.longitude } : {}),
       ...(dest ? { destLat: dest.latitude, destLng: dest.longitude } : {}),
       encodedPolyline,
+      routePreference,
+      routeInstructions,
       totalRouteMeters: Math.max(100, Math.min(5000000, Math.round(config.totalRouteMeters))),
+      estimatedDurationMillis: Math.max(0, Math.min(604800000, Math.round(config.estimatedDurationMillis ?? 0))),
       offRouteToleranceMeters: Math.max(10, Math.min(5000, Math.round(config.offRouteToleranceMeters))),
       maxStragglerDistanceMeters: Math.max(100, Math.min(50000, Math.round(config.maxStragglerDistanceMeters))),
       soundAlertEnabled: Boolean(config.soundAlertEnabled),
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function syncCoLeaderAssignment(
+  roomId: string,
+  coLeaderUid: string
+): Promise<void> {
+  const path = `rooms/${roomId}`;
+  try {
+    await updateDoc(doc(db, 'rooms', roomId), {
+      coLeaderUid: coLeaderUid.slice(0, 128),
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    console.warn('Gagal menyinkronkan Co-Leader:', error);
+  }
+}
+
+export async function triggerCoLeaderFailover(
+  roomId: string,
+  actingLeaderUid: string,
+  reason: string
+): Promise<void> {
+  const path = `rooms/${roomId}`;
+  try {
+    await updateDoc(doc(db, 'rooms', roomId), {
+      actingLeaderUid: actingLeaderUid.slice(0, 128),
+      leaderTroubleActive: true,
+      leaderTroubleReason: reason.slice(0, 80),
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function recoverOriginalLeader(
+  roomId: string,
+  originalLeaderUid: string
+): Promise<void> {
+  const path = `rooms/${roomId}`;
+  try {
+    await updateDoc(doc(db, 'rooms', roomId), {
+      actingLeaderUid: originalLeaderUid.slice(0, 128),
+      leaderTroubleActive: false,
+      leaderTroubleReason: '',
       updatedAt: serverTimestamp(),
     });
   } catch (error) {

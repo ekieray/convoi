@@ -1,6 +1,12 @@
 package com.konvoiku.touring.util
 
+import com.konvoiku.touring.model.ConnectionStatus
+import com.konvoiku.touring.model.ConvoyMember
+import com.konvoiku.touring.model.MemberConditionStatus
+import com.konvoiku.touring.model.NavigationGuidanceUiState
+import com.konvoiku.touring.model.RouteInstruction
 import com.konvoiku.touring.model.RoutePoint
+import com.konvoiku.touring.model.UserRole
 import com.konvoiku.touring.model.VisitedCheckpointLog
 import kotlin.math.PI
 import kotlin.math.abs
@@ -48,6 +54,11 @@ data class TripMapViewportProjection(
     val tiles: List<ProjectedMapTile>,
     val hasGeo: Boolean,
     val tileZoom: Int
+)
+
+data class ClosestCoLeaderResult(
+    val coLeaderUid: String?,
+    val distanceByMemberId: Map<String, Int>
 )
 
 object GeoUtils {
@@ -157,6 +168,167 @@ object GeoUtils {
         val y = sin(dLng) * cos(lat2)
         val x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLng)
         return ((Math.toDegrees(atan2(y, x)) + 360.0) % 360.0).roundToInt()
+    }
+
+    fun offsetPointAlongHeading(
+        lat: Double,
+        lng: Double,
+        headingDeg: Double,
+        offsetMeters: Double = 90.0
+    ): LatLngGeo {
+        val brgRad = Math.toRadians(headingDeg)
+        val dLat = (offsetMeters * cos(brgRad)) / 111_132.92
+        val metersPerDegLng = (111_412.84 * cos(Math.toRadians(lat))).coerceAtLeast(1000.0)
+        val dLng = (offsetMeters * sin(brgRad)) / metersPerDegLng
+        return LatLngGeo(lat + dLat, lng + dLng)
+    }
+
+    fun compassDirectionShort(headingDeg: Int): String {
+        val dirs = listOf("U", "TL", "T", "TG", "S", "BD", "B", "BL")
+        val idx = (((headingDeg % 360) + 360) % 360 + 22) / 45 % 8
+        return dirs[idx]
+    }
+
+    fun formatNavDistanceLabel(meters: Int): String {
+        val safe = meters.coerceAtLeast(0)
+        return if (safe >= 1000) {
+            String.format(Locale.US, "%.1f km", safe / 1000.0)
+        } else if (safe >= 100) {
+            "${(safe / 10) * 10} m"
+        } else {
+            "$safe m"
+        }
+    }
+
+    fun computeNavigationGuidance(
+        lat: Double,
+        lng: Double,
+        speedKmh: Int,
+        rawHeadingDeg: Int,
+        waypoints: List<RoutePoint>,
+        instructions: List<RouteInstruction>,
+        offRouteMeters: Int,
+        toleranceMeters: Int,
+        totalRouteMeters: Int,
+        routeProgress: Float
+    ): NavigationGuidanceUiState {
+        val traveledMeters = (routeProgress.coerceIn(0f, 1f) * totalRouteMeters.coerceAtLeast(100)).roundToInt()
+        val remainingTotal = (totalRouteMeters - traveledMeters).coerceAtLeast(0)
+        val isOffRoute = offRouteMeters > toleranceMeters
+
+        var routeSegmentBearing = ((rawHeadingDeg % 360) + 360) % 360
+        if (waypoints.size >= 2) {
+            val segIdx = (routeProgress.coerceIn(0f, 0.999f) * (waypoints.size - 1))
+                .toInt()
+                .coerceIn(0, waypoints.size - 2)
+            routeSegmentBearing = computeBearingDegrees(
+                LatLngGeo(waypoints[segIdx].latitude, waypoints[segIdx].longitude),
+                LatLngGeo(waypoints[segIdx + 1].latitude, waypoints[segIdx + 1].longitude)
+            )
+        }
+        val effectiveHeading = if (speedKmh > 2 && rawHeadingDeg in 0..359) {
+            rawHeadingDeg
+        } else {
+            routeSegmentBearing
+        }
+
+        if (isOffRoute) {
+            return NavigationGuidanceUiState(
+                instructionText = "Keluar jalur ${offRouteMeters} m — Kembali ke rute biru",
+                streetName = "Peringatan Rute Konvoi",
+                maneuver = "STRAIGHT",
+                distanceToTurnLabel = formatNavDistanceLabel(offRouteMeters),
+                distanceToTurnMeters = offRouteMeters,
+                headingDegrees = effectiveHeading,
+                speedKmh = speedKmh.coerceAtLeast(0),
+                isOffRoute = true
+            )
+        }
+
+        if (remainingTotal <= 60) {
+            return NavigationGuidanceUiState(
+                instructionText = "Anda tiba di titik tujuan konvoi",
+                streetName = "Tujuan Tercapai",
+                maneuver = "ARRIVE",
+                distanceToTurnLabel = "Tiba",
+                distanceToTurnMeters = 0,
+                headingDegrees = effectiveHeading,
+                speedKmh = speedKmh.coerceAtLeast(0),
+                isOffRoute = false
+            )
+        }
+
+        val upcoming = instructions
+            .sortedBy { it.routeOffsetInMeters }
+            .firstOrNull { it.routeOffsetInMeters >= traveledMeters - 25 }
+
+        if (upcoming != null) {
+            val distToTurn = (upcoming.routeOffsetInMeters - traveledMeters).coerceAtLeast(0)
+            return NavigationGuidanceUiState(
+                instructionText = upcoming.message.ifBlank { "Ikuti rute utama konvoi" },
+                streetName = upcoming.street.ifBlank { "Jalur Konvoi TomTom" },
+                maneuver = upcoming.maneuver.ifBlank { "STRAIGHT" },
+                distanceToTurnLabel = if (distToTurn <= 25) "Sekarang" else formatNavDistanceLabel(distToTurn),
+                distanceToTurnMeters = distToTurn,
+                headingDegrees = effectiveHeading,
+                speedKmh = speedKmh.coerceAtLeast(0),
+                isOffRoute = false
+            )
+        }
+
+        // Polyline bend-detection fallback when TomTom guidance array is unavailable
+        if (waypoints.size >= 3) {
+            val curSeg = (routeProgress.coerceIn(0f, 0.99f) * (waypoints.size - 1))
+                .toInt()
+                .coerceIn(0, waypoints.size - 2)
+            for (i in (curSeg + 1) until waypoints.lastIndex) {
+                val b1 = computeBearingDegrees(
+                    LatLngGeo(waypoints[i - 1].latitude, waypoints[i - 1].longitude),
+                    LatLngGeo(waypoints[i].latitude, waypoints[i].longitude)
+                )
+                val b2 = computeBearingDegrees(
+                    LatLngGeo(waypoints[i].latitude, waypoints[i].longitude),
+                    LatLngGeo(waypoints[i + 1].latitude, waypoints[i + 1].longitude)
+                )
+                var diff = b2 - b1
+                while (diff > 180) diff -= 360
+                while (diff < -180) diff += 360
+                if (abs(diff) >= 28) {
+                    val distToBend = haversineMeters(
+                        LatLngGeo(lat, lng),
+                        LatLngGeo(waypoints[i].latitude, waypoints[i].longitude)
+                    ).roundToInt()
+                    val (maneuver, text) = when {
+                        diff >= 120 || diff <= -120 -> "TURN_AROUND" to "Putar balik mengikuti jalur"
+                        diff >= 55 -> "TURN_RIGHT" to "Belok kanan mengikuti rute"
+                        diff >= 28 -> "BEAR_RIGHT" to "Ambil lajur kanan"
+                        diff <= -55 -> "TURN_LEFT" to "Belok kiri mengikuti rute"
+                        else -> "BEAR_LEFT" to "Ambil lajur kiri"
+                    }
+                    return NavigationGuidanceUiState(
+                        instructionText = text,
+                        streetName = "Rute Resmi Konvoi",
+                        maneuver = maneuver,
+                        distanceToTurnLabel = formatNavDistanceLabel(distToBend),
+                        distanceToTurnMeters = distToBend,
+                        headingDegrees = effectiveHeading,
+                        speedKmh = speedKmh.coerceAtLeast(0),
+                        isOffRoute = false
+                    )
+                }
+            }
+        }
+
+        return NavigationGuidanceUiState(
+            instructionText = "Lurus terus menuju tujuan konvoi",
+            streetName = "Jalur Resmi Konvoi",
+            maneuver = "STRAIGHT",
+            distanceToTurnLabel = formatNavDistanceLabel(remainingTotal),
+            distanceToTurnMeters = remainingTotal,
+            headingDegrees = effectiveHeading,
+            speedKmh = speedKmh.coerceAtLeast(0),
+            isOffRoute = false
+        )
     }
 
     fun encodePolyline(points: List<LatLngGeo>): String {
@@ -402,6 +574,67 @@ object GeoUtils {
             tiles = tiles,
             hasGeo = true,
             tileZoom = tileZoom
+        )
+    }
+
+    fun compactInstructionsForSync(
+        instructions: List<RouteInstruction>,
+        maxCount: Int = 50
+    ): List<Map<String, Any>> {
+        if (instructions.isEmpty()) return emptyList()
+        return instructions
+            .take(maxCount.coerceIn(1, 60))
+            .map { inst ->
+                mapOf(
+                    "lat" to inst.latitude,
+                    "lng" to inst.longitude,
+                    "offsetMeters" to inst.routeOffsetInMeters.coerceAtLeast(0),
+                    "maneuver" to inst.maneuver.take(40).ifBlank { "STRAIGHT" },
+                    "message" to inst.message.take(160),
+                    "street" to inst.street.take(100)
+                )
+            }
+    }
+
+    fun selectClosestCoLeader(
+        members: List<ConvoyMember>,
+        leaderUid: String?
+    ): ClosestCoLeaderResult {
+        val leaderMember = members.firstOrNull { !leaderUid.isNullOrBlank() && it.id == leaderUid }
+            ?: members.firstOrNull { it.role == UserRole.TOUR_LEADER }
+            ?: return ClosestCoLeaderResult(null, emptyMap())
+
+        if (!hasValidGeoCoord(leaderMember.mapPosition.latitude, leaderMember.mapPosition.longitude)) {
+            return ClosestCoLeaderResult(null, emptyMap())
+        }
+
+        val leaderPos = LatLngGeo(leaderMember.mapPosition.latitude, leaderMember.mapPosition.longitude)
+        val distanceMap = mutableMapOf<String, Int>()
+        var closestUid: String? = null
+        var minDist = Int.MAX_VALUE
+
+        for (member in members) {
+            if (member.id == leaderMember.id) continue
+            if (!hasValidGeoCoord(member.mapPosition.latitude, member.mapPosition.longitude)) continue
+            val dist = haversineMeters(
+                leaderPos,
+                LatLngGeo(member.mapPosition.latitude, member.mapPosition.longitude)
+            ).roundToInt().coerceAtLeast(0)
+            distanceMap[member.id] = dist
+
+            val isHealthy = member.connectionStatus != ConnectionStatus.OFFLINE &&
+                member.conditionStatus != MemberConditionStatus.SOS &&
+                member.conditionStatus != MemberConditionStatus.MOGOK
+
+            if (isHealthy && dist < minDist) {
+                minDist = dist
+                closestUid = member.id
+            }
+        }
+
+        return ClosestCoLeaderResult(
+            coLeaderUid = closestUid,
+            distanceByMemberId = distanceMap
         )
     }
 }

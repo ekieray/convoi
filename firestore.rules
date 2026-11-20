@@ -54,6 +54,21 @@ service cloud.firestore {
       return isSignedIn() && roomExists(roomId) && roomDoc(roomId).leaderUid == request.auth.uid;
     }
 
+    function isEffectiveRoomLeader(roomId) {
+      return isRoomLeader(roomId) || (
+        isSignedIn() &&
+        roomExists(roomId) &&
+        ('actingLeaderUid' in roomDoc(roomId)) &&
+        roomDoc(roomId).actingLeaderUid is string &&
+        roomDoc(roomId).actingLeaderUid.size() >= 1 &&
+        roomDoc(roomId).actingLeaderUid == request.auth.uid
+      );
+    }
+
+    function isRoomMember(roomId) {
+      return isSignedIn() && exists(/databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid));
+    }
+
     function isRoomActive(roomId) {
       return roomExists(roomId) && roomDoc(roomId).status == 'ACTIVE';
     }
@@ -192,6 +207,10 @@ service cloud.firestore {
         'roomId',
         'roomTitle',
         'leaderUid',
+        'coLeaderUid',
+        'actingLeaderUid',
+        'leaderTroubleActive',
+        'leaderTroubleReason',
         'destinationName',
         'destinationAddress',
         'destLat',
@@ -201,7 +220,10 @@ service cloud.firestore {
         'originLat',
         'originLng',
         'encodedPolyline',
+        'routePreference',
+        'routeInstructions',
         'totalRouteMeters',
+        'estimatedDurationMillis',
         'offRouteToleranceMeters',
         'maxStragglerDistanceMeters',
         'soundAlertEnabled',
@@ -220,6 +242,10 @@ service cloud.firestore {
       isValidRoomId(data.roomId) && data.roomId == roomId &&
       data.roomTitle is string && data.roomTitle.size() >= 1 && data.roomTitle.size() <= 100 &&
       data.leaderUid is string && data.leaderUid.size() >= 1 && data.leaderUid.size() <= 128 &&
+      (!('coLeaderUid' in data) || (data.coLeaderUid is string && data.coLeaderUid.size() <= 128)) &&
+      (!('actingLeaderUid' in data) || (data.actingLeaderUid is string && data.actingLeaderUid.size() <= 128)) &&
+      (!('leaderTroubleActive' in data) || data.leaderTroubleActive is bool) &&
+      (!('leaderTroubleReason' in data) || (data.leaderTroubleReason is string && data.leaderTroubleReason.size() <= 80)) &&
       data.destinationName is string && data.destinationName.size() >= 1 && data.destinationName.size() <= 120 &&
       data.destinationAddress is string && data.destinationAddress.size() >= 1 && data.destinationAddress.size() <= 240 &&
       data.destLat is number && data.destLng is number &&
@@ -227,7 +253,10 @@ service cloud.firestore {
       (!('originAddress' in data) || (data.originAddress is string && data.originAddress.size() <= 240)) &&
       data.originLat is number && data.originLng is number &&
       data.encodedPolyline is string && data.encodedPolyline.size() <= 16384 &&
+      (!('routePreference' in data) || data.routePreference in ['fastest', 'shortest', 'no_toll']) &&
+      (!('routeInstructions' in data) || (data.routeInstructions is list && data.routeInstructions.size() <= 60)) &&
       data.totalRouteMeters is number &&
+      (!('estimatedDurationMillis' in data) || (data.estimatedDurationMillis is number && data.estimatedDurationMillis >= 0 && data.estimatedDurationMillis <= 604800000)) &&
       data.offRouteToleranceMeters is number &&
       data.maxStragglerDistanceMeters is number &&
       data.soundAlertEnabled is bool &&
@@ -555,6 +584,7 @@ service cloud.firestore {
       allow create: if isSignedIn() && isValidRoomId(roomId) &&
         isValidConvoyRoom(incoming(), roomId) &&
         incoming().leaderUid == request.auth.uid &&
+        (!('actingLeaderUid' in incoming()) || incoming().actingLeaderUid == '' || incoming().actingLeaderUid == request.auth.uid) &&
         incoming().status == 'ACTIVE' &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time;
@@ -570,8 +600,20 @@ service cloud.firestore {
             existing().status == 'ACTIVE' &&
             (
               (
-                existing().leaderUid == request.auth.uid &&
+                (
+                  existing().leaderUid == request.auth.uid ||
+                  (
+                    ('actingLeaderUid' in existing()) &&
+                    existing().actingLeaderUid is string &&
+                    existing().actingLeaderUid.size() >= 1 &&
+                    existing().actingLeaderUid == request.auth.uid
+                  )
+                ) &&
                 incoming().diff(existing()).affectedKeys().hasOnly([
+                  'coLeaderUid',
+                  'actingLeaderUid',
+                  'leaderTroubleActive',
+                  'leaderTroubleReason',
                   'destinationName',
                   'destinationAddress',
                   'destLat',
@@ -581,7 +623,10 @@ service cloud.firestore {
                   'originLat',
                   'originLng',
                   'encodedPolyline',
+                  'routePreference',
+                  'routeInstructions',
                   'totalRouteMeters',
+                  'estimatedDurationMillis',
                   'offRouteToleranceMeters',
                   'maxStragglerDistanceMeters',
                   'soundAlertEnabled',
@@ -594,6 +639,21 @@ service cloud.firestore {
                   'sosLng',
                   'sosLocationText',
                   'sosTriggeredAtLabel',
+                  'updatedAt'
+                ])
+              ) ||
+              (
+                isRoomMember(roomId) &&
+                (!('leaderTroubleActive' in existing()) || existing().leaderTroubleActive == false) &&
+                ('coLeaderUid' in existing()) &&
+                existing().coLeaderUid is string &&
+                existing().coLeaderUid.size() >= 1 &&
+                incoming().actingLeaderUid == existing().coLeaderUid &&
+                incoming().leaderTroubleActive == true &&
+                incoming().diff(existing()).affectedKeys().hasOnly([
+                  'actingLeaderUid',
+                  'leaderTroubleActive',
+                  'leaderTroubleReason',
                   'updatedAt'
                 ])
               ) ||
@@ -666,12 +726,12 @@ service cloud.firestore {
               ])
             ) ||
             (
-              isRoomLeader(roomId) &&
+              isEffectiveRoomLeader(roomId) &&
               incoming().diff(existing()).affectedKeys().hasOnly(['isSweeper', 'updatedAt'])
             )
           );
         allow delete: if isSignedIn() && isValidRoomId(roomId) && isValidId(memberId) &&
-          (request.auth.uid == memberId || isRoomLeader(roomId) || isAdmin());
+          (request.auth.uid == memberId || isEffectiveRoomLeader(roomId) || isAdmin());
       }
 
       match /checkpoints/{checkpointId} {
@@ -679,11 +739,11 @@ service cloud.firestore {
         allow list: if isSignedIn() && isValidRoomId(roomId) && (resource.data.roomId == roomId || isAdminEmail());
         allow create: if isSignedIn() && isValidRoomId(roomId) && isValidId(checkpointId) &&
           isRoomActive(roomId) &&
-          (isRoomLeader(roomId) || isAdmin()) &&
+          (isEffectiveRoomLeader(roomId) || isAdmin()) &&
           isValidRoomCheckpoint(incoming(), roomId) &&
           incoming().createdAt == request.time;
         allow delete: if isSignedIn() && isValidRoomId(roomId) && isValidId(checkpointId) &&
-          (isRoomLeader(roomId) || isAdmin());
+          (isEffectiveRoomLeader(roomId) || isAdmin());
       }
 
       match /messages/{messageId} {

@@ -26,6 +26,8 @@ import com.konvoiku.touring.model.MapPosition
 import com.konvoiku.touring.model.MemberConditionStatus
 import com.konvoiku.touring.model.RestCheckpoint
 import com.konvoiku.touring.model.RoomMessage
+import com.konvoiku.touring.model.RouteInstruction
+import com.konvoiku.touring.model.RoutePreference
 import com.konvoiku.touring.model.SosEmergencyState
 import com.konvoiku.touring.model.TripHistoryRecord
 import com.konvoiku.touring.model.UserPresenceInfo
@@ -47,6 +49,10 @@ data class SyncedRoomHeader(
     val roomId: String,
     val roomTitle: String,
     val leaderUid: String,
+    val coLeaderUid: String = "",
+    val actingLeaderUid: String = "",
+    val leaderTroubleActive: Boolean = false,
+    val leaderTroubleReason: String = "",
     val routeConfig: ConvoyRouteConfig,
     val sosState: SosEmergencyState
 )
@@ -346,6 +352,12 @@ class FirestoreConvoyRepository {
                 "roomId" to roomId,
                 "roomTitle" to roomTitle.trim().ifBlank { "Konvoi Touring" }.take(100),
                 "leaderUid" to leaderUid,
+                "coLeaderUid" to "",
+                "actingLeaderUid" to leaderUid,
+                "leaderTroubleActive" to false,
+                "leaderTroubleReason" to "",
+                "originName" to routeConfig.originName.take(120),
+                "originAddress" to routeConfig.originAddress.take(240),
                 "destinationName" to routeConfig.destinationName.take(120),
                 "destinationAddress" to routeConfig.destinationAddress.take(240),
                 "destLat" to (dest?.latitude ?: -6.645),
@@ -353,6 +365,8 @@ class FirestoreConvoyRepository {
                 "originLat" to (origin?.latitude ?: initialLat),
                 "originLng" to (origin?.longitude ?: initialLng),
                 "encodedPolyline" to encoded,
+                "routePreference" to routeConfig.routePreference.id,
+                "routeInstructions" to GeoUtils.compactInstructionsForSync(routeConfig.routeInstructions),
                 "totalRouteMeters" to routeConfig.totalRouteMeters.coerceIn(100, 5_000_000),
                 "offRouteToleranceMeters" to routeConfig.offRouteToleranceMeters.coerceIn(10, 5000),
                 "maxStragglerDistanceMeters" to routeConfig.maxStragglerDistanceMeters.coerceIn(100, 50000),
@@ -484,10 +498,30 @@ class FirestoreConvoyRepository {
                         )
                     )
                 }
+                val rawInstList = snap.get("routeInstructions") as? List<*>
+                val parsedInstructions = rawInstList.orEmpty().mapNotNull { item ->
+                    val map = item as? Map<*, *> ?: return@mapNotNull null
+                    val lat = (map["lat"] as? Number)?.toDouble() ?: return@mapNotNull null
+                    val lng = (map["lng"] as? Number)?.toDouble() ?: return@mapNotNull null
+                    RouteInstruction(
+                        latitude = lat,
+                        longitude = lng,
+                        routeOffsetInMeters = (map["offsetMeters"] as? Number)?.toInt() ?: 0,
+                        maneuver = (map["maneuver"] as? String)?.ifBlank { "STRAIGHT" } ?: "STRAIGHT",
+                        message = (map["message"] as? String).orEmpty(),
+                        street = (map["street"] as? String).orEmpty()
+                    )
+                }
+                val leaderUid = snap.getString("leaderUid") ?: ""
                 val cfg = ConvoyRouteConfig(
+                    originName = snap.getString("originName")?.takeIf { it.isNotBlank() } ?: "Titik Keberangkatan",
+                    originAddress = snap.getString("originAddress") ?: "",
+                    originLockedByLeader = true,
                     destinationName = snap.getString("destinationName") ?: "Tujuan Konvoi",
                     destinationAddress = snap.getString("destinationAddress") ?: "",
+                    routePreference = RoutePreference.fromId(snap.getString("routePreference")),
                     waypoints = waypoints,
+                    routeInstructions = parsedInstructions,
                     checkpoints = emptyList(),
                     totalRouteMeters = (snap.getLong("totalRouteMeters") ?: 12000L).toInt(),
                     offRouteToleranceMeters = (snap.getLong("offRouteToleranceMeters") ?: 75L).toInt(),
@@ -508,7 +542,11 @@ class FirestoreConvoyRepository {
                     SyncedRoomHeader(
                         roomId = snap.getString("roomId") ?: roomId,
                         roomTitle = snap.getString("roomTitle") ?: "Konvoi Live",
-                        leaderUid = snap.getString("leaderUid") ?: "",
+                        leaderUid = leaderUid,
+                        coLeaderUid = snap.getString("coLeaderUid") ?: "",
+                        actingLeaderUid = snap.getString("actingLeaderUid")?.ifBlank { leaderUid } ?: leaderUid,
+                        leaderTroubleActive = snap.getBoolean("leaderTroubleActive") ?: false,
+                        leaderTroubleReason = snap.getString("leaderTroubleReason") ?: "",
                         routeConfig = cfg,
                         sosState = sos
                     )
@@ -522,6 +560,7 @@ class FirestoreConvoyRepository {
                 if (snap == null) return@addSnapshotListener
                 val members = snap.documents.mapIndexed { idx, doc ->
                     val uid = doc.getString("uid") ?: doc.id
+                    val updatedTs = doc.getTimestamp("updatedAt")
                     ConvoyMember(
                         id = uid,
                         fullName = doc.getString("fullName") ?: "Rider",
@@ -537,6 +576,7 @@ class FirestoreConvoyRepository {
                         joinedAtLabel = formatTimestamp(doc.getTimestamp("joinedAt"), "Aktif"),
                         isCurrentUser = uid == currentUid,
                         isSweeper = doc.getBoolean("isSweeper") ?: false,
+                        lastUpdatedEpochMs = updatedTs?.toDate()?.time ?: 0L,
                         avatarPreset = runCatching {
                             AvatarPreset.valueOf(doc.getString("avatarPreset") ?: "HELMET_TOURING")
                         }.getOrDefault(AvatarPreset.HELMET_TOURING),
@@ -547,7 +587,7 @@ class FirestoreConvoyRepository {
                             ConnectionStatus.valueOf(doc.getString("connectionStatus") ?: "CONNECTED")
                         }.getOrDefault(ConnectionStatus.CONNECTED),
                         lastLocationText = doc.getString("lastLocationText") ?: "GPS Live",
-                        lastUpdatedLabel = formatTimestamp(doc.getTimestamp("updatedAt"), "Baru saja"),
+                        lastUpdatedLabel = formatTimestamp(updatedTs, "Baru saja"),
                         convoyOrderRank = idx + 1,
                         mapPosition = MapPosition(
                             routeProgress = (doc.getDouble("routeProgress") ?: 0.05).toFloat(),
@@ -644,20 +684,29 @@ class FirestoreConvoyRepository {
 
     fun updateRouteConfig(roomId: String, config: ConvoyRouteConfig) {
         val db = getFirestore() ?: return
+        val origin = config.waypoints.firstOrNull()
         val dest = config.waypoints.lastOrNull()
         val encoded = GeoUtils.encodePolyline(
             config.waypoints.map { LatLngGeo(it.latitude, it.longitude) }
         ).take(16000)
         val updates = hashMapOf<String, Any>(
+            "originName" to config.originName.take(120),
+            "originAddress" to config.originAddress.take(240),
             "destinationName" to config.destinationName.take(120),
             "destinationAddress" to config.destinationAddress.take(240),
             "encodedPolyline" to encoded,
+            "routePreference" to config.routePreference.id,
+            "routeInstructions" to GeoUtils.compactInstructionsForSync(config.routeInstructions),
             "totalRouteMeters" to config.totalRouteMeters.coerceIn(100, 5_000_000),
             "offRouteToleranceMeters" to config.offRouteToleranceMeters.coerceIn(10, 5000),
             "maxStragglerDistanceMeters" to config.maxStragglerDistanceMeters.coerceIn(100, 50000),
             "soundAlertEnabled" to config.soundAlertEnabled,
             "updatedAt" to FieldValue.serverTimestamp()
         )
+        if (origin != null) {
+            updates["originLat"] = origin.latitude
+            updates["originLng"] = origin.longitude
+        }
         if (dest != null) {
             updates["destLat"] = dest.latitude
             updates["destLng"] = dest.longitude
@@ -779,7 +828,9 @@ class FirestoreConvoyRepository {
         runCatching {
             val roomRef = db.collection("rooms").document(roomId)
             val snap = roomRef.get().await()
-            if (snap.exists() && snap.getString("leaderUid") == uid) {
+            val isEffective = snap.exists() &&
+                (snap.getString("leaderUid") == uid || snap.getString("actingLeaderUid") == uid)
+            if (isEffective) {
                 roomRef.update(
                     mapOf(
                         "status" to "FINISHED",
@@ -788,6 +839,53 @@ class FirestoreConvoyRepository {
                 ).await()
             }
         }
+    }
+
+    fun updateCoLeaderUid(roomId: String, coLeaderUid: String) {
+        val db = getFirestore() ?: return
+        db.collection("rooms").document(roomId).update(
+            mapOf(
+                "coLeaderUid" to coLeaderUid.take(128),
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
+        )
+    }
+
+    suspend fun triggerLeaderFailover(
+        roomId: String,
+        actingLeaderUid: String,
+        reason: String
+    ): Boolean {
+        val db = getFirestore() ?: return false
+        return runCatching {
+            db.collection("rooms").document(roomId).update(
+                mapOf(
+                    "actingLeaderUid" to actingLeaderUid.take(128),
+                    "leaderTroubleActive" to true,
+                    "leaderTroubleReason" to reason.take(200),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            true
+        }.getOrDefault(false)
+    }
+
+    suspend fun reclaimOriginalLeader(
+        roomId: String,
+        originalLeaderUid: String
+    ): Boolean {
+        val db = getFirestore() ?: return false
+        return runCatching {
+            db.collection("rooms").document(roomId).update(
+                mapOf(
+                    "actingLeaderUid" to originalLeaderUid.take(128),
+                    "leaderTroubleActive" to false,
+                    "leaderTroubleReason" to "",
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            true
+        }.getOrDefault(false)
     }
 
     suspend fun saveTripRecord(uid: String, record: TripHistoryRecord) {

@@ -43,6 +43,7 @@ import {
   normalizeProfileEmail,
   publishMemberTelemetry,
   publishUserPresence,
+  recoverOriginalLeader,
   removeRoomCheckpoint,
   removeSyncedMember,
   resolveSyncedSos,
@@ -53,6 +54,8 @@ import {
   sendRoomMessage,
   subscribeToGlobalAppConfig,
   subscribeToSyncedRoom,
+  syncCoLeaderAssignment,
+  triggerCoLeaderFailover,
   triggerSyncedSos,
   updateSyncedMemberCondition,
   updateSyncedRoomRoute,
@@ -82,6 +85,7 @@ import {
   VehicleType,
 } from './types/convoy';
 import {
+  computeClosestCoLeader,
   computePolylineLengthMeters,
   downsampleRoutePoints,
   downsampleTrackPoints,
@@ -321,11 +325,17 @@ function interpolateAlongPolyline(
 
 function evaluateRoomSafety(
   rawMembers: ConvoyMember[],
-  routeConfig: ConvoyRouteConfig
+  routeConfig: ConvoyRouteConfig,
+  failoverContext?: {
+    originalLeaderUid?: string;
+    actingLeaderUid?: string;
+    leaderTroubleActive?: boolean;
+  }
 ): {
   members: ConvoyMember[];
   offRouteAlert: OffRouteAlertState;
   stragglerAlert: StragglerAlertState;
+  coLeaderUid: string;
 } {
   const enriched = rawMembers.map((member) => {
     const hasValidGeo =
@@ -361,9 +371,35 @@ function evaluateRoomSafety(
     (a, b) => b.routeDistanceMeters - a.routeDistanceMeters
   );
   const rankMap = new Map(sorted.map((m, idx) => [m.id, idx + 1]));
+
+  const originalLeader =
+    (failoverContext?.originalLeaderUid
+      ? enriched.find((m) => m.id === failoverContext.originalLeaderUid)
+      : undefined) || enriched.find((m) => m.role === 'TOUR_LEADER');
+  const origLeaderId =
+    failoverContext?.originalLeaderUid || originalLeader?.id || '';
+  const closestResult = computeClosestCoLeader(
+    enriched.map((m) => ({
+      ...m,
+      convoyOrderRank: rankMap.get(m.id) ?? 1,
+    })),
+    origLeaderId
+  );
+  const coLeaderUid = closestResult.coLeaderUid ?? '';
+  const troubleActive = Boolean(failoverContext?.leaderTroubleActive);
+  const effectiveActingUid =
+    troubleActive && failoverContext?.actingLeaderUid
+      ? failoverContext.actingLeaderUid
+      : troubleActive
+        ? coLeaderUid
+        : '';
+
   const rankedMembers = enriched.map((m) => ({
     ...m,
     convoyOrderRank: rankMap.get(m.id) ?? 1,
+    distanceToLeaderMeters: closestResult.distanceByMemberId.get(m.id) ?? 0,
+    isCoLeader: Boolean(coLeaderUid && m.id === coLeaderUid),
+    isActingLeader: Boolean(troubleActive && effectiveActingUid && m.id === effectiveActingUid),
   }));
 
   const self = rankedMembers.find((m) => m.isCurrentUser);
@@ -401,7 +437,15 @@ function evaluateRoomSafety(
     };
   }
 
-  return { members: rankedMembers, offRouteAlert, stragglerAlert };
+  return { members: rankedMembers, offRouteAlert, stragglerAlert, coLeaderUid };
+}
+
+function isRoomEffectiveLeader(room: TourRoom | null | undefined, uid?: string | null): boolean {
+  if (!room || !uid) return false;
+  if (room.leaderTroubleActive && room.actingLeaderUid) {
+    return room.actingLeaderUid === uid;
+  }
+  return room.leaderUid === uid;
 }
 
 function landmarkForProgress(progress: number): string {
@@ -697,6 +741,7 @@ export default function App() {
   const [pendingCheckpointName, setPendingCheckpointName] = useState('');
   const [isOffRouteSimActive, setIsOffRouteSimActive] = useState(false);
   const [isStragglerSimActive, setIsStragglerSimActive] = useState(false);
+  const [isLeaderTroubleSimActive, setIsLeaderTroubleSimActive] = useState(false);
   const [simIndex, setSimIndex] = useState(0);
   const [tripHistory, setTripHistory] = useState<TripHistoryRecord[]>(DEFAULT_TRIP_HISTORY);
   const [selectedTripId, setSelectedTripId] = useState<string | null>(
@@ -713,6 +758,7 @@ export default function App() {
   const lastTelemetrySentMsRef = useRef<number>(0);
   const lastTelemetryFixRef = useRef<LatLngPoint | null>(null);
   const lastSyncedRouteSigRef = useRef<string>('');
+  const lastCoLeaderSyncedRef = useRef<string>('');
   const recordedTrackRef = useRef<LatLngPoint[]>([]);
   const routeConfigRef = useRef<ConvoyRouteConfig>(routeConfig);
   routeConfigRef.current = routeConfig;
@@ -942,13 +988,25 @@ export default function App() {
       config: ConvoyRouteConfig = routeConfigRef.current,
       roomOverride?: TourRoom
     ) => {
-      const { members, offRouteAlert: nextOffRoute, stragglerAlert: nextStraggler } =
-        evaluateRoomSafety(rawMembers, config);
-      setOffRouteAlert(nextOffRoute);
-      setStragglerAlert(nextStraggler);
       setActiveRoom((prev) => {
         const base = roomOverride ?? prev;
-        return base ? { ...base, members } : base;
+        if (!base) return base;
+        const evaluated = evaluateRoomSafety(rawMembers, config, {
+          originalLeaderUid: base.leaderUid,
+          actingLeaderUid: base.actingLeaderUid,
+          leaderTroubleActive: base.leaderTroubleActive,
+        });
+        setOffRouteAlert(evaluated.offRouteAlert);
+        setStragglerAlert(evaluated.stragglerAlert);
+        const coLeaderUid =
+          base.leaderTroubleActive && base.coLeaderUid
+            ? base.coLeaderUid
+            : evaluated.coLeaderUid;
+        return {
+          ...base,
+          coLeaderUid,
+          members: evaluated.members,
+        };
       });
     },
     []
@@ -1082,6 +1140,7 @@ export default function App() {
 
     let latestMembers: ConvoyMember[] = [];
     let latestCheckpoints: RestCheckpoint[] = routeConfigRef.current.checkpoints;
+    lastCoLeaderSyncedRef.current = '';
 
     const unsub = subscribeToSyncedRoom(activeRoom.roomId, {
       onRoomUpdate: (snapshot) => {
@@ -1102,9 +1161,17 @@ export default function App() {
             createdAtLabel: snapshot.room.createdAtLabel,
             isSyncedRoom: true,
             leaderUid: snapshot.room.leaderUid,
+            coLeaderUid: snapshot.room.coLeaderUid,
+            actingLeaderUid: snapshot.room.actingLeaderUid,
+            leaderTroubleActive: snapshot.room.leaderTroubleActive,
+            leaderTroubleReason: snapshot.room.leaderTroubleReason,
             members: prev?.members ?? latestMembers,
           };
-          const evaluated = evaluateRoomSafety(base.members, mergedConfig);
+          const evaluated = evaluateRoomSafety(base.members, mergedConfig, {
+            originalLeaderUid: base.leaderUid,
+            actingLeaderUid: base.actingLeaderUid,
+            leaderTroubleActive: base.leaderTroubleActive,
+          });
           setOffRouteAlert(evaluated.offRouteAlert);
           setStragglerAlert(evaluated.stragglerAlert);
           return { ...base, members: evaluated.members };
@@ -1116,12 +1183,33 @@ export default function App() {
       onMembersUpdate: (members) => {
         latestMembers = members;
         const cfg = routeConfigRef.current;
-        const evaluated = evaluateRoomSafety(members, cfg);
+        const curRoom = activeRoomRef.current;
+        const evaluated = evaluateRoomSafety(members, cfg, {
+          originalLeaderUid: curRoom?.leaderUid,
+          actingLeaderUid: curRoom?.actingLeaderUid,
+          leaderTroubleActive: curRoom?.leaderTroubleActive,
+        });
         setOffRouteAlert(evaluated.offRouteAlert);
         setStragglerAlert(evaluated.stragglerAlert);
         setActiveRoom((prev) =>
-          prev ? { ...prev, members: evaluated.members } : prev
+          prev
+            ? {
+                ...prev,
+                coLeaderUid: prev.coLeaderUid || evaluated.coLeaderUid,
+                members: evaluated.members,
+              }
+            : prev
         );
+        if (
+          curRoom &&
+          isRoomEffectiveLeader(curRoom, authUser.uid) &&
+          evaluated.coLeaderUid &&
+          evaluated.coLeaderUid !== curRoom.coLeaderUid &&
+          evaluated.coLeaderUid !== lastCoLeaderSyncedRef.current
+        ) {
+          lastCoLeaderSyncedRef.current = evaluated.coLeaderUid;
+          syncCoLeaderAssignment(curRoom.roomId, evaluated.coLeaderUid).catch(() => {});
+        }
         const self = members.find((m) => m.isCurrentUser);
         if (self) {
           setSelectedMemberId((cur) => cur ?? self.id);
@@ -1132,7 +1220,12 @@ export default function App() {
         setRouteConfig((prev) => {
           const next = { ...prev, checkpoints };
           if (latestMembers.length > 0) {
-            const evaluated = evaluateRoomSafety(latestMembers, next);
+            const curRoom = activeRoomRef.current;
+            const evaluated = evaluateRoomSafety(latestMembers, next, {
+              originalLeaderUid: curRoom?.leaderUid,
+              actingLeaderUid: curRoom?.actingLeaderUid,
+              leaderTroubleActive: curRoom?.leaderTroubleActive,
+            });
             setOffRouteAlert(evaluated.offRouteAlert);
             setStragglerAlert(evaluated.stragglerAlert);
           }
@@ -1147,6 +1240,60 @@ export default function App() {
     return () => {
       unsub();
     };
+  }, [activeRoom?.roomId, activeRoom?.isSyncedRoom, authUser?.uid]);
+
+  // Automatic Leader Trouble & Co-Leader Failover Watchdog for Synced Rooms
+  useEffect(() => {
+    if (!activeRoom?.isSyncedRoom || !activeRoom.roomId || !authUser) return;
+    const interval = setInterval(() => {
+      const room = activeRoomRef.current;
+      const user = authUserRef.current;
+      if (!room || !user || !room.isSyncedRoom || !room.leaderUid) return;
+
+      const origLeader = room.members.find((m) => m.id === room.leaderUid);
+      const nowMs = Date.now();
+      const staleMs =
+        origLeader?.lastUpdatedMs && origLeader.lastUpdatedMs > 0
+          ? nowMs - origLeader.lastUpdatedMs
+          : 0;
+      const isLeaderTroubled =
+        Boolean(origLeader) &&
+        (origLeader?.connectionStatus === 'OFFLINE' ||
+          origLeader?.conditionStatus === 'MOGOK' ||
+          origLeader?.conditionStatus === 'SOS' ||
+          staleMs > 18_000);
+
+      if (
+        isLeaderTroubled &&
+        !room.leaderTroubleActive &&
+        room.coLeaderUid &&
+        (room.coLeaderUid === user.uid || staleMs > 23_000)
+      ) {
+        const coLeader = room.members.find((m) => m.id === room.coLeaderUid);
+        const reason =
+          origLeader?.connectionStatus === 'OFFLINE'
+            ? 'Sinyal Leader terputus'
+            : origLeader?.conditionStatus === 'MOGOK'
+              ? 'HP/Kendaraan Leader mengalami kendala'
+              : 'HP Leader kehilangan sinyal atau baterai habis';
+        triggerCoLeaderFailover(room.roomId, room.coLeaderUid, reason)
+          .then(() => {
+            if (room.coLeaderUid === user.uid) {
+              sendRoomMessage(room.roomId, {
+                id: `failover-${Date.now()}`,
+                senderUid: user.uid,
+                senderName: 'Sistem Co-Leader',
+                senderVehicle: coLeader?.vehicleDetail || '',
+                senderAvatarPreset: coLeader?.avatarPreset || 'RIDER_CAPTAIN',
+                type: 'SYSTEM',
+                textContent: `${reason}. Co-Leader ${coLeader?.fullName || 'Terdekat'} otomatis menjadi Plt. Leader & mengambil alih TomTom Routing.`,
+              }).catch(() => {});
+            }
+          })
+          .catch(() => {});
+      }
+    }, 4000);
+    return () => clearInterval(interval);
   }, [activeRoom?.roomId, activeRoom?.isSyncedRoom, authUser?.uid]);
 
   // Offline Demo Simulator ONLY when NOT in a real Firestore synced room
@@ -1165,8 +1312,14 @@ export default function App() {
           if (member.isCurrentUser && useRealSelfGps) {
             return member;
           }
+          const isTroubledOrigLeader =
+            Boolean(prev.leaderTroubleActive) &&
+            (member.id === prev.leaderUid ||
+              (!prev.leaderUid && member.role === 'TOUR_LEADER'));
           const isStopped =
-            member.conditionStatus === 'MOGOK' || member.conditionStatus === 'SOS';
+            isTroubledOrigLeader ||
+            member.conditionStatus === 'MOGOK' ||
+            member.conditionStatus === 'SOS';
           const isTail = member.id === tailId && isStragglerSimActive;
           const step = isStopped ? 0 : isTail ? 0.002 : 0.01 + (idx % 2) * 0.002;
           const rawNext = member.mapPosition.routeProgress + step;
@@ -1177,24 +1330,40 @@ export default function App() {
 
           return {
             ...member,
+            connectionStatus: isTroubledOrigLeader
+              ? ('OFFLINE' as ConnectionStatus)
+              : member.connectionStatus,
             mapPosition: interpolateAlongPolyline(
               nextProgress,
               routeConfig.waypoints,
               offShift,
               speed
             ),
-            lastLocationText: landmarkForProgress(nextProgress),
-            lastUpdatedLabel:
-              member.connectionStatus === 'WEAK_SIGNAL'
+            lastLocationText: isTroubledOrigLeader
+              ? 'Sinyal/Baterai Leader Terputus'
+              : landmarkForProgress(nextProgress),
+            lastUpdatedLabel: isTroubledOrigLeader
+              ? 'Terputus'
+              : member.connectionStatus === 'WEAK_SIGNAL'
                 ? '5 dtk lalu'
                 : 'Baru saja',
           };
         });
 
-        const evaluated = evaluateRoomSafety(moved, routeConfig);
+        const evaluated = evaluateRoomSafety(moved, routeConfig, {
+          originalLeaderUid: prev.leaderUid,
+          actingLeaderUid: prev.actingLeaderUid,
+          leaderTroubleActive: prev.leaderTroubleActive,
+        });
         setOffRouteAlert(evaluated.offRouteAlert);
         setStragglerAlert(evaluated.stragglerAlert);
-        return { ...prev, members: evaluated.members };
+        return {
+          ...prev,
+          coLeaderUid: prev.leaderTroubleActive
+            ? prev.coLeaderUid
+            : evaluated.coLeaderUid,
+          members: evaluated.members,
+        };
       });
     }, 2000);
     return () => clearInterval(interval);
@@ -1689,6 +1858,7 @@ export default function App() {
         setLastCompletedTrip(null);
         setIsOffRouteSimActive(false);
         setIsStragglerSimActive(false);
+        setIsLeaderTroubleSimActive(false);
         const syncedRoom: TourRoom = {
           roomId,
           roomTitle: title,
@@ -1696,6 +1866,8 @@ export default function App() {
           createdAtLabel: 'Sinkronisasi Cloud Aktif',
           isSyncedRoom: true,
           leaderUid: authUser.uid,
+          actingLeaderUid: authUser.uid,
+          leaderTroubleActive: false,
           members: [],
         };
         setSelectedMemberId(authUser.uid);
@@ -1782,6 +1954,7 @@ export default function App() {
     setLastCompletedTrip(null);
     setIsOffRouteSimActive(false);
     setIsStragglerSimActive(false);
+    setIsLeaderTroubleSimActive(false);
     setSosState({
       isActive: false,
       senderId: '',
@@ -1799,6 +1972,9 @@ export default function App() {
       inviteLink: `https://konvoiku.id/join/${roomId}`,
       createdAtLabel: 'Mode Demo Offline',
       isSyncedRoom: false,
+      leaderUid: leader.id,
+      actingLeaderUid: leader.id,
+      leaderTroubleActive: false,
       members: [leader, ...peers],
     };
     setSelectedMemberId(leader.id);
@@ -2009,6 +2185,7 @@ export default function App() {
     setJoinError(null);
     setIsOffRouteSimActive(false);
     setIsStragglerSimActive(false);
+    setIsLeaderTroubleSimActive(false);
     setSosState({
       isActive: false,
       senderId: '',
@@ -2026,6 +2203,9 @@ export default function App() {
       inviteLink: `https://konvoiku.id/join/${code}`,
       createdAtLabel: 'Terhubung Demo',
       isSyncedRoom: false,
+      leaderUid: hostLeader.id,
+      actingLeaderUid: hostLeader.id,
+      leaderTroubleActive: false,
       members: [hostLeader, selfMember, peer1, peer2],
     };
     setSelectedMemberId(selfMember.id);
@@ -2459,7 +2639,7 @@ export default function App() {
     };
     setRouteConfig(nextConfig);
     syncMembersToRoute(nextConfig);
-    if (activeRoom?.isSyncedRoom && authUser && activeRoom.leaderUid === authUser.uid) {
+    if (activeRoom?.isSyncedRoom && authUser && isRoomEffectiveLeader(activeRoom, authUser.uid)) {
       updateSyncedRoomRoute(activeRoom.roomId, nextConfig);
     }
   };
@@ -2485,7 +2665,7 @@ export default function App() {
       routeInstructions: [],
     };
     setRouteConfig(nextConfig);
-    if (activeRoom?.isSyncedRoom && authUser && activeRoom.leaderUid === authUser.uid) {
+    if (activeRoom?.isSyncedRoom && authUser && isRoomEffectiveLeader(activeRoom, authUser.uid)) {
       updateSyncedRoomRoute(activeRoom.roomId, nextConfig);
     }
   };
@@ -2527,7 +2707,7 @@ export default function App() {
     setRouteConfig(nextConfig);
     setIsPickingDestinationOnMap(false);
     syncMembersToRoute(nextConfig);
-    if (activeRoom?.isSyncedRoom && authUser && activeRoom.leaderUid === authUser.uid) {
+    if (activeRoom?.isSyncedRoom && authUser && isRoomEffectiveLeader(activeRoom, authUser.uid)) {
       updateSyncedRoomRoute(activeRoom.roomId, nextConfig);
     }
   };
@@ -2585,7 +2765,7 @@ export default function App() {
     setRouteConfig(nextConfig);
     setIsPickingDestinationOnMap(false);
     syncMembersToRoute(nextConfig);
-    if (activeRoom?.isSyncedRoom && authUser && activeRoom.leaderUid === authUser.uid) {
+    if (activeRoom?.isSyncedRoom && authUser && isRoomEffectiveLeader(activeRoom, authUser.uid)) {
       updateSyncedRoomRoute(activeRoom.roomId, nextConfig);
     }
   };
@@ -2626,13 +2806,17 @@ export default function App() {
       const room = activeRoomRef.current;
       const user = authUserRef.current;
       if (room) {
-        const evaluated = evaluateRoomSafety(room.members, nextConfig);
+        const evaluated = evaluateRoomSafety(room.members, nextConfig, {
+          originalLeaderUid: room.leaderUid,
+          actingLeaderUid: room.actingLeaderUid,
+          leaderTroubleActive: room.leaderTroubleActive,
+        });
         setOffRouteAlert(evaluated.offRouteAlert);
         setStragglerAlert(evaluated.stragglerAlert);
         setActiveRoom((prev) =>
           prev ? { ...prev, members: evaluated.members } : prev
         );
-        if (room.isSyncedRoom && user && room.leaderUid === user.uid) {
+        if (room.isSyncedRoom && user && isRoomEffectiveLeader(room, user.uid)) {
           updateSyncedRoomRoute(room.roomId, nextConfig).catch(() => {});
         }
       }
@@ -2747,19 +2931,26 @@ export default function App() {
     };
     setRouteConfig(nextConfig);
     syncMembersToRoute(nextConfig);
-    if (activeRoom?.isSyncedRoom && authUser && activeRoom.leaderUid === authUser.uid) {
+    if (activeRoom?.isSyncedRoom && authUser && isRoomEffectiveLeader(activeRoom, authUser.uid)) {
       updateSyncedRoomRoute(activeRoom.roomId, nextConfig);
     }
   };
 
   const handleResetDefaultWaypoints = () => {
+    const first = routeConfig.waypoints[0];
+    const last = routeConfig.waypoints[routeConfig.waypoints.length - 1];
+    const keptEndpoints =
+      first && last && (routeConfig.originLockedByLeader || routeConfig.waypoints.length >= 2)
+        ? [first, last]
+        : INITIAL_ROUTE_CONFIG.waypoints;
     const nextConfig: ConvoyRouteConfig = {
       ...routeConfig,
-      waypoints: INITIAL_ROUTE_CONFIG.waypoints,
+      waypoints: keptEndpoints,
+      routeInstructions: [],
     };
     setRouteConfig(nextConfig);
     syncMembersToRoute(nextConfig);
-    if (activeRoom?.isSyncedRoom && authUser && activeRoom.leaderUid === authUser.uid) {
+    if (activeRoom?.isSyncedRoom && authUser && isRoomEffectiveLeader(activeRoom, authUser.uid)) {
       updateSyncedRoomRoute(activeRoom.roomId, nextConfig);
     }
   };
@@ -2768,7 +2959,7 @@ export default function App() {
     const nextConfig = { ...routeConfig, maxStragglerDistanceMeters: meters };
     setRouteConfig(nextConfig);
     if (activeRoom) commitRoomMembers(activeRoom.members, nextConfig);
-    if (activeRoom?.isSyncedRoom && authUser && activeRoom.leaderUid === authUser.uid) {
+    if (activeRoom?.isSyncedRoom && authUser && isRoomEffectiveLeader(activeRoom, authUser.uid)) {
       updateSyncedRoomRoute(activeRoom.roomId, nextConfig);
     }
   };
@@ -2777,7 +2968,7 @@ export default function App() {
     const nextConfig = { ...routeConfig, offRouteToleranceMeters: meters };
     setRouteConfig(nextConfig);
     if (activeRoom) commitRoomMembers(activeRoom.members, nextConfig);
-    if (activeRoom?.isSyncedRoom && authUser && activeRoom.leaderUid === authUser.uid) {
+    if (activeRoom?.isSyncedRoom && authUser && isRoomEffectiveLeader(activeRoom, authUser.uid)) {
       updateSyncedRoomRoute(activeRoom.roomId, nextConfig);
     }
   };
@@ -2788,7 +2979,7 @@ export default function App() {
       soundAlertEnabled: !routeConfig.soundAlertEnabled,
     };
     setRouteConfig(nextConfig);
-    if (activeRoom?.isSyncedRoom && authUser && activeRoom.leaderUid === authUser.uid) {
+    if (activeRoom?.isSyncedRoom && authUser && isRoomEffectiveLeader(activeRoom, authUser.uid)) {
       updateSyncedRoomRoute(activeRoom.roomId, nextConfig);
     }
   };
@@ -2840,6 +3031,116 @@ export default function App() {
       };
     });
     commitRoomMembers(updated);
+  };
+
+  const handleReclaimLeader = () => {
+    const room = activeRoomRef.current;
+    if (!room) return;
+    setIsLeaderTroubleSimActive(false);
+
+    if (room.isSyncedRoom && authUser && room.leaderUid === authUser.uid) {
+      recoverOriginalLeader(room.roomId, authUser.uid).catch(() => {});
+      sendRoomMessage(room.roomId, {
+        id: `recover-${Date.now()}`,
+        senderUid: authUser.uid,
+        senderName: 'Tour Leader',
+        senderVehicle: '',
+        senderAvatarPreset: 'RIDER_CAPTAIN',
+        type: 'SYSTEM',
+        textContent:
+          'HP Leader kembali normal. Wewenang rute & TomTom Routing dikembalikan ke Leader utama.',
+      }).catch(() => {});
+      return;
+    }
+
+    const origLeaderId =
+      room.leaderUid ||
+      room.members.find((m) => m.role === 'TOUR_LEADER')?.id ||
+      '';
+    const updatedMembers = room.members.map((m) =>
+      m.id === origLeaderId
+        ? {
+            ...m,
+            connectionStatus: 'CONNECTED' as ConnectionStatus,
+            lastLocationText: 'GPS Leader Pulih',
+            lastUpdatedLabel: 'Baru saja',
+          }
+        : m
+    );
+    const updatedRoom: TourRoom = {
+      ...room,
+      leaderTroubleActive: false,
+      leaderTroubleReason: '',
+      actingLeaderUid: origLeaderId,
+      members: updatedMembers,
+    };
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: `recover-${Date.now()}`,
+        senderId: 'system',
+        senderName: 'Sistem Konvoi',
+        senderVehicle: '',
+        type: 'SYSTEM',
+        textContent:
+          'HP Leader kembali aktif. Kepemimpinan & ping API TomTom kembali ke Tour Leader utama.',
+        timestampLabel: currentClock(),
+      },
+    ]);
+    commitRoomMembers(updatedMembers, routeConfigRef.current, updatedRoom);
+  };
+
+  const handleToggleLeaderTroubleSim = () => {
+    const room = activeRoomRef.current;
+    if (!room || room.isSyncedRoom) return;
+    if (isLeaderTroubleSimActive || room.leaderTroubleActive) {
+      handleReclaimLeader();
+      return;
+    }
+
+    const origLeader =
+      room.members.find((m) => m.id === room.leaderUid) ||
+      room.members.find((m) => m.role === 'TOUR_LEADER');
+    if (!origLeader) return;
+
+    const closest = computeClosestCoLeader(room.members, origLeader.id);
+    const promotedId = closest.coLeaderUid;
+    if (!promotedId) return;
+    const promotedMember = room.members.find((m) => m.id === promotedId);
+
+    setIsLeaderTroubleSimActive(true);
+    const updatedMembers = room.members.map((m) =>
+      m.id === origLeader.id
+        ? {
+            ...m,
+            connectionStatus: 'OFFLINE' as ConnectionStatus,
+            lastLocationText: 'Sinyal/Baterai Leader Terputus',
+            lastUpdatedLabel: 'Terputus',
+          }
+        : m
+    );
+    const updatedRoom: TourRoom = {
+      ...room,
+      leaderUid: origLeader.id,
+      coLeaderUid: promotedId,
+      actingLeaderUid: promotedId,
+      leaderTroubleActive: true,
+      leaderTroubleReason: 'Sinyal/Baterai HP Leader terputus',
+      members: updatedMembers,
+    };
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: `failover-sim-${Date.now()}`,
+        senderId: 'system',
+        senderName: 'Sistem Co-Leader',
+        senderVehicle: promotedMember?.vehicleDetail || '',
+        type: 'SYSTEM',
+        textContent: `HP Leader mengalami trouble sinyal/baterai! Co-Leader terdekat (${promotedMember?.fullName || 'Anggota'}, ${closest.distanceByMemberId.get(promotedId) ?? 0} m) otomatis menggantikan Leader & mengambil alih ping TomTom.`,
+        timestampLabel: currentClock(),
+      },
+    ]);
+    commitRoomMembers(updatedMembers, routeConfigRef.current, updatedRoom);
   };
 
   const handleFinishAndSaveTrip = () => {
@@ -2923,7 +3224,7 @@ export default function App() {
     };
 
     if (activeRoom.isSyncedRoom && authUser) {
-      if (activeRoom.leaderUid === authUser.uid) {
+      if (isRoomEffectiveLeader(activeRoom, authUser.uid)) {
         finishSyncedRoom(activeRoom.roomId).catch(() => {});
       }
       saveTripRecordToFirestore(authUser.uid, newRecord).catch((err) =>
@@ -2938,6 +3239,7 @@ export default function App() {
     setActiveRoom(null);
     setIsOffRouteSimActive(false);
     setIsStragglerSimActive(false);
+    setIsLeaderTroubleSimActive(false);
     setSosState({
       isActive: false,
       senderId: '',
@@ -3534,7 +3836,18 @@ export default function App() {
                       />
                     )}
 
-                    {currentRoute === 'live_map' && (
+                    {currentRoute === 'live_map' && (() => {
+                      const selfMember = activeRoom?.members.find((m) => m.isCurrentUser);
+                      const isEffectiveLeaderNow = activeRoom?.isSyncedRoom && authUser
+                        ? isRoomEffectiveLeader(activeRoom, authUser.uid)
+                        : activeRoom?.leaderTroubleActive
+                          ? Boolean(
+                              selfMember &&
+                                activeRoom.actingLeaderUid &&
+                                selfMember.id === activeRoom.actingLeaderUid
+                            )
+                          : selectedRole === 'TOUR_LEADER';
+                      return (
                       <LiveTrackingMapView
                         activeRoom={activeRoom}
                         role={selectedRole}
@@ -3554,6 +3867,9 @@ export default function App() {
                         pendingCheckpointName={pendingCheckpointName}
                         isOffRouteSimActive={isOffRouteSimActive}
                         isStragglerSimActive={isStragglerSimActive}
+                        isLeaderTroubleSimActive={isLeaderTroubleSimActive}
+                        canPingTomTomRouting={isEffectiveLeaderNow}
+                        isEffectiveLeader={isEffectiveLeaderNow}
                         destinationPresets={DESTINATION_PRESETS}
                         darkMode={darkMode}
                         gpsStatus={gps.status}
@@ -3583,6 +3899,8 @@ export default function App() {
                         onToggleSoundAlert={handleToggleSoundAlert}
                         onToggleOffRouteSim={handleToggleOffRouteSim}
                         onToggleStragglerSim={handleToggleStragglerSim}
+                        onToggleLeaderTroubleSim={handleToggleLeaderTroubleSim}
+                        onReclaimLeader={handleReclaimLeader}
                         onTriggerSos={handleTriggerSos}
                         onResolveSos={handleResolveSos}
                         onSendTextMessage={handleSendTextMessage}
@@ -3595,7 +3913,8 @@ export default function App() {
                         onFinishAndSaveTrip={handleFinishAndSaveTrip}
                         onExitRoom={() => navigateTo('role_selection', -1)}
                       />
-                    )}
+                      );
+                    })()}
 
                     {currentRoute === 'trip_history' && (
                       <TripHistoryView

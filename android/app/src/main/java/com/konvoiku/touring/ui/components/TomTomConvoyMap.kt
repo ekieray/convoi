@@ -6,6 +6,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.drawable.BitmapDrawable
@@ -164,6 +165,9 @@ fun TomTomConvoyMap(
     mapStyle: TomTomMapStyle = TomTomMapStyle.ROAD,
     isDarkMode: Boolean = false,
     showTraffic: Boolean = false,
+    isNavigationMode: Boolean = false,
+    navigationHeadingDeg: Float = 0f,
+    navigatedMemberId: String? = null,
     polylinePoints: List<RoutePoint> = emptyList(),
     pins: List<TomTomMapPin> = emptyList(),
     onMapTap: (Double, Double) -> Unit = { _, _ -> },
@@ -354,8 +358,14 @@ fun TomTomConvoyMap(
                         marker.icon = createDestinationDrawable(context, pin.title, pin.subtitle)
                     }
                     is TomTomMapPin.MemberPin -> {
-                        marker.setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-                        marker.icon = createMemberDrawable(context, pin)
+                        val isNavPuck = isNavigationMode && pin.member.id == navigatedMemberId
+                        if (isNavPuck) {
+                            marker.setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+                            marker.icon = createNavigationPuckDrawable(context, pin.isOffRoute || pin.isSosBeacon)
+                        } else {
+                            marker.setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+                            marker.icon = createMemberDrawable(context, pin)
+                        }
                         marker.setOnMarkerClickListener { _, _ ->
                             currentOnMemberClick(pin.member.id)
                             true
@@ -363,6 +373,11 @@ fun TomTomConvoyMap(
                     }
                 }
                 mv.overlays.add(marker)
+            }
+
+            val desiredOrientation = if (isNavigationMode) -navigationHeadingDeg else 0f
+            if (kotlin.math.abs(mv.mapOrientation - desiredOrientation) >= 1f) {
+                mv.mapOrientation = desiredOrientation
             }
 
             mv.invalidate()
@@ -503,6 +518,8 @@ private fun createMemberDrawable(
     val member = pin.member
     val prefix = when {
         pin.isSosBeacon -> "SOS · "
+        member.isActingLeader && member.role != UserRole.TOUR_LEADER -> "Plt.Ldr · "
+        member.isCoLeader -> "Co-Ldr · "
         member.isSweeper -> "Swp · "
         else -> ""
     }
@@ -514,10 +531,19 @@ private fun createMemberDrawable(
         pin.isSosBeacon -> 0xFF991B1B.toInt()
         pin.isOffRoute -> 0xFFDC2626.toInt()
         pin.isStraggler -> 0xFFB45309.toInt()
+        member.isActingLeader && member.role != UserRole.TOUR_LEADER -> 0xFF7C3AED.toInt()
+        member.isCoLeader -> 0xFF0F766E.toInt()
         pin.isSelected -> 0xFF1D4ED8.toInt()
         else -> Color.WHITE
     }
-    val pillTextColor = if (pin.isSosBeacon || pin.isOffRoute || pin.isStraggler || pin.isSelected) {
+    val pillTextColor = if (
+        pin.isSosBeacon ||
+        pin.isOffRoute ||
+        pin.isStraggler ||
+        pin.isSelected ||
+        (member.isActingLeader && member.role != UserRole.TOUR_LEADER) ||
+        member.isCoLeader
+    ) {
         Color.WHITE
     } else {
         0xFF0F172A.toInt()
@@ -557,6 +583,8 @@ private fun createMemberDrawable(
 
     val pinColor = when {
         pin.isSosBeacon || pin.isOffRoute -> 0xFFDC2626.toInt()
+        member.isActingLeader -> 0xFF7C3AED.toInt()
+        member.isCoLeader -> 0xFF0D9488.toInt()
         member.isCurrentUser -> 0xFFEA580C.toInt()
         member.role == UserRole.TOUR_LEADER -> 0xFF1D4ED8.toInt()
         else -> 0xFF334155.toInt()
@@ -582,6 +610,48 @@ private fun createMemberDrawable(
         textAlign = Paint.Align.CENTER
     }
     canvas.drawText(glyph, cx, cy + 4f * d, glyphPaint)
+
+    return BitmapDrawable(context.resources, bmp)
+}
+
+private fun createNavigationPuckDrawable(
+    context: Context,
+    isAlert: Boolean
+): BitmapDrawable {
+    val d = context.resources.displayMetrics.density
+    val size = (52f * d).toInt().coerceAtLeast(48)
+    val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bmp)
+    val cx = size / 2f
+    val cy = size / 2f
+
+    val haloPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = if (isAlert) 0x55DC2626 else 0x552563EB
+    }
+    canvas.drawCircle(cx, cy, 23f * d, haloPaint)
+
+    val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+    }
+    canvas.drawCircle(cx, cy, 17f * d, ringPaint)
+
+    val corePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = if (isAlert) 0xFFDC2626.toInt() else 0xFF0F172A.toInt()
+    }
+    canvas.drawCircle(cx, cy, 14f * d, corePaint)
+
+    val arrowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = if (isAlert) Color.WHITE else 0xFF38BDF8.toInt()
+        style = Paint.Style.FILL
+    }
+    val arrowPath = Path().apply {
+        moveTo(cx, cy - 10f * d)
+        lineTo(cx + 8.5f * d, cy + 7.5f * d)
+        lineTo(cx, cy + 3.2f * d)
+        lineTo(cx - 8.5f * d, cy + 7.5f * d)
+        close()
+    }
+    canvas.drawPath(arrowPath, arrowPaint)
 
     return BitmapDrawable(context.resources, bmp)
 }

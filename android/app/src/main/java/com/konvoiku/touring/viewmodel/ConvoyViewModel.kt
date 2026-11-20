@@ -26,7 +26,9 @@ import com.konvoiku.touring.model.MemberConditionStatus
 import com.konvoiku.touring.model.OffRouteAlertState
 import com.konvoiku.touring.model.RestCheckpoint
 import com.konvoiku.touring.model.RoomMessage
+import com.konvoiku.touring.model.RouteInstruction
 import com.konvoiku.touring.model.RoutePoint
+import com.konvoiku.touring.model.RoutePreference
 import com.konvoiku.touring.model.SosEmergencyState
 import com.konvoiku.touring.model.StragglerAlertState
 import com.konvoiku.touring.model.TourRoom
@@ -76,6 +78,8 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
     private var lastTelemetrySentMs = 0L
     private val recordedTrackPoints = mutableListOf<LatLngGeo>()
     private var lastComputedRouteSig = ""
+    private var lastSyncedCoLeaderUid = ""
+    private var lastFailoverAttemptMs = 0L
 
     private data class SimTemplate(
         val name: String,
@@ -320,6 +324,55 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
                         )
                     }
                     recomputeAndCommitRoom(movedMembers)
+                } else if (room != null && room.isSyncedRoom && !room.leaderTroubleActive) {
+                    val nowMs = System.currentTimeMillis()
+                    val leaderMember = room.members.firstOrNull {
+                        (room.leaderUid.isNotBlank() && it.id == room.leaderUid) ||
+                            it.role == UserRole.TOUR_LEADER
+                    }
+                    val staleLeader = leaderMember != null &&
+                        leaderMember.lastUpdatedEpochMs > 0L &&
+                        (nowMs - leaderMember.lastUpdatedEpochMs > 18_000L)
+                    val leaderHasTrouble = leaderMember != null && (
+                        leaderMember.connectionStatus == ConnectionStatus.OFFLINE ||
+                            leaderMember.conditionStatus == MemberConditionStatus.MOGOK ||
+                            leaderMember.conditionStatus == MemberConditionStatus.SOS ||
+                            staleLeader
+                        )
+                    val targetCoLeader = room.coLeaderUid.ifBlank {
+                        GeoUtils.selectClosestCoLeader(room.members, leaderMember?.id).coLeaderUid.orEmpty()
+                    }
+                    if (leaderHasTrouble && targetCoLeader.isNotBlank() && nowMs - lastFailoverAttemptMs > 8_000L) {
+                        val currentUid = syncRepo.currentUid()
+                        if (currentUid != null && currentUid != leaderMember?.id) {
+                            lastFailoverAttemptMs = nowMs
+                            val reason = when {
+                                leaderMember?.conditionStatus == MemberConditionStatus.MOGOK ->
+                                    "Kendaraan Leader mengalami mogok"
+                                leaderMember?.conditionStatus == MemberConditionStatus.SOS ->
+                                    "Leader mengirim sinyal darurat SOS"
+                                else ->
+                                    "HP Leader kehilangan sinyal / tidak aktif (>18 dtk)"
+                            }
+                            if (room.coLeaderUid != targetCoLeader) {
+                                syncRepo.updateCoLeaderUid(room.roomId, targetCoLeader)
+                            }
+                            val ok = syncRepo.triggerLeaderFailover(room.roomId, targetCoLeader, reason)
+                            if (ok) {
+                                val promotedName = room.members.firstOrNull { it.id == targetCoLeader }?.fullName ?: "Co-Leader"
+                                val sysMsg = RoomMessage(
+                                    id = "failover-${UUID.randomUUID()}",
+                                    senderId = "system",
+                                    senderName = "Sistem Failover",
+                                    senderVehicle = "",
+                                    type = ChatMessageType.SYSTEM,
+                                    textContent = "Leader gangguan ($reason). Co-Leader $promotedName otomatis mengambil alih sebagai Plt. Leader & TomTom API.",
+                                    timestampLabel = currentClockLabel()
+                                )
+                                syncRepo.sendMessage(room.roomId, currentUid, sysMsg)
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1182,8 +1235,17 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
         val routeConfig = state.routeConfig
         val roomCode = generateUniqueRoomId()
         val mockLink = "https://konvoiku.id/join/$roomCode"
-        val startLat = state.userGpsLat ?: routeConfig.waypoints.firstOrNull()?.latitude ?: -6.648
-        val startLng = state.userGpsLng ?: routeConfig.waypoints.firstOrNull()?.longitude ?: 106.845
+        val firstWp = routeConfig.waypoints.firstOrNull()
+        val startLat = if (routeConfig.originLockedByLeader && firstWp != null) {
+            firstWp.latitude
+        } else {
+            state.userGpsLat ?: firstWp?.latitude ?: -6.648
+        }
+        val startLng = if (routeConfig.originLockedByLeader && firstWp != null) {
+            firstWp.longitude
+        } else {
+            state.userGpsLng ?: firstWp?.longitude ?: 106.845
+        }
         lastComputedRouteSig = ""
         seedRecordedTrackFromStart(startLat, startLng)
 
@@ -1289,6 +1351,7 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
 
         val allMembers = listOf(leaderMember) + simulatedMembers
         extraMemberCounter = 0
+        lastSyncedCoLeaderUid = ""
         _uiState.update {
             it.copy(
                 activeRoom = TourRoom(
@@ -1297,14 +1360,17 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
                     inviteLink = mockLink,
                     createdAtLabel = "Aktif sekarang",
                     members = allMembers,
-                    isSyncedRoom = false
+                    isSyncedRoom = false,
+                    leaderUid = leaderMember.id,
+                    actingLeaderUid = leaderMember.id
                 ),
                 selectedMemberId = leaderMember.id,
                 lastCompletedTrip = null,
                 sosState = SosEmergencyState(),
                 messages = initialRoomMessages(roomCode),
                 isOffRouteSimActive = false,
-                isStragglerSimActive = false
+                isStragglerSimActive = false,
+                isLeaderTroubleSimActive = false
             )
         }
         recomputeAndCommitRoom(allMembers)
@@ -1312,6 +1378,7 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
 
     private fun attachRoomSubscription(roomId: String, uid: String) {
         roomUnsubscribe?.invoke()
+        lastSyncedCoLeaderUid = ""
         roomUnsubscribe = syncRepo.subscribeToRoom(
             roomId = roomId,
             currentUid = uid,
@@ -1325,6 +1392,10 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
                         activeRoom = curRoom?.copy(
                             roomTitle = header.roomTitle,
                             leaderUid = header.leaderUid,
+                            coLeaderUid = header.coLeaderUid,
+                            actingLeaderUid = header.actingLeaderUid,
+                            leaderTroubleActive = header.leaderTroubleActive,
+                            leaderTroubleReason = header.leaderTroubleReason,
                             isSyncedRoom = true
                         ) ?: TourRoom(
                             roomId = header.roomId,
@@ -1333,9 +1404,16 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
                             createdAtLabel = "Cloud Live",
                             members = emptyList(),
                             isSyncedRoom = true,
-                            leaderUid = header.leaderUid
+                            leaderUid = header.leaderUid,
+                            coLeaderUid = header.coLeaderUid,
+                            actingLeaderUid = header.actingLeaderUid,
+                            leaderTroubleActive = header.leaderTroubleActive,
+                            leaderTroubleReason = header.leaderTroubleReason
                         )
                     )
+                }
+                _uiState.value.activeRoom?.members?.let { existing ->
+                    if (existing.isNotEmpty()) recomputeAndCommitRoom(existing)
                 }
             },
             onMembers = { members ->
@@ -1568,7 +1646,9 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
             inviteLink = "https://konvoiku.id/join/$extractedId",
             createdAtLabel = "Terhubung",
             members = members,
-            isSyncedRoom = false
+            isSyncedRoom = false,
+            leaderUid = leaderMember.id,
+            actingLeaderUid = leaderMember.id
         )
 
         _uiState.update {
@@ -1579,10 +1659,165 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
                 sosState = SosEmergencyState(),
                 messages = initialRoomMessages(extractedId),
                 isOffRouteSimActive = false,
-                isStragglerSimActive = false
+                isStragglerSimActive = false,
+                isLeaderTroubleSimActive = false
             )
         }
         recomputeAndCommitRoom(members)
+    }
+
+    fun isCurrentUserEffectiveLeader(): Boolean {
+        val state = _uiState.value
+        val room = state.activeRoom ?: return state.selectedRole == UserRole.TOUR_LEADER
+        val self = room.members.find { it.isCurrentUser }
+        if (self?.isActingLeader == true) return true
+        val effectiveUid = room.actingLeaderUid.ifBlank { room.leaderUid }
+        if (room.isSyncedRoom) {
+            val uid = syncRepo.currentUid()
+            if (uid != null && effectiveUid.isNotBlank()) return uid == effectiveUid
+            return self?.role == UserRole.TOUR_LEADER && !room.leaderTroubleActive
+        }
+        if (room.leaderTroubleActive && room.actingLeaderUid.isNotBlank()) {
+            return self?.id == room.actingLeaderUid
+        }
+        return state.selectedRole == UserRole.TOUR_LEADER || self?.role == UserRole.TOUR_LEADER
+    }
+
+    fun toggleLeaderTroubleSimulation() {
+        val state = _uiState.value
+        val room = state.activeRoom ?: return
+        if (room.isSyncedRoom) {
+            val uid = syncRepo.currentUid() ?: return
+            if (room.leaderTroubleActive) {
+                reclaimLeaderAuthority()
+            } else {
+                val targetCoLeader = room.coLeaderUid.ifBlank {
+                    GeoUtils.selectClosestCoLeader(room.members, room.leaderUid).coLeaderUid.orEmpty()
+                }
+                if (targetCoLeader.isBlank()) return
+                viewModelScope.launch {
+                    val reason = "Simulasi HP Leader kehilangan sinyal / baterai habis"
+                    if (room.coLeaderUid != targetCoLeader) {
+                        syncRepo.updateCoLeaderUid(room.roomId, targetCoLeader)
+                    }
+                    if (syncRepo.triggerLeaderFailover(room.roomId, targetCoLeader, reason)) {
+                        val promotedName = room.members.firstOrNull { it.id == targetCoLeader }?.fullName ?: "Co-Leader"
+                        syncRepo.sendMessage(
+                            room.roomId,
+                            uid,
+                            RoomMessage(
+                                id = "failover-sim-${UUID.randomUUID()}",
+                                senderId = "system",
+                                senderName = "Sistem Failover",
+                                senderVehicle = "",
+                                type = ChatMessageType.SYSTEM,
+                                textContent = "Leader trouble ($reason). $promotedName otomatis menjadi Plt. Leader & mengambil alih ping TomTom API.",
+                                timestampLabel = currentClockLabel()
+                            )
+                        )
+                    }
+                }
+            }
+            return
+        }
+
+        val nextActive = !state.isLeaderTroubleSimActive
+        val leaderId = room.leaderUid.ifBlank {
+            room.members.firstOrNull { it.role == UserRole.TOUR_LEADER }?.id.orEmpty()
+        }
+        if (nextActive) {
+            val coResult = GeoUtils.selectClosestCoLeader(room.members, leaderId)
+            val coLeaderId = coResult.coLeaderUid ?: room.coLeaderUid.ifBlank {
+                room.members.firstOrNull { it.id != leaderId }?.id.orEmpty()
+            }
+            if (coLeaderId.isBlank()) return
+            val promotedName = room.members.firstOrNull { it.id == coLeaderId }?.fullName ?: "Co-Leader"
+            val updatedMembers = room.members.map { m ->
+                if (m.id == leaderId) {
+                    m.copy(
+                        connectionStatus = ConnectionStatus.OFFLINE,
+                        lastLocationText = "Sinyal HP Hilang / Baterai Habis",
+                        mapPosition = m.mapPosition.copy(speedKmh = 0)
+                    )
+                } else m
+            }
+            val sysMsg = RoomMessage(
+                id = "failover-sim-${UUID.randomUUID()}",
+                senderId = "system",
+                senderName = "Sistem Failover",
+                senderVehicle = "",
+                type = ChatMessageType.SYSTEM,
+                textContent = "Leader trouble (sinyal hilang/baterai habis). Co-Leader terdekat $promotedName otomatis menggantikan posisi Leader & ping TomTom API.",
+                timestampLabel = currentClockLabel()
+            )
+            _uiState.update {
+                it.copy(
+                    isLeaderTroubleSimActive = true,
+                    activeRoom = room.copy(
+                        leaderUid = leaderId,
+                        coLeaderUid = coLeaderId,
+                        actingLeaderUid = coLeaderId,
+                        leaderTroubleActive = true,
+                        leaderTroubleReason = "HP Leader kehilangan sinyal / baterai habis"
+                    ),
+                    messages = it.messages + sysMsg
+                )
+            }
+            recomputeAndCommitRoom(updatedMembers)
+        } else {
+            reclaimLeaderAuthority()
+        }
+    }
+
+    fun reclaimLeaderAuthority() {
+        val state = _uiState.value
+        val room = state.activeRoom ?: return
+        val leaderId = room.leaderUid.ifBlank {
+            room.members.firstOrNull { it.role == UserRole.TOUR_LEADER }?.id.orEmpty()
+        }
+        val leaderName = room.members.firstOrNull { it.id == leaderId }?.fullName ?: "Tour Leader"
+        val sysMsg = RoomMessage(
+            id = "reclaim-${UUID.randomUUID()}",
+            senderId = "system",
+            senderName = "Sistem Konvoi",
+            senderVehicle = "",
+            type = ChatMessageType.SYSTEM,
+            textContent = "$leaderName kembali terhubung dan mengambil alih posisi Tour Leader & ping TomTom API.",
+            timestampLabel = currentClockLabel()
+        )
+
+        if (room.isSyncedRoom) {
+            val uid = syncRepo.currentUid() ?: return
+            viewModelScope.launch {
+                if (syncRepo.reclaimOriginalLeader(room.roomId, leaderId.ifBlank { uid })) {
+                    syncRepo.sendMessage(room.roomId, uid, sysMsg)
+                }
+            }
+            _uiState.update { it.copy(isLeaderTroubleSimActive = false) }
+            return
+        }
+
+        val updatedMembers = room.members.map { m ->
+            if (m.id == leaderId) {
+                m.copy(
+                    connectionStatus = ConnectionStatus.CONNECTED,
+                    lastUpdatedLabel = "Baru saja"
+                )
+            } else m
+        }
+        _uiState.update {
+            it.copy(
+                isLeaderTroubleSimActive = false,
+                activeRoom = room.copy(
+                    leaderUid = leaderId,
+                    actingLeaderUid = leaderId,
+                    leaderTroubleActive = false,
+                    leaderTroubleReason = ""
+                ),
+                messages = it.messages + sysMsg
+            )
+        }
+        recomputeAndCommitRoom(updatedMembers)
     }
 
     fun selectMapMember(memberId: String) {
@@ -1912,25 +2147,113 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
 
     // --- Stage 3: Leader Route, Destination, Off-Route & Straggler Config ---
 
+    fun setCustomOriginLatLng(
+        latitude: Double,
+        longitude: Double,
+        placeName: String? = null,
+        addressLabel: String? = null
+    ) {
+        val state = _uiState.value
+        val startPoint = RoutePoint(0.14f, 0.86f, latitude, longitude)
+        val existing = state.routeConfig.waypoints
+        val destPoint = existing.lastOrNull()
+            ?: RoutePoint(0.86f, 0.14f, -6.7003, 106.9960)
+        val waypoints = if (existing.size >= 3) {
+            listOf(startPoint) + existing.drop(1)
+        } else {
+            buildPolylineToDestination(startPoint, destPoint)
+        }
+        val estimatedMeters = (GeoUtils.haversineMeters(
+            LatLngGeo(latitude, longitude),
+            LatLngGeo(destPoint.latitude, destPoint.longitude)
+        ) * 1.25).roundToInt().coerceAtLeast(500)
+
+        val resolvedName = placeName?.trim()?.takeIf { it.isNotEmpty() }
+            ?: String.format(Locale.US, "Titik Start (%.4f, %.4f)", latitude, longitude)
+        val resolvedAddress = addressLabel?.trim()?.takeIf { it.isNotEmpty() }
+            ?: String.format(Locale.US, "%s · %.4f, %.4f", resolvedName, latitude, longitude)
+
+        lastComputedRouteSig = ""
+        val nextConfig = state.routeConfig.copy(
+            originName = resolvedName,
+            originAddress = resolvedAddress,
+            originLockedByLeader = true,
+            waypoints = waypoints,
+            routeInstructions = emptyList(),
+            totalRouteMeters = estimatedMeters
+        )
+        _uiState.update { it.copy(routeConfig = nextConfig) }
+        if (state.activeRoom?.isSyncedRoom == true) {
+            syncRepo.updateRouteConfig(state.activeRoom.roomId, nextConfig)
+        }
+        syncMembersToUpdatedRoute()
+    }
+
+    fun useCurrentGpsAsOrigin(): Boolean {
+        val state = _uiState.value
+        val lat = state.userGpsLat
+        val lng = state.userGpsLng
+        if (lat == null || lng == null || !GeoUtils.hasValidGeoCoord(lat, lng)) {
+            return false
+        }
+        setCustomOriginLatLng(
+            latitude = lat,
+            longitude = lng,
+            placeName = "Lokasi GPS Saya Sekarang",
+            addressLabel = String.format(Locale.US, "GPS Perangkat · %.5f, %.5f", lat, lng)
+        )
+        return true
+    }
+
+    fun selectRoutePreference(preference: RoutePreference) {
+        val state = _uiState.value
+        if (state.routeConfig.routePreference == preference) return
+        lastComputedRouteSig = ""
+        val nextConfig = state.routeConfig.copy(
+            routePreference = preference,
+            routeInstructions = emptyList()
+        )
+        _uiState.update { it.copy(routeConfig = nextConfig) }
+        if (state.activeRoom?.isSyncedRoom == true) {
+            syncRepo.updateRouteConfig(state.activeRoom.roomId, nextConfig)
+        }
+    }
+
     fun selectDestinationPreset(preset: DestinationPreset) {
         val state = _uiState.value
-        val start = state.userGpsLat?.let { lat ->
-            state.userGpsLng?.let { lng -> RoutePoint(0.14f, 0.86f, lat, lng) }
-        } ?: state.routeConfig.waypoints.firstOrNull()
-            ?: RoutePoint(0.14f, 0.86f, -6.648, 106.845)
+        val existingStart = state.routeConfig.waypoints.firstOrNull()
+        val start = if (state.routeConfig.originLockedByLeader && existingStart != null) {
+            existingStart
+        } else if (existingStart != null) {
+            existingStart
+        } else {
+            state.userGpsLat?.let { lat ->
+                state.userGpsLng?.let { lng -> RoutePoint(0.14f, 0.86f, lat, lng) }
+            } ?: RoutePoint(0.14f, 0.86f, -6.648, 106.845)
+        }
 
         val waypoints = buildPolylineToDestination(start, preset.endPoint)
+        val estimatedMeters = if (state.routeConfig.originLockedByLeader) {
+            (GeoUtils.haversineMeters(
+                LatLngGeo(start.latitude, start.longitude),
+                LatLngGeo(preset.endPoint.latitude, preset.endPoint.longitude)
+            ) * 1.25).roundToInt().coerceAtLeast(500)
+        } else {
+            preset.totalMeters
+        }
         val coordText = String.format(
             Locale.US,
             "%.4f, %.4f",
             preset.endPoint.latitude,
             preset.endPoint.longitude
         )
+        lastComputedRouteSig = ""
         val nextConfig = state.routeConfig.copy(
             destinationName = preset.name,
             destinationAddress = "${preset.name} · $coordText",
             waypoints = waypoints,
-            totalRouteMeters = preset.totalMeters
+            routeInstructions = emptyList(),
+            totalRouteMeters = estimatedMeters
         )
         _uiState.update {
             it.copy(routeConfig = nextConfig, isPickingDestinationOnMap = false)
@@ -1948,10 +2271,16 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
         addressLabel: String? = null
     ) {
         val state = _uiState.value
-        val start = state.userGpsLat?.let { lat ->
-            state.userGpsLng?.let { lng -> RoutePoint(0.14f, 0.86f, lat, lng) }
-        } ?: state.routeConfig.waypoints.firstOrNull()
-            ?: RoutePoint(0.14f, 0.86f, -6.648, 106.845)
+        val existingStart = state.routeConfig.waypoints.firstOrNull()
+        val start = if (state.routeConfig.originLockedByLeader && existingStart != null) {
+            existingStart
+        } else if (existingStart != null) {
+            existingStart
+        } else {
+            state.userGpsLat?.let { lat ->
+                state.userGpsLng?.let { lng -> RoutePoint(0.14f, 0.86f, lat, lng) }
+            } ?: RoutePoint(0.14f, 0.86f, -6.648, 106.845)
+        }
 
         val endPoint = RoutePoint(0.86f, 0.14f, latitude, longitude)
         val waypoints = buildPolylineToDestination(start, endPoint)
@@ -1965,10 +2294,12 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
         val resolvedAddress = addressLabel?.trim()?.takeIf { it.isNotEmpty() }
             ?: String.format(Locale.US, "%s · %.4f, %.4f", resolvedName, latitude, longitude)
 
+        lastComputedRouteSig = ""
         val nextConfig = state.routeConfig.copy(
             destinationName = resolvedName,
             destinationAddress = resolvedAddress,
             waypoints = waypoints,
+            routeInstructions = emptyList(),
             totalRouteMeters = estimatedMeters
         )
         _uiState.update {
@@ -2005,10 +2336,12 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
     fun updateCustomWaypoints(waypoints: List<RoutePoint>, destinationName: String? = null) {
         if (waypoints.size < 2) return
         val state = _uiState.value
+        lastComputedRouteSig = ""
         val nextConfig = state.routeConfig.copy(
             destinationName = destinationName?.takeIf { it.isNotBlank() }
                 ?: state.routeConfig.destinationName,
-            waypoints = waypoints
+            waypoints = waypoints,
+            routeInstructions = emptyList()
         )
         _uiState.update { it.copy(routeConfig = nextConfig) }
         if (state.activeRoom?.isSyncedRoom == true) {
@@ -2017,29 +2350,36 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
         syncMembersToUpdatedRoute()
     }
 
-    fun updateComputedTomTomRoute(distanceMeters: Int, roadWaypoints: List<RoutePoint>) {
+    fun updateComputedTomTomRoute(
+        distanceMeters: Int,
+        roadWaypoints: List<RoutePoint>,
+        instructions: List<RouteInstruction> = emptyList()
+    ) {
         if (roadWaypoints.size < 2) return
         val state = _uiState.value
         val first = roadWaypoints.first()
         val last = roadWaypoints.last()
         val sig = String.format(
             Locale.US,
-            "%.4f,%.4f->%.4f,%.4f|%d",
+            "%s|%.4f,%.4f->%.4f,%.4f|%d|%d",
+            state.routeConfig.routePreference.id,
             first.latitude,
             first.longitude,
             last.latitude,
             last.longitude,
-            roadWaypoints.size
+            roadWaypoints.size,
+            instructions.size
         )
         if (sig == lastComputedRouteSig) return
         lastComputedRouteSig = sig
 
         val nextConfig = state.routeConfig.copy(
             waypoints = roadWaypoints,
+            routeInstructions = instructions,
             totalRouteMeters = distanceMeters.coerceAtLeast(100)
         )
         _uiState.update { it.copy(routeConfig = nextConfig) }
-        if (state.activeRoom?.isSyncedRoom == true && state.selectedRole == UserRole.TOUR_LEADER) {
+        if (state.activeRoom?.isSyncedRoom == true && isCurrentUserEffectiveLeader()) {
             syncRepo.updateRouteConfig(state.activeRoom.roomId, nextConfig)
         }
     }
@@ -2092,9 +2432,21 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun resetDefaultWaypoints() {
-        val defaultWaypoints = ConvoyRouteConfig.defaultWaypoints()
         val state = _uiState.value
-        val nextConfig = state.routeConfig.copy(waypoints = defaultWaypoints)
+        val first = state.routeConfig.waypoints.firstOrNull()
+        val last = state.routeConfig.waypoints.lastOrNull()
+        val resetWaypoints = if (first != null && last != null &&
+            (state.routeConfig.originLockedByLeader || state.routeConfig.waypoints.size >= 2)
+        ) {
+            listOf(first, last)
+        } else {
+            ConvoyRouteConfig.defaultWaypoints()
+        }
+        lastComputedRouteSig = ""
+        val nextConfig = state.routeConfig.copy(
+            waypoints = resetWaypoints,
+            routeInstructions = emptyList()
+        )
         _uiState.update { it.copy(routeConfig = nextConfig) }
         if (state.activeRoom?.isSyncedRoom == true) {
             syncRepo.updateRouteConfig(state.activeRoom.roomId, nextConfig)
@@ -2229,9 +2581,43 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
             }
         }
 
+        val leaderMember = enriched.firstOrNull {
+            room.leaderUid.isNotBlank() && it.id == room.leaderUid
+        } ?: enriched.firstOrNull { it.role == UserRole.TOUR_LEADER }
+        val resolvedLeaderId = leaderMember?.id ?: room.leaderUid
+        val coLeaderResult = GeoUtils.selectClosestCoLeader(enriched, resolvedLeaderId)
+
+        val effectiveCoLeaderUid = coLeaderResult.coLeaderUid ?: room.coLeaderUid
+        val isTroubleActive = room.leaderTroubleActive || (!room.isSyncedRoom && state.isLeaderTroubleSimActive)
+        val effectiveActingUid = if (isTroubleActive) {
+            room.actingLeaderUid.takeIf { id -> id.isNotBlank() && enriched.any { it.id == id } }
+                ?: effectiveCoLeaderUid.ifBlank { resolvedLeaderId }
+        } else {
+            resolvedLeaderId
+        }
+
         val sortedByRoute = enriched.sortedByDescending { it.routeDistanceMeters }
         val rankMap = sortedByRoute.mapIndexed { idx, m -> m.id to (idx + 1) }.toMap()
-        val rankedMembers = enriched.map { it.copy(convoyOrderRank = rankMap[it.id] ?: 1) }
+        val rankedMembers = enriched.map {
+            it.copy(
+                convoyOrderRank = rankMap[it.id] ?: 1,
+                isCoLeader = effectiveCoLeaderUid.isNotBlank() && it.id == effectiveCoLeaderUid,
+                isActingLeader = effectiveActingUid.isNotBlank() && it.id == effectiveActingUid,
+                distanceToLeaderMeters = coLeaderResult.distanceByMemberId[it.id]
+            )
+        }
+
+        if (room.isSyncedRoom &&
+            !coLeaderResult.coLeaderUid.isNullOrBlank() &&
+            coLeaderResult.coLeaderUid != room.coLeaderUid &&
+            coLeaderResult.coLeaderUid != lastSyncedCoLeaderUid
+        ) {
+            val uid = syncRepo.currentUid()
+            if (uid != null && (uid == resolvedLeaderId || uid == effectiveActingUid)) {
+                lastSyncedCoLeaderUid = coLeaderResult.coLeaderUid
+                syncRepo.updateCoLeaderUid(room.roomId, coLeaderResult.coLeaderUid)
+            }
+        }
 
         val self = rankedMembers.find { it.isCurrentUser }
         val selfDeviation = self?.offRouteMeters ?: 0
@@ -2260,7 +2646,13 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
 
         _uiState.update {
             it.copy(
-                activeRoom = room.copy(members = rankedMembers),
+                activeRoom = room.copy(
+                    members = rankedMembers,
+                    leaderUid = resolvedLeaderId,
+                    coLeaderUid = effectiveCoLeaderUid,
+                    actingLeaderUid = effectiveActingUid,
+                    leaderTroubleActive = isTroubleActive
+                ),
                 offRouteAlert = offRouteAlert,
                 stragglerAlert = stragglerAlert
             )
@@ -2470,7 +2862,8 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
             viewModelScope.launch {
                 val uid = syncRepo.currentUid()
                 if (uid != null) {
-                    if (room.isSyncedRoom && room.leaderUid == uid) {
+                    val effective = room.leaderUid == uid || room.actingLeaderUid == uid
+                    if (room.isSyncedRoom && effective) {
                         syncRepo.finishRoomIfLeader(room.roomId, uid)
                     }
                     syncRepo.saveTripRecord(uid, record)

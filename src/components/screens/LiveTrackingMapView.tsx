@@ -76,6 +76,9 @@ interface LiveTrackingMapViewProps {
   pendingCheckpointName: string;
   isOffRouteSimActive: boolean;
   isStragglerSimActive: boolean;
+  isLeaderTroubleSimActive: boolean;
+  canPingTomTomRouting: boolean;
+  isEffectiveLeader: boolean;
   destinationPresets: DestinationPreset[];
   darkMode?: boolean;
   gpsStatus: GpsPermissionStatus;
@@ -106,6 +109,8 @@ interface LiveTrackingMapViewProps {
   onToggleSoundAlert: () => void;
   onToggleOffRouteSim: () => void;
   onToggleStragglerSim: () => void;
+  onToggleLeaderTroubleSim: () => void;
+  onReclaimLeader: () => void;
   onTriggerSos: () => void;
   onResolveSos: () => void;
   onSendTextMessage: (text: string) => void;
@@ -304,6 +309,9 @@ export function LiveTrackingMapView({
   pendingCheckpointName,
   isOffRouteSimActive,
   isStragglerSimActive,
+  isLeaderTroubleSimActive,
+  canPingTomTomRouting,
+  isEffectiveLeader,
   destinationPresets,
   darkMode,
   gpsStatus,
@@ -325,6 +333,8 @@ export function LiveTrackingMapView({
   onToggleSoundAlert,
   onToggleOffRouteSim,
   onToggleStragglerSim,
+  onToggleLeaderTroubleSim,
+  onReclaimLeader,
   onTriggerSos,
   onResolveSos,
   onSendTextMessage,
@@ -337,7 +347,7 @@ export function LiveTrackingMapView({
   onFinishAndSaveTrip,
   onExitRoom,
 }: LiveTrackingMapViewProps) {
-  const [isNavigationMode, setIsNavigationMode] = useState(false);
+  const [isNavigationMode, setIsNavigationMode] = useState(true);
   const [participantsExpanded, setParticipantsExpanded] = useState(false);
   const [showChatSheet, setShowChatSheet] = useState(false);
   const [showLeaderSettings, setShowLeaderSettings] = useState(false);
@@ -354,6 +364,13 @@ export function LiveTrackingMapView({
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
   const prevAlertKeyRef = useRef('');
 
+  // Auto-transition to Turn-by-Turn GPS Navigation Mode whenever a convoy starts/opens
+  useEffect(() => {
+    if (activeRoom?.roomId) {
+      setIsNavigationMode(true);
+    }
+  }, [activeRoom?.roomId]);
+
   const members = [...(activeRoom?.members ?? [])].sort(
     (a, b) => a.convoyOrderRank - b.convoyOrderRank
   );
@@ -361,6 +378,14 @@ export function LiveTrackingMapView({
     members.find((m) => m.id === selectedMemberId) || members[0] || null;
   const currentUser = members.find((m) => m.isCurrentUser) || members[0] || null;
   const trackedMember = focusedMember || currentUser;
+  const actingLeaderMember =
+    members.find((m) => m.isActingLeader) ||
+    members.find((m) => m.id === activeRoom?.actingLeaderUid) ||
+    null;
+  const coLeaderMember =
+    members.find((m) => m.isCoLeader) ||
+    members.find((m) => m.id === activeRoom?.coLeaderUid) ||
+    null;
   const etaInfo = calculateDestinationEta(trackedMember, routeConfig);
 
   const activeSpeedValues = members
@@ -530,7 +555,7 @@ export function LiveTrackingMapView({
             {role === 'TOUR_LEADER' ? 'Leader' : 'Anggota'}
           </button>
 
-          {role === 'TOUR_LEADER' && (
+          {isEffectiveLeader && (
             <button
               type="button"
               onClick={() => setShowLeaderSettings(true)}
@@ -550,11 +575,18 @@ export function LiveTrackingMapView({
           onClick={() => setParticipantsExpanded((prev) => !prev)}
           className="w-full px-3.5 py-2 flex items-center justify-between text-xs font-semibold text-[#1D4ED8] dark:text-[#60A5FA] cursor-pointer"
         >
-          <span>Peserta Konvoi ({members.length}) · Geser / Ketuk</span>
+          <span className="truncate">
+            Peserta ({members.length})
+            {actingLeaderMember && activeRoom?.leaderTroubleActive
+              ? ` · Plt.Leader: ${actingLeaderMember.fullName}`
+              : coLeaderMember
+                ? ` · Co-Leader: ${coLeaderMember.fullName}`
+                : ''}
+          </span>
           {participantsExpanded ? (
-            <ChevronUp className="w-4 h-4" />
+            <ChevronUp className="w-4 h-4 shrink-0" />
           ) : (
-            <ChevronDown className="w-4 h-4" />
+            <ChevronDown className="w-4 h-4 shrink-0" />
           )}
         </button>
 
@@ -570,7 +602,11 @@ export function LiveTrackingMapView({
                   className={`shrink-0 px-2.5 py-1.5 rounded-[14px] border flex items-center gap-2 text-left transition-colors cursor-pointer ${
                     selected
                       ? 'bg-[#EFF6FF] dark:bg-[#1E3A8A]/60 border-[#1D4ED8]'
-                      : 'bg-[#F8FAFC] dark:bg-[#0B1117] border-[#E2E8F0] dark:border-[#334155]'
+                      : member.isActingLeader
+                        ? 'bg-[#E0F2FE] dark:bg-[#0C4A6E]/40 border-[#0284C7]'
+                        : member.isCoLeader
+                          ? 'bg-[#F5F3FF] dark:bg-[#2E1065]/40 border-[#7C3AED]'
+                          : 'bg-[#F8FAFC] dark:bg-[#0B1117] border-[#E2E8F0] dark:border-[#334155]'
                   }`}
                 >
                   <ConvoyAvatar
@@ -579,15 +615,31 @@ export function LiveTrackingMapView({
                     name={member.fullName}
                     sizeClass="w-7 h-7"
                     ringClass={
-                      member.isCurrentUser
-                        ? 'ring-2 ring-[#EA580C]'
-                        : 'ring-2 ring-white dark:ring-[#1E293B]'
+                      member.isActingLeader
+                        ? 'ring-2 ring-[#0284C7]'
+                        : member.isCoLeader
+                          ? 'ring-2 ring-[#7C3AED]'
+                          : member.isCurrentUser
+                            ? 'ring-2 ring-[#EA580C]'
+                            : 'ring-2 ring-white dark:ring-[#1E293B]'
                     }
                   />
                   <div className="min-w-0">
-                    <p className="text-[11px] font-semibold truncate max-w-[78px]">
-                      {member.fullName}
-                    </p>
+                    <div className="flex items-center gap-1">
+                      <p className="text-[11px] font-semibold truncate max-w-[78px]">
+                        {member.fullName}
+                      </p>
+                      {member.isActingLeader && (
+                        <span className="px-1 py-0.2 rounded bg-[#0284C7] text-white text-[8px] font-bold">
+                          Plt
+                        </span>
+                      )}
+                      {!member.isActingLeader && member.isCoLeader && (
+                        <span className="px-1 py-0.2 rounded bg-[#7C3AED] text-white text-[8px] font-bold">
+                          Co
+                        </span>
+                      )}
+                    </div>
                     <p className="text-[10px] text-[#64748B] dark:text-[#94A3B8] flex items-center gap-1">
                       {member.vehicleType === 'MOBIL' ? (
                         <Car className="w-3 h-3 shrink-0" />
@@ -595,7 +647,11 @@ export function LiveTrackingMapView({
                         <Bike className="w-3 h-3 shrink-0" />
                       )}
                       <span>
-                        {member.vehicleType === 'MOBIL' ? 'Mobil' : 'Motor'}
+                        {member.isCoLeader && typeof member.distanceToLeaderMeters === 'number'
+                          ? `${formatDistanceLabel(member.distanceToLeaderMeters)}`
+                          : member.vehicleType === 'MOBIL'
+                            ? 'Mobil'
+                            : 'Motor'}
                       </span>
                     </p>
                   </div>
@@ -677,15 +733,21 @@ export function LiveTrackingMapView({
                         {member.isCurrentUser ? ' (Anda)' : ''}
                       </p>
                       <p className="text-[11px] text-[#64748B] dark:text-[#94A3B8] truncate">
-                        {member.isSweeper
-                          ? 'Sweeper'
-                          : member.role === 'TOUR_LEADER'
-                            ? 'Leader'
-                            : 'Anggota'}{' '}
+                        {member.isActingLeader
+                          ? 'Plt. Leader (Failover)'
+                          : member.isCoLeader
+                            ? `Co-Leader (${formatDistanceLabel(member.distanceToLeaderMeters ?? 0)} dari Leader)`
+                            : member.isSweeper
+                              ? 'Sweeper'
+                              : member.role === 'TOUR_LEADER'
+                                ? activeRoom?.leaderTroubleActive
+                                  ? 'Leader (Trouble HP)'
+                                  : 'Leader'
+                                : 'Anggota'}{' '}
                         · {member.vehicleType === 'MOBIL' ? 'Mobil' : 'Motor'} ·{' '}
                         {member.lastLocationText}
                       </p>
-                      {role === 'TOUR_LEADER' && member.role !== 'TOUR_LEADER' && (
+                      {isEffectiveLeader && member.role !== 'TOUR_LEADER' && !member.isActingLeader && (
                         <button
                           type="button"
                           onClick={(e) => {
@@ -804,6 +866,30 @@ export function LiveTrackingMapView({
           </div>
         )}
 
+      {/* Leader Trouble & Co-Leader Failover Banner */}
+      {activeRoom?.leaderTroubleActive && (
+        <div
+          role="alert"
+          className="shrink-0 bg-[#4C1D95] text-white px-3.5 py-2 flex items-center gap-2.5"
+        >
+          <Shield className="w-4 h-4 shrink-0 text-[#DDD6FE]" />
+          <p className="text-[11px] font-semibold truncate flex-1">
+            {activeRoom.leaderTroubleReason || 'HP Leader trouble (sinyal/baterai)'} · Co-Leader{' '}
+            {actingLeaderMember?.fullName || 'Pengganti'} mengambil alih rute & TomTom
+          </p>
+          {(role === 'TOUR_LEADER' ||
+            (currentUser && currentUser.id === activeRoom.leaderUid)) && (
+            <button
+              type="button"
+              onClick={onReclaimLeader}
+              className="px-2 py-1 rounded-lg bg-white/20 hover:bg-white/30 text-[10px] font-bold cursor-pointer shrink-0"
+            >
+              Pulihkan Leader
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Full Live TomTom Map Viewport */}
       <div className="relative flex-1 min-h-[320px] overflow-hidden bg-[#EEF2F6] dark:bg-[#141B22]">
         <div className="absolute inset-0">
@@ -819,6 +905,7 @@ export function LiveTrackingMapView({
             isPickingDestination={isPickingDestinationOnMap}
             isPickingCheckpoint={isPickingCheckpointOnMap}
             isNavigationMode={isNavigationMode}
+            canPingTomTomRouting={canPingTomTomRouting}
             onToggleNavigationMode={() => setIsNavigationMode((v) => !v)}
             onSelectMember={onSelectMember}
             onPickCoordinateOnMap={handlePickCoordinateOnMap}
@@ -826,9 +913,9 @@ export function LiveTrackingMapView({
           />
         </div>
 
-        {/* Top-Left Live GPS, Sync Badge & Optional Offline Controls */}
+        {/* Top-Left Live GPS, Sync Badge, Economical API Indicator & Optional Offline Controls */}
         <div
-          className={`absolute left-2.5 z-20 flex flex-col gap-1.5 max-w-[65%] transition-all ${
+          className={`absolute left-2.5 z-20 flex flex-col gap-1.5 max-w-[68%] transition-all ${
             isNavigationMode && !isPickingDestinationOnMap && !isPickingCheckpointOnMap
               ? 'top-[78px]'
               : 'top-3'
@@ -866,6 +953,23 @@ export function LiveTrackingMapView({
                 <span>Room Sync</span>
               </span>
             )}
+
+            <span
+              className={`px-2 py-1 rounded-xl text-[10px] font-semibold shadow-sm border flex items-center gap-1 ${
+                canPingTomTomRouting
+                  ? 'bg-[#EFF6FF]/95 dark:bg-[#1E3A8A]/90 text-[#1D4ED8] dark:text-[#DBEAFE] border-[#BFDBFE] dark:border-[#1E40AF]'
+                  : 'bg-[#F5F3FF]/95 dark:bg-[#2E1065]/90 text-[#6D28D9] dark:text-[#DDD6FE] border-[#DDD6FE] dark:border-[#5B21B6]'
+              }`}
+            >
+              <Route className="w-3 h-3 shrink-0" />
+              <span>
+                {canPingTomTomRouting
+                  ? activeRoom?.leaderTroubleActive
+                    ? 'Ping TomTom: Plt. Leader'
+                    : 'Ping TomTom: HP Leader'
+                  : 'Salinan Rute Leader (Hemat API)'}
+              </span>
+            </span>
           </div>
 
           {gpsStatus === 'denied' && gpsErrorMessage && (
@@ -898,6 +1002,20 @@ export function LiveTrackingMapView({
                 }`}
               >
                 {isStragglerSimActive ? 'Tertinggal: Aktif' : 'Uji Tertinggal'}
+              </button>
+
+              <button
+                type="button"
+                onClick={onToggleLeaderTroubleSim}
+                className={`px-2 py-1 rounded-xl text-[10px] font-semibold border shadow-sm transition-colors cursor-pointer whitespace-nowrap ${
+                  isLeaderTroubleSimActive
+                    ? 'bg-[#6D28D9] text-white border-[#5B21B6]'
+                    : 'bg-white/95 dark:bg-[#141C24]/95 text-[#6D28D9] dark:text-[#C4B5FD] border-[#DDD6FE] dark:border-[#5B21B6]'
+                }`}
+              >
+                {isLeaderTroubleSimActive
+                  ? 'Trouble Leader: Aktif'
+                  : 'Uji Trouble Leader'}
               </button>
 
               <button
@@ -1476,7 +1594,7 @@ export function LiveTrackingMapView({
       )}
 
       {/* Leader Route, Checkpoints & Slider Settings Sheet */}
-      {showLeaderSettings && role === 'TOUR_LEADER' && (
+      {showLeaderSettings && isEffectiveLeader && (
         <div className="absolute inset-0 z-40 bg-black/50 backdrop-blur-[2px] flex items-end">
           <div className="w-full rounded-t-[24px] bg-white dark:bg-[#141C24] border-t border-[#E2E8F0] dark:border-[#334155] p-5 space-y-4 max-h-[86%] overflow-y-auto">
             <div className="flex items-center justify-between">

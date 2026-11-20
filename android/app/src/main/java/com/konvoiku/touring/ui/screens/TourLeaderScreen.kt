@@ -49,6 +49,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButtonDefaults
@@ -94,7 +95,9 @@ import com.konvoiku.touring.data.TomTomApiService
 import com.konvoiku.touring.data.TomTomPlaceResult
 import com.konvoiku.touring.model.ConvoyMember
 import com.konvoiku.touring.model.ConvoyRouteConfig
+import com.konvoiku.touring.model.RouteInstruction
 import com.konvoiku.touring.model.RoutePoint
+import com.konvoiku.touring.model.RoutePreference
 import com.konvoiku.touring.model.TourRoom
 import com.konvoiku.touring.model.UserRole
 import com.konvoiku.touring.model.VehicleType
@@ -117,10 +120,15 @@ fun TourLeaderScreen(
     activeRoom: TourRoom?,
     routeConfig: ConvoyRouteConfig,
     destinationPresets: List<ConvoyViewModel.DestinationPreset>,
+    vehicleType: VehicleType = VehicleType.MOTOR,
     userGpsLat: Double? = null,
     userGpsLng: Double? = null,
+    onPickOriginLatLng: (latitude: Double, longitude: Double, placeName: String, addressLabel: String) -> Unit = { _, _, _, _ -> },
+    onUseGpsAsOrigin: () -> Boolean = { false },
     onSelectPreset: (ConvoyViewModel.DestinationPreset) -> Unit,
     onPickDestinationLatLng: (latitude: Double, longitude: Double, placeName: String, addressLabel: String) -> Unit,
+    onSelectRoutePreference: (RoutePreference) -> Unit = {},
+    onRouteComputed: (Int, List<RoutePoint>, List<RouteInstruction>) -> Unit = { _, _, _ -> },
     onUpdateWaypoints: (List<RoutePoint>, String?) -> Unit,
     onResetDefaultWaypoints: () -> Unit,
     onAddCheckpointAtPoint: (String, Float, Float) -> Unit,
@@ -139,11 +147,14 @@ fun TourLeaderScreen(
 
     var currentStep by remember { mutableIntStateOf(0) }
     var showSetupStepper by remember(activeRoom) { mutableStateOf(activeRoom == null) }
-    var showDestinationMapPicker by remember { mutableStateOf(false) }
+    var mapPickerMode by remember { mutableStateOf<String?>(null) } // "origin" | "destination" | null
     var tourNameDraft by remember { mutableStateOf(activeRoom?.roomTitle ?: "Konvoi Puncak Pass Weekend") }
     var checkpointDraft by remember { mutableStateOf("") }
+    var viaPoints by remember { mutableStateOf<List<RoutePoint>>(emptyList()) }
+    var isComputingPreviewRoute by remember { mutableStateOf(false) }
+    var previewDurationMin by remember { mutableStateOf<Int?>(null) }
 
-    val stepTitles = listOf("Tujuan", "Jalur", "Istirahat", "Jarak")
+    val stepTitles = listOf("Start", "Tujuan", "Rute", "Istirahat", "Jarak")
 
     Box(modifier = Modifier.fillMaxSize()) {
     Scaffold(
@@ -158,7 +169,7 @@ fun TourLeaderScreen(
                             style = MaterialTheme.typography.titleMedium
                         )
                         Text(
-                            text = if (showSetupStepper) "Langkah ${currentStep + 1} dari 4 · ${stepTitles[currentStep]}" else "Room ID & Peserta Konvoi",
+                            text = if (showSetupStepper) "Langkah ${currentStep + 1} dari 5 · ${stepTitles[currentStep]}" else "Room ID & Peserta Konvoi",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -299,14 +310,14 @@ fun TourLeaderScreen(
                             verticalArrangement = Arrangement.spacedBy(16.dp)
                         ) {
                             when (currentStep) {
-                                // Step 1: Menentukan Tujuan Akhir
+                                // Step 1: Menentukan Titik Keberangkatan (Start)
                                 0 -> {
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                                     ) {
-                                        Icon(Icons.Rounded.Flag, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                                        Text("1. Menentukan Tujuan Akhir", style = MaterialTheme.typography.titleLarge)
+                                        Icon(Icons.Rounded.MyLocation, contentDescription = null, tint = Color(0xFFEA580C))
+                                        Text("1. Titik Keberangkatan (Start)", style = MaterialTheme.typography.titleLarge)
                                     }
 
                                     OutlinedTextField(
@@ -318,8 +329,154 @@ fun TourLeaderScreen(
                                         modifier = Modifier.fillMaxWidth()
                                     )
 
+                                    Button(
+                                        onClick = {
+                                            val ok = onUseGpsAsOrigin()
+                                            coroutineScope.launch {
+                                                if (ok) {
+                                                    snackbarHostState.showSnackbar("Titik keberangkatan diset ke posisi GPS Anda saat ini.")
+                                                } else {
+                                                    snackbarHostState.showSnackbar("GPS perangkat belum siap. Pilih hub populer atau ketuk peta di bawah.")
+                                                }
+                                            }
+                                        },
+                                        modifier = Modifier.fillMaxWidth().height(46.dp),
+                                        shape = RoundedCornerShape(14.dp),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = Color(0xFFEA580C),
+                                            contentColor = Color.White
+                                        )
+                                    ) {
+                                        Icon(Icons.Rounded.MyLocation, contentDescription = null, modifier = Modifier.size(18.dp))
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text("Gunakan Lokasi GPS Saya Sekarang", fontWeight = FontWeight.SemiBold)
+                                    }
+
                                     Text(
-                                        text = "Pilih Destinasi Utama",
+                                        text = "Atau pilih titik kumpul keberangkatan:",
+                                        style = MaterialTheme.typography.labelLarge
+                                    )
+
+                                    REGIONAL_ORIGINS.chunked(2).forEach { pair ->
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            pair.forEach { hub ->
+                                                FilterChip(
+                                                    selected = routeConfig.originName == hub.name,
+                                                    onClick = {
+                                                        onPickOriginLatLng(
+                                                            hub.latitude,
+                                                            hub.longitude,
+                                                            hub.name,
+                                                            String.format(Locale.US, "%s · %.4f, %.4f", hub.address, hub.latitude, hub.longitude)
+                                                        )
+                                                    },
+                                                    label = {
+                                                        Text(
+                                                            text = hub.name,
+                                                            maxLines = 1,
+                                                            overflow = TextOverflow.Ellipsis,
+                                                            fontSize = 11.sp
+                                                        )
+                                                    },
+                                                    modifier = Modifier.weight(1f)
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    OutlinedButton(
+                                        onClick = { mapPickerMode = "origin" },
+                                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                                        shape = RoundedCornerShape(14.dp),
+                                        border = BorderStroke(1.5.dp, Color(0xFFEA580C))
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.AddLocationAlt,
+                                            contentDescription = null,
+                                            tint = Color(0xFFEA580C),
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            text = "Pilih Titik Start di TomTom Maps",
+                                            color = Color(0xFFEA580C),
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    }
+
+                                    val startPoint = routeConfig.waypoints.firstOrNull()
+                                    Surface(
+                                        shape = RoundedCornerShape(14.dp),
+                                        color = Color(0xFFFFF7ED),
+                                        border = BorderStroke(1.dp, Color(0xFFFDBA74)),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(12.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                        ) {
+                                            Surface(
+                                                shape = CircleShape,
+                                                color = Color(0xFFEA580C),
+                                                modifier = Modifier.size(34.dp)
+                                            ) {
+                                                Box(contentAlignment = Alignment.Center) {
+                                                    Icon(
+                                                        imageVector = Icons.Rounded.MyLocation,
+                                                        contentDescription = null,
+                                                        tint = Color.White,
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                }
+                                            }
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = "START · ${routeConfig.originName}",
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 13.sp,
+                                                    color = Color(0xFF9A3412)
+                                                )
+                                                Text(
+                                                    text = routeConfig.originAddress,
+                                                    fontSize = 11.sp,
+                                                    color = Color(0xFF7C2D12),
+                                                    maxLines = 2,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                if (startPoint != null) {
+                                                    Text(
+                                                        text = String.format(
+                                                            Locale.US,
+                                                            "Koordinat Start: %.4f, %.4f",
+                                                            startPoint.latitude,
+                                                            startPoint.longitude
+                                                        ),
+                                                        fontFamily = FontFamily.Monospace,
+                                                        fontSize = 10.sp,
+                                                        color = Color(0xFFEA580C)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Step 2: Menentukan Tujuan Akhir
+                                1 -> {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        Icon(Icons.Rounded.Flag, contentDescription = null, tint = Color(0xFF16A34A))
+                                        Text("2. Menentukan Tujuan Akhir", style = MaterialTheme.typography.titleLarge)
+                                    }
+
+                                    Text(
+                                        text = "Pilih Destinasi Utama dari ${routeConfig.originName}:",
                                         style = MaterialTheme.typography.labelLarge
                                     )
 
@@ -331,7 +488,10 @@ fun TourLeaderScreen(
                                             pair.forEach { preset ->
                                                 FilterChip(
                                                     selected = routeConfig.destinationName == preset.name,
-                                                    onClick = { onSelectPreset(preset) },
+                                                    onClick = {
+                                                        viaPoints = emptyList()
+                                                        onSelectPreset(preset)
+                                                    },
                                                     label = {
                                                         Text(
                                                             text = preset.name,
@@ -346,23 +506,23 @@ fun TourLeaderScreen(
                                     }
 
                                     OutlinedButton(
-                                        onClick = { showDestinationMapPicker = true },
+                                        onClick = { mapPickerMode = "destination" },
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .height(48.dp),
                                         shape = RoundedCornerShape(14.dp),
-                                        border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
+                                        border = BorderStroke(1.5.dp, Color(0xFF16A34A))
                                     ) {
                                         Icon(
                                             imageVector = Icons.Rounded.AddLocationAlt,
                                             contentDescription = null,
-                                            tint = MaterialTheme.colorScheme.primary,
+                                            tint = Color(0xFF16A34A),
                                             modifier = Modifier.size(18.dp)
                                         )
                                         Spacer(modifier = Modifier.width(8.dp))
                                         Text(
-                                            text = "Pilih dari Peta (Pick on Map)",
-                                            color = MaterialTheme.colorScheme.primary,
+                                            text = "Pilih Tujuan di TomTom Maps",
+                                            color = Color(0xFF16A34A),
                                             fontWeight = FontWeight.SemiBold
                                         )
                                     }
@@ -374,60 +534,121 @@ fun TourLeaderScreen(
                                         border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)),
                                         modifier = Modifier.fillMaxWidth()
                                     ) {
-                                        Row(
+                                        Column(
                                             modifier = Modifier.padding(12.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                            verticalArrangement = Arrangement.spacedBy(8.dp)
                                         ) {
-                                            Surface(
-                                                shape = CircleShape,
-                                                color = MaterialTheme.colorScheme.primary,
-                                                modifier = Modifier.size(34.dp)
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                                             ) {
-                                                Box(contentAlignment = Alignment.Center) {
-                                                    Icon(
-                                                        imageVector = Icons.Rounded.LocationOn,
-                                                        contentDescription = null,
-                                                        tint = Color.White,
-                                                        modifier = Modifier.size(18.dp)
-                                                    )
-                                                }
-                                            }
-                                            Column(modifier = Modifier.weight(1f)) {
+                                                Icon(Icons.Rounded.MyLocation, contentDescription = null, tint = Color(0xFFEA580C), modifier = Modifier.size(16.dp))
                                                 Text(
-                                                    text = routeConfig.destinationName,
-                                                    fontWeight = FontWeight.Bold,
-                                                    fontSize = 14.sp,
-                                                    color = MaterialTheme.colorScheme.onPrimaryContainer
-                                                )
-                                                Text(
-                                                    text = routeConfig.destinationAddress,
-                                                    fontSize = 11.sp,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                    maxLines = 2,
+                                                    text = "Dari: ${routeConfig.originName}",
+                                                    fontSize = 12.sp,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    maxLines = 1,
                                                     overflow = TextOverflow.Ellipsis
                                                 )
-                                                if (destPoint != null) {
+                                            }
+                                            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                            ) {
+                                                Surface(
+                                                    shape = CircleShape,
+                                                    color = Color(0xFF16A34A),
+                                                    modifier = Modifier.size(32.dp)
+                                                ) {
+                                                    Box(contentAlignment = Alignment.Center) {
+                                                        Icon(
+                                                            imageVector = Icons.Rounded.Flag,
+                                                            contentDescription = null,
+                                                            tint = Color.White,
+                                                            modifier = Modifier.size(16.dp)
+                                                        )
+                                                    }
+                                                }
+                                                Column(modifier = Modifier.weight(1f)) {
                                                     Text(
-                                                        text = String.format(
-                                                            Locale.US,
-                                                            "Koordinat: %.4f, %.4f · Estimasi %d km",
-                                                            destPoint.latitude,
-                                                            destPoint.longitude,
-                                                            routeConfig.totalRouteMeters / 1000
-                                                        ),
-                                                        fontFamily = FontFamily.Monospace,
-                                                        fontSize = 10.sp,
-                                                        color = MaterialTheme.colorScheme.primary
+                                                        text = routeConfig.destinationName,
+                                                        fontWeight = FontWeight.Bold,
+                                                        fontSize = 14.sp,
+                                                        color = MaterialTheme.colorScheme.onPrimaryContainer
                                                     )
+                                                    Text(
+                                                        text = routeConfig.destinationAddress,
+                                                        fontSize = 11.sp,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                        maxLines = 2,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                    if (destPoint != null) {
+                                                        Text(
+                                                            text = String.format(
+                                                                Locale.US,
+                                                                "Tujuan: %.4f, %.4f · Est. %d km",
+                                                                destPoint.latitude,
+                                                                destPoint.longitude,
+                                                                routeConfig.totalRouteMeters / 1000
+                                                            ),
+                                                            fontFamily = FontFamily.Monospace,
+                                                            fontSize = 10.sp,
+                                                            color = MaterialTheme.colorScheme.primary
+                                                        )
+                                                    }
                                                 }
                                             }
                                         }
                                     }
                                 }
 
-                                // Step 2: Menggambar / Pilih Jalur
-                                1 -> {
+                                // Step 3: Memilih & Menggambar Rute yang Diambil
+                                2 -> {
+                                    val startPt = routeConfig.waypoints.firstOrNull()
+                                    val endPt = routeConfig.waypoints.lastOrNull()
+                                    val viaKey = remember(startPt, endPt, viaPoints, routeConfig.routePreference, vehicleType) {
+                                        val viaSig = viaPoints.joinToString("|") {
+                                            String.format(Locale.US, "%.4f,%.4f", it.latitude, it.longitude)
+                                        }
+                                        String.format(
+                                            Locale.US,
+                                            "%s|%s|%.4f,%.4f->%.4f,%.4f|%s",
+                                            vehicleType.name,
+                                            routeConfig.routePreference.id,
+                                            startPt?.latitude ?: 0.0,
+                                            startPt?.longitude ?: 0.0,
+                                            endPt?.latitude ?: 0.0,
+                                            endPt?.longitude ?: 0.0,
+                                            viaSig
+                                        )
+                                    }
+
+                                    LaunchedEffect(viaKey) {
+                                        if (startPt != null && endPt != null) {
+                                            isComputingPreviewRoute = true
+                                            val inputWaypoints = listOf(startPt) + viaPoints + listOf(endPt)
+                                            val travelMode = if (vehicleType == VehicleType.MOBIL) "car" else "motorcycle"
+                                            val res = TomTomApiService.calculateRoute(
+                                                waypoints = inputWaypoints,
+                                                travelMode = travelMode,
+                                                routePreference = routeConfig.routePreference
+                                            )
+                                            isComputingPreviewRoute = false
+                                            if (res != null && res.path.size >= 2) {
+                                                previewDurationMin = (res.durationMillis / 60_000L).toInt().coerceAtLeast(1)
+                                                val snapped = GeoUtils.toRoutePoints(
+                                                    GeoUtils.downsampleLatLng(
+                                                        res.path.map { LatLngGeo(it.latitude, it.longitude) },
+                                                        maxPoints = 90
+                                                    )
+                                                )
+                                                onRouteComputed(res.distanceMeters, snapped, res.instructions)
+                                            }
+                                        }
+                                    }
+
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
                                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -435,23 +656,94 @@ fun TourLeaderScreen(
                                     ) {
                                         Row(
                                             verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                            modifier = Modifier.weight(1f)
                                         ) {
                                             Icon(Icons.Rounded.Route, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                                            Text("2. Gambar / Pilih Jalur", style = MaterialTheme.typography.titleLarge)
+                                            Text("3. Pilih & Gambar Rute", style = MaterialTheme.typography.titleLarge)
                                         }
-                                        TextButton(onClick = onResetDefaultWaypoints) {
-                                            Icon(Icons.Rounded.RestartAlt, contentDescription = null, modifier = Modifier.size(16.dp))
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Text("Reset")
+                                        Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                                            if (viaPoints.isNotEmpty()) {
+                                                TextButton(onClick = { viaPoints = viaPoints.dropLast(1) }) {
+                                                    Text("Hapus Titik")
+                                                }
+                                            }
+                                            TextButton(
+                                                onClick = {
+                                                    viaPoints = emptyList()
+                                                    onResetDefaultWaypoints()
+                                                }
+                                            ) {
+                                                Icon(Icons.Rounded.RestartAlt, contentDescription = null, modifier = Modifier.size(16.dp))
+                                                Spacer(modifier = Modifier.width(3.dp))
+                                                Text("Reset")
+                                            }
                                         }
                                     }
 
                                     Text(
-                                        text = "Ketuk Google Map di bawah untuk menambah titik belok jalur baru menuju ${routeConfig.destinationName}.",
+                                        text = "Pilih jenis rute lalu ketuk peta jika ingin menambah titik belokan jalur (${routeConfig.originName} → ${routeConfig.destinationName}).",
                                         style = MaterialTheme.typography.bodyMedium,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        RoutePreference.entries.forEach { pref ->
+                                            FilterChip(
+                                                selected = routeConfig.routePreference == pref,
+                                                onClick = { onSelectRoutePreference(pref) },
+                                                label = {
+                                                    Text(
+                                                        text = pref.label,
+                                                        fontSize = 11.sp,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                },
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                        }
+                                    }
+
+                                    Surface(
+                                        shape = RoundedCornerShape(12.dp),
+                                        color = Color(0xFFEFF6FF),
+                                        border = BorderStroke(1.dp, Color(0xFFBFDBFE)),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                        ) {
+                                            if (isComputingPreviewRoute) {
+                                                CircularProgressIndicator(
+                                                    modifier = Modifier.size(16.dp),
+                                                    strokeWidth = 2.dp
+                                                )
+                                                Text(
+                                                    text = "Menghitung rute jalan TomTom (${routeConfig.routePreference.label})...",
+                                                    fontSize = 12.sp,
+                                                    color = Color(0xFF1E40AF)
+                                                )
+                                            } else {
+                                                val distKmText = String.format(Locale.US, "%.1f km", routeConfig.totalRouteMeters / 1000.0)
+                                                val durText = previewDurationMin?.let { " · Est. $it mnt" } ?: ""
+                                                val navCount = if (routeConfig.routeInstructions.isNotEmpty()) {
+                                                    " · ${routeConfig.routeInstructions.size} panduan belokan"
+                                                } else ""
+                                                Text(
+                                                    text = "$distKmText$durText · ${routeConfig.routePreference.label}$navCount",
+                                                    fontSize = 12.sp,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = Color(0xFF1E3A8A)
+                                                )
+                                            }
+                                        }
+                                    }
 
                                     val previewLat = if (routeConfig.waypoints.isNotEmpty()) {
                                         routeConfig.waypoints.map { it.latitude }.average()
@@ -460,14 +752,16 @@ fun TourLeaderScreen(
                                         routeConfig.waypoints.map { it.longitude }.average()
                                     } else 106.925
                                     val routeEditorController = rememberTomTomMapController()
-                                    val editorPins = remember(routeConfig.waypoints) {
+                                    val editorPins = remember(startPt, endPt, viaPoints) {
                                         buildList<TomTomMapPin> {
-                                            routeConfig.waypoints.forEachIndexed { idx, pt ->
-                                                when (idx) {
-                                                    0 -> add(TomTomMapPin.WaypointBadgePin(pt.latitude, pt.longitude, "Start", 0xFFEA580C.toInt()))
-                                                    routeConfig.waypoints.lastIndex -> add(TomTomMapPin.WaypointBadgePin(pt.latitude, pt.longitude, "Tujuan", 0xFF16A34A.toInt()))
-                                                    else -> add(TomTomMapPin.WaypointBadgePin(pt.latitude, pt.longitude, "$idx", 0xFF1D4ED8.toInt()))
-                                                }
+                                            if (startPt != null) {
+                                                add(TomTomMapPin.WaypointBadgePin(startPt.latitude, startPt.longitude, "Start", 0xFFEA580C.toInt()))
+                                            }
+                                            viaPoints.forEachIndexed { idx, pt ->
+                                                add(TomTomMapPin.WaypointBadgePin(pt.latitude, pt.longitude, "Via ${idx + 1}", 0xFF1D4ED8.toInt()))
+                                            }
+                                            if (endPt != null) {
+                                                add(TomTomMapPin.WaypointBadgePin(endPt.latitude, endPt.longitude, "Tujuan", 0xFF16A34A.toInt()))
                                             }
                                         }
                                     }
@@ -475,7 +769,7 @@ fun TourLeaderScreen(
                                     Box(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .height(230.dp)
+                                            .height(235.dp)
                                             .clip(RoundedCornerShape(16.dp))
                                             .background(Color(0xFFEEF2F6))
                                     ) {
@@ -494,32 +788,29 @@ fun TourLeaderScreen(
                                                     latitude = lat,
                                                     longitude = lng
                                                 )
-                                                val current = routeConfig.waypoints
-                                                val updated = if (current.size >= 2) {
-                                                    current.dropLast(1) + newPt + current.last()
-                                                } else {
-                                                    current + newPt
+                                                viaPoints = viaPoints + newPt
+                                                if (startPt != null && endPt != null) {
+                                                    onUpdateWaypoints(listOf(startPt) + viaPoints + listOf(endPt), null)
                                                 }
-                                                onUpdateWaypoints(updated, null)
                                             }
                                         )
                                     }
 
                                     Text(
-                                        text = "${routeConfig.waypoints.size} titik jalur aktif di TomTom Maps · Ketuk peta untuk tambah belokan",
+                                        text = "${viaPoints.size} titik singgah tambahan · Ketuk peta untuk belok lewat jalur tertentu",
                                         style = MaterialTheme.typography.bodyMedium,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
 
-                                // Step 3: Menambahkan Titik Istirahat (Checkpoint)
-                                2 -> {
+                                // Step 4: Menambahkan Titik Istirahat (Checkpoint)
+                                3 -> {
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                                     ) {
                                         Icon(Icons.Rounded.LocalCafe, contentDescription = null, tint = Color(0xFF0F766E))
-                                        Text("3. Titik Istirahat (Checkpoint)", style = MaterialTheme.typography.titleLarge)
+                                        Text("4. Titik Istirahat (Checkpoint)", style = MaterialTheme.typography.titleLarge)
                                     }
 
                                     OutlinedTextField(
@@ -589,14 +880,14 @@ fun TourLeaderScreen(
                                     }
                                 }
 
-                                // Step 4: Mengatur Batas Jarak Tertinggal (Interactive Slider)
-                                3 -> {
+                                // Step 5: Mengatur Batas Jarak & Konfirmasi Konvoi
+                                4 -> {
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                                     ) {
                                         Icon(Icons.Rounded.Speed, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                                        Text("4. Batas Jarak Tertinggal", style = MaterialTheme.typography.titleLarge)
+                                        Text("5. Batas Jarak & Konfirmasi", style = MaterialTheme.typography.titleLarge)
                                     }
 
                                     val kmValue = (routeConfig.maxStragglerDistanceMeters / 1000f).coerceIn(0.5f, 5.0f)
@@ -670,31 +961,42 @@ fun TourLeaderScreen(
                                         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                                         modifier = Modifier.fillMaxWidth()
                                     ) {
-                                        Row(
+                                        Column(
                                             modifier = Modifier.padding(12.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                            verticalArrangement = Arrangement.spacedBy(6.dp)
                                         ) {
-                                            Icon(
-                                                imageVector = Icons.Rounded.Flag,
-                                                contentDescription = null,
-                                                tint = MaterialTheme.colorScheme.secondary,
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                            Column(modifier = Modifier.weight(1f)) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                Icon(Icons.Rounded.MyLocation, contentDescription = null, tint = Color(0xFFEA580C), modifier = Modifier.size(16.dp))
                                                 Text(
-                                                    text = "Tujuan Akhir: ${routeConfig.destinationName}",
+                                                    text = "Start: ${routeConfig.originName}",
                                                     fontWeight = FontWeight.SemiBold,
-                                                    fontSize = 12.sp
-                                                )
-                                                Text(
-                                                    text = routeConfig.destinationAddress,
-                                                    fontSize = 11.sp,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    fontSize = 12.sp,
                                                     maxLines = 1,
                                                     overflow = TextOverflow.Ellipsis
                                                 )
                                             }
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                Icon(Icons.Rounded.Flag, contentDescription = null, tint = Color(0xFF16A34A), modifier = Modifier.size(16.dp))
+                                                Text(
+                                                    text = "Tujuan: ${routeConfig.destinationName}",
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    fontSize = 12.sp,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                            Text(
+                                                text = "Rute ${routeConfig.routePreference.label} · ${String.format(Locale.US, "%.1f km", routeConfig.totalRouteMeters / 1000.0)} · ${routeConfig.checkpoints.size} Rest Area",
+                                                fontSize = 11.sp,
+                                                color = MaterialTheme.colorScheme.primary,
+                                                fontFamily = FontFamily.Monospace
+                                            )
                                         }
                                     }
                                 }
@@ -715,7 +1017,7 @@ fun TourLeaderScreen(
                                         Text("Sebelumnya")
                                     }
                                 }
-                                if (currentStep < 3) {
+                                if (currentStep < 4) {
                                     Button(
                                         onClick = { currentStep++ },
                                         modifier = Modifier.weight(1f).height(48.dp),
@@ -874,21 +1176,35 @@ fun TourLeaderScreen(
         }
     }
 
-    if (showDestinationMapPicker) {
-        val currentEnd = routeConfig.waypoints.lastOrNull()
-            ?: RoutePoint(0.86f, 0.14f, -6.7003, 106.9960)
+    if (mapPickerMode != null) {
+        val isOriginMode = mapPickerMode == "origin"
+        val currentPoint = if (isOriginMode) {
+            routeConfig.waypoints.firstOrNull() ?: RoutePoint(0.14f, 0.86f, -6.7100, 106.8500)
+        } else {
+            routeConfig.waypoints.lastOrNull() ?: RoutePoint(0.86f, 0.14f, -6.7003, 106.9960)
+        }
         DestinationMapPickerDialog(
-            initialLat = currentEnd.latitude,
-            initialLng = currentEnd.longitude,
-            initialName = routeConfig.destinationName,
+            isOriginMode = isOriginMode,
+            initialLat = currentPoint.latitude,
+            initialLng = currentPoint.longitude,
+            initialName = if (isOriginMode) routeConfig.originName else routeConfig.destinationName,
             userGpsLat = userGpsLat,
             userGpsLng = userGpsLng,
-            onDismiss = { showDestinationMapPicker = false },
+            onDismiss = { mapPickerMode = null },
             onConfirm = { lat, lng, placeName, addressLabel ->
-                onPickDestinationLatLng(lat, lng, placeName, addressLabel)
-                showDestinationMapPicker = false
-                coroutineScope.launch {
-                    snackbarHostState.showSnackbar("Lokasi tujuan disimpan: $placeName")
+                if (isOriginMode) {
+                    onPickOriginLatLng(lat, lng, placeName, addressLabel)
+                    mapPickerMode = null
+                    coroutineScope.launch {
+                        snackbarHostState.showSnackbar("Titik Start disimpan: $placeName")
+                    }
+                } else {
+                    viaPoints = emptyList()
+                    onPickDestinationLatLng(lat, lng, placeName, addressLabel)
+                    mapPickerMode = null
+                    coroutineScope.launch {
+                        snackbarHostState.showSnackbar("Lokasi tujuan disimpan: $placeName")
+                    }
                 }
             }
         )
@@ -970,6 +1286,13 @@ private data class MapLandmark(
     val longitude: Double
 )
 
+private val REGIONAL_ORIGINS = listOf(
+    MapLandmark("Simpang Gadog", "Jl. Raya Ciawi - Gadog KM 45", -6.6520, 106.8680),
+    MapLandmark("Rest Area KM 57", "Tol Jakarta-Cikampek KM 57", -6.3690, 107.3590),
+    MapLandmark("Gerbang Tol Pasteur", "Jl. Dr. Djunjunan, Bandung", -6.8902, 107.5815),
+    MapLandmark("Cilandak Town Square", "Jl. TB Simatupang Kav 17, Jaksel", -6.2913, 106.7988)
+)
+
 private val REGIONAL_LANDMARKS = listOf(
     MapLandmark("Puncak Pass Resort", "Jl. Raya Puncak KM 90, Cisarua", -6.7003, 106.9960),
     MapLandmark("Taman Safari Cisarua", "Jl. Kapten Harun Kabir No. 724", -6.7124, 106.9502),
@@ -982,6 +1305,7 @@ private val REGIONAL_LANDMARKS = listOf(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun DestinationMapPickerDialog(
+    isOriginMode: Boolean = false,
     initialLat: Double,
     initialLng: Double,
     initialName: String,
@@ -1026,7 +1350,10 @@ private fun DestinationMapPickerDialog(
                 TopAppBar(
                     title = {
                         Column {
-                            Text("Pilih Tujuan Akhir di TomTom Maps", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                text = if (isOriginMode) "Pilih Titik Start di TomTom Maps" else "Pilih Tujuan Akhir di TomTom Maps",
+                                style = MaterialTheme.typography.titleMedium
+                            )
                             Text(
                                 text = "Cari tempat atau ketuk lokasi di peta",
                                 style = MaterialTheme.typography.bodyMedium,
@@ -1131,19 +1458,30 @@ private fun DestinationMapPickerDialog(
                     }
                 }
 
-                val pickerPins = remember(pinLatLng, placeName, userGpsLat, userGpsLng) {
+                val pickerPins = remember(pinLatLng, placeName, userGpsLat, userGpsLng, isOriginMode) {
                     buildList<TomTomMapPin> {
                         if (userGpsLat != null && userGpsLng != null) {
-                            add(TomTomMapPin.SimpleDotPin(userGpsLat, userGpsLng, 0xFFEA580C.toInt()))
+                            add(TomTomMapPin.SimpleDotPin(userGpsLat, userGpsLng, 0xFF2563EB.toInt()))
                         }
-                        add(
-                            TomTomMapPin.DestinationPin(
-                                latitude = pinLatLng.lat,
-                                longitude = pinLatLng.lng,
-                                title = placeName.ifBlank { "Titik Tujuan Konvoi" },
-                                subtitle = String.format(Locale.US, "%.4f, %.4f", pinLatLng.lat, pinLatLng.lng)
+                        if (isOriginMode) {
+                            add(
+                                TomTomMapPin.WaypointBadgePin(
+                                    latitude = pinLatLng.lat,
+                                    longitude = pinLatLng.lng,
+                                    label = "Start: ${placeName.ifBlank { "Keberangkatan" }.take(14)}",
+                                    colorHex = 0xFFEA580C.toInt()
+                                )
                             )
-                        )
+                        } else {
+                            add(
+                                TomTomMapPin.DestinationPin(
+                                    latitude = pinLatLng.lat,
+                                    longitude = pinLatLng.lng,
+                                    title = placeName.ifBlank { "Titik Tujuan Konvoi" },
+                                    subtitle = String.format(Locale.US, "%.4f, %.4f", pinLatLng.lat, pinLatLng.lng)
+                                )
+                            )
+                        }
                     }
                 }
 
@@ -1267,7 +1605,7 @@ private fun DestinationMapPickerDialog(
                         OutlinedTextField(
                             value = placeName,
                             onValueChange = { placeName = it },
-                            label = { Text("Nama Lokasi Tujuan") },
+                            label = { Text(if (isOriginMode) "Nama Titik Keberangkatan (Start)" else "Nama Lokasi Tujuan") },
                             singleLine = true,
                             shape = RoundedCornerShape(12.dp),
                             modifier = Modifier.fillMaxWidth()
@@ -1297,14 +1635,14 @@ private fun DestinationMapPickerDialog(
                                     onConfirm(
                                         pinLatLng.lat,
                                         pinLatLng.lng,
-                                        placeName.trim().ifBlank { "Titik Tujuan TomTom" },
+                                        placeName.trim().ifBlank { if (isOriginMode) "Titik Start TomTom" else "Titik Tujuan TomTom" },
                                         resolvedAddress
                                     )
                                 },
                                 modifier = Modifier.weight(1.6f).height(48.dp),
                                 shape = RoundedCornerShape(14.dp),
                                 colors = ButtonDefaults.buttonColors(
-                                    containerColor = MaterialTheme.colorScheme.secondary,
+                                    containerColor = if (isOriginMode) Color(0xFFEA580C) else MaterialTheme.colorScheme.secondary,
                                     contentColor = Color.White
                                 )
                             ) {

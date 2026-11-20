@@ -121,6 +121,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -141,6 +142,7 @@ import com.konvoiku.touring.model.MemberConditionStatus
 import com.konvoiku.touring.model.OffRouteAlertState
 import com.konvoiku.touring.model.RestCheckpoint
 import com.konvoiku.touring.model.RoomMessage
+import com.konvoiku.touring.model.RouteInstruction
 import com.konvoiku.touring.model.RoutePoint
 import com.konvoiku.touring.model.SosEmergencyState
 import com.konvoiku.touring.model.StragglerAlertState
@@ -179,6 +181,9 @@ fun LiveTrackingMapScreen(
     pendingCheckpointName: String,
     isOffRouteSimActive: Boolean,
     isStragglerSimActive: Boolean,
+    canPingTomTomRouting: Boolean = role == UserRole.TOUR_LEADER,
+    isEffectiveLeader: Boolean = role == UserRole.TOUR_LEADER,
+    isLeaderTroubleSimActive: Boolean = false,
     gpsStatus: GpsTrackingStatus = GpsTrackingStatus.IDLE,
     gpsAccuracyMeters: Int = 20,
     destinationPresets: List<ConvoyViewModel.DestinationPreset>,
@@ -198,6 +203,8 @@ fun LiveTrackingMapScreen(
     onToggleSoundAlert: () -> Unit,
     onToggleOffRouteSim: () -> Unit,
     onToggleStragglerSim: () -> Unit,
+    onToggleLeaderTroubleSim: () -> Unit = {},
+    onReclaimLeader: () -> Unit = {},
     onTriggerSos: () -> Unit,
     onResolveSos: () -> Unit,
     onSendTextMessage: (String) -> Unit,
@@ -208,10 +215,11 @@ fun LiveTrackingMapScreen(
     onAssignSweeper: (String) -> Unit,
     onFinishAndSaveTrip: () -> Unit,
     onExitRoom: () -> Unit,
-    onRouteComputed: (Int, List<RoutePoint>) -> Unit = { _, _ -> }
+    onRouteComputed: (Int, List<RoutePoint>, List<RouteInstruction>) -> Unit = { _, _, _ -> }
 ) {
     var mapStyle by remember { mutableStateOf(TomTomMapStyle.ROAD) }
     var showTraffic by remember { mutableStateOf(true) }
+    var isNavigationMode by remember(activeRoom?.roomId) { mutableStateOf(true) }
     var isParticipantsExpanded by remember { mutableStateOf(false) }
     var showChatSheet by remember { mutableStateOf(false) }
     var showLeaderSettingsSheet by remember { mutableStateOf(false) }
@@ -309,18 +317,53 @@ fun LiveTrackingMapScreen(
     val initialLng = trackedMember?.mapPosition?.longitude ?: 106.925
     val mapController = rememberTomTomMapController()
     var isAutoFollowing by remember { mutableStateOf(true) }
+    val activeNavMode = isNavigationMode && !isPickingDestinationOnMap && !isPickingCheckpointOnMap
+
+    val navSubject = currentUser ?: trackedMember
+    val navGuidance = remember(
+        navSubject?.mapPosition?.latitude,
+        navSubject?.mapPosition?.longitude,
+        navSubject?.mapPosition?.speedKmh,
+        navSubject?.mapPosition?.heading,
+        navSubject?.mapPosition?.routeProgress,
+        navSubject?.offRouteMeters,
+        routeConfig.waypoints,
+        routeConfig.routeInstructions,
+        routeConfig.offRouteToleranceMeters,
+        routeConfig.totalRouteMeters
+    ) {
+        GeoUtils.computeNavigationGuidance(
+            lat = navSubject?.mapPosition?.latitude ?: initialLat,
+            lng = navSubject?.mapPosition?.longitude ?: initialLng,
+            speedKmh = navSubject?.mapPosition?.speedKmh ?: 0,
+            rawHeadingDeg = navSubject?.mapPosition?.heading ?: 0,
+            waypoints = routeConfig.waypoints,
+            instructions = routeConfig.routeInstructions,
+            offRouteMeters = navSubject?.offRouteMeters ?: 0,
+            toleranceMeters = routeConfig.offRouteToleranceMeters,
+            totalRouteMeters = routeConfig.totalRouteMeters,
+            routeProgress = navSubject?.mapPosition?.routeProgress ?: 0f
+        )
+    }
 
     var tomTomRoadPath by remember(routeConfig.waypoints) {
         mutableStateOf(routeConfig.waypoints)
     }
 
-    val routeEndpointsKey = remember(routeConfig.destinationName, routeConfig.waypoints) {
+    val routeEndpointsKey = remember(
+        routeConfig.destinationName,
+        routeConfig.routePreference,
+        routeConfig.waypoints,
+        currentUser?.vehicleType
+    ) {
         val first = routeConfig.waypoints.firstOrNull()
         val last = routeConfig.waypoints.lastOrNull()
         String.format(
             Locale.US,
-            "%s|%.5f,%.5f->%.5f,%.5f",
+            "%s|%s|%s|%.5f,%.5f->%.5f,%.5f",
             routeConfig.destinationName,
+            routeConfig.routePreference.id,
+            currentUser?.vehicleType?.name ?: "MOTOR",
             first?.latitude ?: 0.0,
             first?.longitude ?: 0.0,
             last?.latitude ?: 0.0,
@@ -328,9 +371,14 @@ fun LiveTrackingMapScreen(
         )
     }
 
-    LaunchedEffect(routeEndpointsKey) {
-        if (routeConfig.waypoints.size >= 2) {
-            val res = TomTomApiService.calculateRoute(routeConfig.waypoints)
+    LaunchedEffect(routeEndpointsKey, canPingTomTomRouting) {
+        if (canPingTomTomRouting && routeConfig.waypoints.size >= 2) {
+            val travelMode = if (currentUser?.vehicleType == VehicleType.MOBIL) "car" else "motorcycle"
+            val res = TomTomApiService.calculateRoute(
+                waypoints = routeConfig.waypoints,
+                travelMode = travelMode,
+                routePreference = routeConfig.routePreference
+            )
             if (res != null && res.path.size >= 2) {
                 val snapped = GeoUtils.toRoutePoints(
                     GeoUtils.downsampleLatLng(
@@ -339,7 +387,7 @@ fun LiveTrackingMapScreen(
                     )
                 )
                 tomTomRoadPath = snapped
-                onRouteComputed(res.distanceMeters, snapped)
+                onRouteComputed(res.distanceMeters, snapped, res.instructions)
             }
         }
     }
@@ -348,12 +396,28 @@ fun LiveTrackingMapScreen(
         trackedMember?.id,
         trackedMember?.mapPosition?.latitude,
         trackedMember?.mapPosition?.longitude,
+        activeNavMode,
+        navGuidance.headingDegrees,
         isAutoFollowing
     ) {
         if (!isAutoFollowing) return@LaunchedEffect
-        val m = trackedMember ?: return@LaunchedEffect
-        val targetZoom = mapController.currentZoom.coerceAtLeast(14.5)
-        mapController.animateTo(m.mapPosition.latitude, m.mapPosition.longitude, targetZoom)
+        val m = (if (activeNavMode) navSubject else trackedMember) ?: return@LaunchedEffect
+        val target = if (activeNavMode) {
+            GeoUtils.offsetPointAlongHeading(
+                lat = m.mapPosition.latitude,
+                lng = m.mapPosition.longitude,
+                headingDeg = navGuidance.headingDegrees.toDouble(),
+                offsetMeters = 85.0
+            )
+        } else {
+            LatLngGeo(m.mapPosition.latitude, m.mapPosition.longitude)
+        }
+        val targetZoom = if (activeNavMode) {
+            mapController.currentZoom.coerceAtLeast(16.8)
+        } else {
+            mapController.currentZoom.coerceAtLeast(14.5)
+        }
+        mapController.animateTo(target.lat, target.lng, targetZoom)
     }
 
     LaunchedEffect(gpsStatus) {
@@ -400,10 +464,50 @@ fun LiveTrackingMapScreen(
                     }
                 },
                 actions = {
+                    Surface(
+                        onClick = {
+                            val next = !isNavigationMode
+                            isNavigationMode = next
+                            if (next) {
+                                isAutoFollowing = true
+                                val m = navSubject
+                                if (m != null) {
+                                    val ahead = GeoUtils.offsetPointAlongHeading(
+                                        m.mapPosition.latitude,
+                                        m.mapPosition.longitude,
+                                        navGuidance.headingDegrees.toDouble(),
+                                        85.0
+                                    )
+                                    mapController.animateTo(ahead.lat, ahead.lng, 16.8)
+                                }
+                            } else {
+                                mapController.currentZoom
+                            }
+                        },
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (isNavigationMode) Color(0xFFEA580C) else MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = if (isNavigationMode) Color.White else MaterialTheme.colorScheme.primary
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            NavCompassArrowCanvasIcon(
+                                tint = if (isNavigationMode) Color.White else Color(0xFFEA580C),
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Text(
+                                text = if (isNavigationMode) "Peta" else "Navigasi",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
                     TextButton(onClick = { showFinishTripDialog = true }) {
                         Text("Selesai", fontWeight = FontWeight.SemiBold)
                     }
-                    if (role == UserRole.TOUR_LEADER) {
+                    if (isEffectiveLeader) {
                         IconButton(onClick = { showLeaderSettingsSheet = true }) {
                             Icon(
                                 imageVector = Icons.Rounded.Settings,
@@ -509,7 +613,7 @@ fun LiveTrackingMapScreen(
                                     ParticipantExpandedRow(
                                         member = member,
                                         etaInfo = memberEta,
-                                        viewerIsLeader = role == UserRole.TOUR_LEADER,
+                                        viewerIsLeader = isEffectiveLeader,
                                         isSelected = member.id == focusedMember?.id,
                                         onAssignSweeper = { onAssignSweeper(member.id) },
                                         onClick = {
@@ -613,6 +717,43 @@ fun LiveTrackingMapScreen(
                 }
             }
 
+            if (activeRoom?.leaderTroubleActive == true) {
+                val actingMember = members.firstOrNull {
+                    it.isActingLeader || (activeRoom.actingLeaderUid.isNotBlank() && it.id == activeRoom.actingLeaderUid)
+                }
+                Surface(
+                    color = Color(0xFF6D28D9),
+                    contentColor = Color.White,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(Icons.Rounded.Shield, contentDescription = "Failover Leader", modifier = Modifier.size(18.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "TAKEOVER OTOMATIS · Plt. Leader: ${actingMember?.fullName ?: "Co-Leader"}",
+                                style = MaterialTheme.typography.labelLarge.copy(fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            )
+                            Text(
+                                text = "${activeRoom.leaderTroubleReason.ifBlank { "Leader gangguan sinyal" }} · Ping TomTom API dialihkan ke Plt. Leader.",
+                                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 11.sp),
+                                color = Color.White.copy(alpha = 0.9f)
+                            )
+                        }
+                        if (role == UserRole.TOUR_LEADER || !activeRoom.isSyncedRoom || currentUser?.id == activeRoom.leaderUid) {
+                            TextButton(onClick = onReclaimLeader) {
+                                Text("Pulihkan", color = Color(0xFFDDD6FE), fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+            }
+
             // Real Live TomTom Maps Viewport (osmdroid + TomTom Tiles & Routing)
             Box(
                 modifier = Modifier
@@ -668,9 +809,12 @@ fun LiveTrackingMapScreen(
                     controller = mapController,
                     initialLat = initialLat,
                     initialLng = initialLng,
-                    initialZoom = 14.5,
+                    initialZoom = if (activeNavMode) 16.8 else 14.5,
                     mapStyle = mapStyle,
                     showTraffic = showTraffic,
+                    isNavigationMode = activeNavMode,
+                    navigationHeadingDeg = navGuidance.headingDegrees.toFloat(),
+                    navigatedMemberId = navSubject?.id,
                     polylinePoints = tomTomRoadPath,
                     pins = mapPins,
                     onUserDrag = { isAutoFollowing = false },
@@ -691,6 +835,71 @@ fun LiveTrackingMapScreen(
                         }
                     }
                 )
+
+                // Top Turn-by-Turn GPS Navigation HUD Banner
+                if (activeNavMode) {
+                    Surface(
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .fillMaxWidth()
+                            .padding(start = 12.dp, top = 12.dp, end = 68.dp),
+                        shape = RoundedCornerShape(16.dp),
+                        color = if (navGuidance.isOffRoute) Color(0xF0DC2626) else Color(0xF0065F46),
+                        contentColor = Color.White,
+                        border = BorderStroke(
+                            1.dp,
+                            if (navGuidance.isOffRoute) Color(0xFFFCA5A5) else Color(0xFF34D399).copy(alpha = 0.45f)
+                        ),
+                        shadowElevation = 8.dp
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = Color.White.copy(alpha = 0.16f),
+                                modifier = Modifier.size(42.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    TurnManeuverCanvasIcon(
+                                        maneuver = navGuidance.maneuver,
+                                        tint = Color.White,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                }
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(
+                                    verticalAlignment = Alignment.Bottom,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        text = navGuidance.distanceToTurnLabel,
+                                        fontSize = 18.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                    Text(
+                                        text = if (navGuidance.isOffRoute) "Keluar Jalur" else navGuidance.streetName,
+                                        fontSize = 11.sp,
+                                        color = Color.White.copy(alpha = 0.85f),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                Text(
+                                    text = navGuidance.instructionText,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
+                }
 
                 // Map Tap Picking Hint
                 if (isPickingDestinationOnMap || isPickingCheckpointOnMap) {
@@ -733,7 +942,10 @@ fun LiveTrackingMapScreen(
                 Column(
                     modifier = Modifier
                         .align(Alignment.TopStart)
-                        .padding(12.dp),
+                        .padding(
+                            start = 12.dp,
+                            top = if (activeNavMode) 88.dp else 12.dp
+                        ),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -806,6 +1018,31 @@ fun LiveTrackingMapScreen(
                         }
                     }
 
+                    // Economical TomTom API Key Ping Indicator Badge
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (canPingTomTomRouting) Color(0xEB4338CA) else Color(0xEB0F766E),
+                        contentColor = Color.White,
+                        shadowElevation = 3.dp
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            Icon(Icons.Rounded.Route, contentDescription = null, modifier = Modifier.size(12.dp))
+                            Text(
+                                text = if (canPingTomTomRouting) {
+                                    if (activeRoom?.leaderTroubleActive == true) "Ping TomTom: Plt. Leader" else "Ping TomTom: HP Leader"
+                                } else {
+                                    "Salinan Rute Leader (Hemat API)"
+                                },
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
+
                     if (gpsStatus == GpsTrackingStatus.DENIED) {
                         Surface(
                             shape = RoundedCornerShape(10.dp),
@@ -840,8 +1077,67 @@ fun LiveTrackingMapScreen(
                             onClick = onToggleStragglerSim,
                             label = { Text("Uji Tertinggal", fontSize = 11.sp) }
                         )
+                        FilterChip(
+                            selected = isLeaderTroubleSimActive,
+                            onClick = onToggleLeaderTroubleSim,
+                            label = { Text("Uji Trouble Leader", fontSize = 11.sp) }
+                        )
                     }
 
+                }
+
+                // Bottom-Left Digital Speedometer & Compass in GPS Navigation Mode
+                if (activeNavMode) {
+                    Surface(
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(start = 12.dp, bottom = 18.dp),
+                        shape = RoundedCornerShape(16.dp),
+                        color = Color(0xEB0F172A),
+                        contentColor = Color.White,
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f)),
+                        shadowElevation = 8.dp
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(horizontal = 13.dp, vertical = 9.dp),
+                            verticalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.Bottom,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text(
+                                    text = "${navGuidance.speedKmh}",
+                                    fontSize = 24.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontFamily = FontFamily.Monospace,
+                                    lineHeight = 24.sp
+                                )
+                                Text(
+                                    text = "km/j",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color.White.copy(alpha = 0.78f),
+                                    modifier = Modifier.padding(bottom = 2.dp)
+                                )
+                            }
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                NavCompassArrowCanvasIcon(
+                                    tint = Color(0xFF38BDF8),
+                                    modifier = Modifier.size(11.dp)
+                                )
+                                Text(
+                                    text = "${navGuidance.headingDegrees}° ${GeoUtils.compassDirectionShort(navGuidance.headingDegrees)} · GPS",
+                                    fontSize = 10.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = Color(0xFF38BDF8)
+                                )
+                            }
+                        }
+                    }
                 }
 
                 // Top-Right Layer, Zoom & Center Controls
@@ -851,6 +1147,32 @@ fun LiveTrackingMapScreen(
                         .padding(12.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
+                    SmallFloatingActionButton(
+                        onClick = {
+                            val next = !isNavigationMode
+                            isNavigationMode = next
+                            if (next) {
+                                isAutoFollowing = true
+                                val m = navSubject
+                                if (m != null) {
+                                    val ahead = GeoUtils.offsetPointAlongHeading(
+                                        m.mapPosition.latitude,
+                                        m.mapPosition.longitude,
+                                        navGuidance.headingDegrees.toDouble(),
+                                        85.0
+                                    )
+                                    mapController.animateTo(ahead.lat, ahead.lng, 16.8)
+                                }
+                            }
+                        },
+                        containerColor = if (isNavigationMode) Color(0xFFEA580C) else MaterialTheme.colorScheme.surface,
+                        contentColor = if (isNavigationMode) Color.White else Color(0xFFEA580C)
+                    ) {
+                        NavCompassArrowCanvasIcon(
+                            tint = if (isNavigationMode) Color.White else Color(0xFFEA580C),
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                     SmallFloatingActionButton(
                         onClick = {
                             mapStyle = if (mapStyle == TomTomMapStyle.ROAD) TomTomMapStyle.SATELLITE else TomTomMapStyle.ROAD
@@ -891,12 +1213,22 @@ fun LiveTrackingMapScreen(
                     SmallFloatingActionButton(
                         onClick = {
                             isAutoFollowing = true
-                            val target = trackedMember ?: currentUser
+                            val target = (if (activeNavMode) navSubject else trackedMember) ?: currentUser
                             if (target != null) {
+                                val camPt = if (activeNavMode) {
+                                    GeoUtils.offsetPointAlongHeading(
+                                        target.mapPosition.latitude,
+                                        target.mapPosition.longitude,
+                                        navGuidance.headingDegrees.toDouble(),
+                                        85.0
+                                    )
+                                } else {
+                                    LatLngGeo(target.mapPosition.latitude, target.mapPosition.longitude)
+                                }
                                 mapController.animateTo(
-                                    target.mapPosition.latitude,
-                                    target.mapPosition.longitude,
-                                    15.0
+                                    camPt.lat,
+                                    camPt.lng,
+                                    if (activeNavMode) 16.8 else 15.0
                                 )
                             }
                         },
@@ -1212,7 +1544,7 @@ fun LiveTrackingMapScreen(
     }
 
     // Leader Route, Checkpoints & Straggler Settings Bottom Sheet
-    if (showLeaderSettingsSheet && role == UserRole.TOUR_LEADER) {
+    if (showLeaderSettingsSheet && isEffectiveLeader) {
         ModalBottomSheet(
             onDismissRequest = { showLeaderSettingsSheet = false },
             containerColor = MaterialTheme.colorScheme.surface
@@ -1398,13 +1730,46 @@ private fun TopParticipantChip(
                 borderColor = if (member.isCurrentUser) MaterialTheme.colorScheme.secondary else Color.White
             )
             Column {
-                Text(
-                    text = member.fullName,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                val roleBadge = when {
+                    member.isActingLeader && member.role != UserRole.TOUR_LEADER -> "Plt.Ldr"
+                    member.isCoLeader -> "Co-Ldr"
+                    member.role == UserRole.TOUR_LEADER -> "Leader"
+                    else -> null
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = member.fullName,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (roleBadge != null) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = when {
+                                member.isActingLeader && member.role != UserRole.TOUR_LEADER -> Color(0xFFEDE9FE)
+                                member.isCoLeader -> Color(0xFFCCFBF1)
+                                else -> Color(0xFFDBEAFE)
+                            }
+                        ) {
+                            Text(
+                                text = roleBadge,
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = when {
+                                    member.isActingLeader && member.role != UserRole.TOUR_LEADER -> Color(0xFF6D28D9)
+                                    member.isCoLeader -> Color(0xFF0F766E)
+                                    else -> Color(0xFF1D4ED8)
+                                },
+                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                            )
+                        }
+                    }
+                }
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     Icon(
                         imageVector = if (member.vehicleType == VehicleType.MOBIL) Icons.Rounded.DirectionsCar else Icons.Rounded.TwoWheeler,
@@ -1412,8 +1777,9 @@ private fun TopParticipantChip(
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(12.dp)
                     )
+                    val distNote = member.distanceToLeaderMeters?.let { " · ${formatDistanceLabel(it)}" }.orEmpty()
                     Text(
-                        text = member.vehicleType.label,
+                        text = "${member.vehicleType.label}$distNote",
                         fontSize = 10.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1671,14 +2037,21 @@ private fun ParticipantExpandedRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+                val roleLabel = when {
+                    member.isActingLeader && member.role != UserRole.TOUR_LEADER -> "Plt. Leader (Co-Leader)"
+                    member.isCoLeader -> "Co-Leader Terdekat"
+                    member.isSweeper -> "Sweeper"
+                    else -> member.role.label
+                }
+                val distLabel = member.distanceToLeaderMeters?.let { " · ${formatDistanceLabel(it)} dr Leader" }.orEmpty()
                 Text(
-                    text = "${if (member.isSweeper) "Sweeper" else member.role.label} · ${member.vehicleType.label} · ${member.lastLocationText}",
+                    text = "$roleLabel$distLabel · ${member.lastLocationText}",
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                if (viewerIsLeader && member.role != UserRole.TOUR_LEADER) {
+                if (viewerIsLeader && member.role != UserRole.TOUR_LEADER && !member.isActingLeader) {
                     TextButton(
                         onClick = onAssignSweeper,
                         contentPadding = PaddingValues(0.dp),
@@ -2090,5 +2463,145 @@ private fun formatDistanceLabel(meters: Int): String {
         if (km % 1f == 0f) "${km.toInt()} km" else String.format(Locale.US, "%.1f km", km)
     } else {
         "$meters m"
+    }
+}
+
+@Composable
+private fun NavCompassArrowCanvasIcon(
+    tint: Color,
+    modifier: Modifier = Modifier
+) {
+    Canvas(modifier = modifier) {
+        val w = size.width
+        val h = size.height
+        val path = Path().apply {
+            moveTo(w * 0.50f, h * 0.08f)
+            lineTo(w * 0.86f, h * 0.88f)
+            lineTo(w * 0.50f, h * 0.68f)
+            lineTo(w * 0.14f, h * 0.88f)
+            close()
+        }
+        drawPath(path = path, color = tint)
+    }
+}
+
+@Composable
+private fun TurnManeuverCanvasIcon(
+    maneuver: String,
+    tint: Color,
+    modifier: Modifier = Modifier
+) {
+    val upper = maneuver.uppercase(Locale.US)
+    Canvas(modifier = modifier) {
+        val w = size.width
+        val h = size.height
+        val stroke = Stroke(
+            width = (w * 0.14f).coerceAtLeast(2.5f),
+            cap = StrokeCap.Round,
+            join = StrokeJoin.Round
+        )
+
+        when {
+            upper.contains("ARRIVE") || upper.contains("GOAL") -> {
+                drawCircle(
+                    color = tint,
+                    radius = w * 0.24f,
+                    center = Offset(w * 0.5f, h * 0.42f),
+                    style = stroke
+                )
+                drawLine(
+                    color = tint,
+                    start = Offset(w * 0.5f, h * 0.66f),
+                    end = Offset(w * 0.5f, h * 0.88f),
+                    strokeWidth = stroke.width,
+                    cap = StrokeCap.Round
+                )
+            }
+            upper.contains("UTURN") -> {
+                val p = Path().apply {
+                    moveTo(w * 0.30f, h * 0.84f)
+                    lineTo(w * 0.30f, h * 0.34f)
+                    lineTo(w * 0.50f, h * 0.18f)
+                    lineTo(w * 0.70f, h * 0.34f)
+                    lineTo(w * 0.70f, h * 0.72f)
+                }
+                drawPath(path = p, color = tint, style = stroke)
+                val head = Path().apply {
+                    moveTo(w * 0.56f, h * 0.58f)
+                    lineTo(w * 0.70f, h * 0.76f)
+                    lineTo(w * 0.84f, h * 0.58f)
+                }
+                drawPath(path = head, color = tint, style = stroke)
+            }
+            upper.contains("BEAR_LEFT") || upper.contains("KEEP_LEFT") || upper.contains("SLIGHT_LEFT") -> {
+                val p = Path().apply {
+                    moveTo(w * 0.62f, h * 0.86f)
+                    lineTo(w * 0.62f, h * 0.50f)
+                    lineTo(w * 0.26f, h * 0.20f)
+                }
+                drawPath(path = p, color = tint, style = stroke)
+                val head = Path().apply {
+                    moveTo(w * 0.46f, h * 0.18f)
+                    lineTo(w * 0.24f, h * 0.18f)
+                    lineTo(w * 0.24f, h * 0.40f)
+                }
+                drawPath(path = head, color = tint, style = stroke)
+            }
+            upper.contains("BEAR_RIGHT") || upper.contains("KEEP_RIGHT") || upper.contains("SLIGHT_RIGHT") -> {
+                val p = Path().apply {
+                    moveTo(w * 0.38f, h * 0.86f)
+                    lineTo(w * 0.38f, h * 0.50f)
+                    lineTo(w * 0.74f, h * 0.20f)
+                }
+                drawPath(path = p, color = tint, style = stroke)
+                val head = Path().apply {
+                    moveTo(w * 0.54f, h * 0.18f)
+                    lineTo(w * 0.76f, h * 0.18f)
+                    lineTo(w * 0.76f, h * 0.40f)
+                }
+                drawPath(path = head, color = tint, style = stroke)
+            }
+            upper.contains("LEFT") -> {
+                val p = Path().apply {
+                    moveTo(w * 0.66f, h * 0.86f)
+                    lineTo(w * 0.66f, h * 0.36f)
+                    lineTo(w * 0.20f, h * 0.36f)
+                }
+                drawPath(path = p, color = tint, style = stroke)
+                val head = Path().apply {
+                    moveTo(w * 0.34f, h * 0.20f)
+                    lineTo(w * 0.18f, h * 0.36f)
+                    lineTo(w * 0.34f, h * 0.52f)
+                }
+                drawPath(path = head, color = tint, style = stroke)
+            }
+            upper.contains("RIGHT") -> {
+                val p = Path().apply {
+                    moveTo(w * 0.34f, h * 0.86f)
+                    lineTo(w * 0.34f, h * 0.36f)
+                    lineTo(w * 0.80f, h * 0.36f)
+                }
+                drawPath(path = p, color = tint, style = stroke)
+                val head = Path().apply {
+                    moveTo(w * 0.66f, h * 0.20f)
+                    lineTo(w * 0.82f, h * 0.36f)
+                    lineTo(w * 0.66f, h * 0.52f)
+                }
+                drawPath(path = head, color = tint, style = stroke)
+            }
+            else -> {
+                val p = Path().apply {
+                    moveTo(w * 0.50f, h * 0.86f)
+                    lineTo(w * 0.50f, h * 0.18f)
+                }
+                drawPath(path = p, color = tint, style = stroke)
+                val head = Path().apply {
+                    moveTo(w * 0.30f, h * 0.36f)
+                    lineTo(w * 0.50f, h * 0.16f)
+                    lineTo(w * 0.70f, h * 0.36f)
+                }
+                drawPath(path = head, color = tint, style = stroke)
+            }
+        }
     }
 }

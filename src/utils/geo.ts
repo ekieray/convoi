@@ -691,3 +691,127 @@ export function computeNavigationGuidance(params: {
   };
 }
 
+export function compactInstructionsForSync(
+  instructions?: RouteInstruction[],
+  maxCount = 50
+): Array<{
+  latitude: number;
+  longitude: number;
+  routeOffsetInMeters: number;
+  maneuver: string;
+  message: string;
+  street: string;
+}> {
+  if (!Array.isArray(instructions) || instructions.length === 0) return [];
+  const cap = Math.max(1, Math.min(60, maxCount));
+  const list =
+    instructions.length <= cap
+      ? instructions
+      : instructions.filter(
+          (_, idx) =>
+            idx === 0 ||
+            idx === instructions.length - 1 ||
+            idx % Math.ceil(instructions.length / cap) === 0
+        );
+  return list.slice(0, cap).map((ins) => ({
+    latitude: Number.isFinite(ins.latitude) ? Number(ins.latitude.toFixed(6)) : 0,
+    longitude: Number.isFinite(ins.longitude) ? Number(ins.longitude.toFixed(6)) : 0,
+    routeOffsetInMeters: Math.max(0, Math.round(ins.routeOffsetInMeters || 0)),
+    maneuver: String(ins.maneuver || 'STRAIGHT').slice(0, 64),
+    message: String(ins.message || 'Ikuti jalur').slice(0, 240),
+    street: String(ins.street || '').slice(0, 120),
+  }));
+}
+
+export interface ClosestCoLeaderResult {
+  coLeaderUid: string | null;
+  distanceByMemberId: Map<string, number>;
+}
+
+export function computeClosestCoLeader(
+  members: Array<{
+    id: string;
+    role: string;
+    connectionStatus: string;
+    conditionStatus: string;
+    lastUpdatedMs?: number;
+    convoyOrderRank?: number;
+    mapPosition: {
+      latitude: number;
+      longitude: number;
+      routeProgress: number;
+    };
+  }>,
+  originalLeaderUid: string,
+  nowMs = Date.now(),
+  staleThresholdMs = 20_000
+): ClosestCoLeaderResult {
+  const distanceByMemberId = new Map<string, number>();
+  const leader =
+    members.find((m) => m.id === originalLeaderUid) ||
+    members.find((m) => m.role === 'TOUR_LEADER');
+
+  if (!leader) {
+    return { coLeaderUid: null, distanceByMemberId };
+  }
+
+  const leaderHasGeo = hasValidGeoCoord(
+    leader.mapPosition.latitude,
+    leader.mapPosition.longitude
+  );
+
+  const candidates: Array<{ id: string; dist: number; rank: number; preferred: boolean }> = [];
+
+  for (const m of members) {
+    if (m.id === leader.id) {
+      distanceByMemberId.set(m.id, 0);
+      continue;
+    }
+
+    const memberHasGeo = hasValidGeoCoord(m.mapPosition.latitude, m.mapPosition.longitude);
+    const dist =
+      leaderHasGeo && memberHasGeo
+        ? Math.round(
+            haversineMeters(
+              { lat: leader.mapPosition.latitude, lng: leader.mapPosition.longitude },
+              { lat: m.mapPosition.latitude, lng: m.mapPosition.longitude }
+            )
+          )
+        : Math.round(
+            Math.abs((leader.mapPosition.routeProgress ?? 0) - (m.mapPosition.routeProgress ?? 0)) *
+              12000
+          );
+
+    distanceByMemberId.set(m.id, dist);
+
+    if (m.connectionStatus === 'OFFLINE') continue;
+    const isFresh =
+      !m.lastUpdatedMs || m.lastUpdatedMs <= 0 || nowMs - m.lastUpdatedMs <= staleThresholdMs;
+    const isHealthy = m.conditionStatus !== 'MOGOK' && m.conditionStatus !== 'SOS';
+    candidates.push({
+      id: m.id,
+      dist,
+      rank: m.convoyOrderRank ?? 999,
+      preferred: isFresh && isHealthy,
+    });
+  }
+
+  if (candidates.length === 0) {
+    return { coLeaderUid: null, distanceByMemberId };
+  }
+
+  const preferredPool = candidates.filter((c) => c.preferred);
+  const pool = preferredPool.length > 0 ? preferredPool : candidates;
+  pool.sort((a, b) => {
+    if (a.dist !== b.dist) return a.dist - b.dist;
+    if (a.rank !== b.rank) return a.rank - b.rank;
+    return a.id.localeCompare(b.id);
+  });
+
+  return {
+    coLeaderUid: pool[0]?.id ?? null,
+    distanceByMemberId,
+  };
+}
+
+

@@ -176,6 +176,10 @@ export interface ConvoyMember {
   connectionStatus: ConnectionStatus;
   lastLocationText: string;
   lastUpdatedLabel: string;
+  lastUpdatedMs?: number;
+  isCoLeader?: boolean;
+  isActingLeader?: boolean;
+  distanceToLeaderMeters?: number;
   routeDistanceMeters: number;
   offRouteMeters: number;
   convoyOrderRank: number;
@@ -189,6 +193,10 @@ export interface TourRoom {
   createdAtLabel: string;
   isSyncedRoom?: boolean;
   leaderUid?: string;
+  coLeaderUid?: string;
+  actingLeaderUid?: string;
+  leaderTroubleActive?: boolean;
+  leaderTroubleReason?: string;
   members: ConvoyMember[];
 }
 
