@@ -476,13 +476,16 @@ fun LiveTrackingMapScreen(
                 title = {
                     Column {
                         Text(
-                            text = "Peta Konvoi · ${activeRoom?.roomId ?: "KNV-0000"}",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontFamily = FontFamily.Monospace
+                            text = "${activeRoom?.roomId ?: "KNV-0000"} · Live",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = "Tujuan: ${routeConfig.destinationName} · ${routeConfig.checkpoints.size} Rest Area",
-                            style = MaterialTheme.typography.bodyMedium,
+                            text = routeConfig.destinationName,
+                            fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
@@ -540,23 +543,34 @@ fun LiveTrackingMapScreen(
                         }
                     }
                     if (activeNavMode) {
-                        IconButton(onClick = { isNavInfoHidden = !isNavInfoHidden }) {
+                        IconButton(
+                            onClick = { isNavInfoHidden = !isNavInfoHidden },
+                            modifier = Modifier.size(36.dp)
+                        ) {
                             Icon(
                                 imageVector = if (isNavInfoHidden) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
                                 contentDescription = if (isNavInfoHidden) "Tampilkan Info Lengkap" else "Sembunyikan Info Navigasi",
-                                tint = if (isNavInfoHidden) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.primary
+                                tint = if (isNavInfoHidden) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp)
                             )
                         }
                     }
-                    TextButton(onClick = { showFinishTripDialog = true }) {
-                        Text("Selesai", fontWeight = FontWeight.SemiBold)
+                    TextButton(
+                        onClick = { showFinishTripDialog = true },
+                        contentPadding = PaddingValues(horizontal = 6.dp)
+                    ) {
+                        Text("Selesai", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                     }
                     if (isEffectiveLeader) {
-                        IconButton(onClick = { showLeaderSettingsSheet = true }) {
+                        IconButton(
+                            onClick = { showLeaderSettingsSheet = true },
+                            modifier = Modifier.size(36.dp)
+                        ) {
                             Icon(
                                 imageVector = Icons.Rounded.Settings,
                                 contentDescription = "Pengaturan Rute Leader",
-                                tint = MaterialTheme.colorScheme.primary
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp)
                             )
                         }
                     }
@@ -1377,66 +1391,83 @@ fun LiveTrackingMapScreen(
                     }
                 }
 
-                // Bottom-Right Floating Action Buttons: Chat (Blue), Voice PTT (Orange/Amber), SOS (Vivid Red)
-                Row(
+                // Bottom-Right Floating Action Controls: Chat placed cleanly above Mic + SOS row
+                Column(
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
-                        .padding(horizontal = 16.dp, vertical = 18.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                        .padding(horizontal = 12.dp, vertical = 16.dp),
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    FloatingActionButton(
+                    Surface(
                         onClick = { showChatSheet = true },
-                        shape = RoundedCornerShape(16.dp),
-                        containerColor = MaterialTheme.colorScheme.primary,
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.primary,
                         contentColor = Color.White,
-                        elevation = FloatingActionButtonDefaults.elevation(6.dp)
+                        shadowElevation = 6.dp
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 14.dp),
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Icon(Icons.AutoMirrored.Rounded.Chat, contentDescription = "Buka Chat")
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Rounded.Chat,
+                                contentDescription = "Buka Chat",
+                                modifier = Modifier.size(18.dp)
+                            )
                             Text("Chat (${messages.size})", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
                         }
                     }
 
-                    FloatingActionButton(
-                        onClick = {
-                            if (isRecordingVoice) {
-                                onStopVoiceRecord()
-                                showChatSheet = true
-                            } else {
-                                onStartVoiceRecord()
-                            }
-                        },
-                        shape = RoundedCornerShape(16.dp),
-                        containerColor = if (isRecordingVoice) Color(0xFFDC2626) else MaterialTheme.colorScheme.secondary,
-                        contentColor = Color.White,
-                        elevation = FloatingActionButtonDefaults.elevation(6.dp)
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = if (isRecordingVoice) Icons.Rounded.Stop else Icons.Rounded.Mic,
-                            contentDescription = "Rekam Suara"
-                        )
-                    }
-
-                    // Prominent Rounded Elevated Red SOS Button
-                    Surface(
-                        onClick = { showSosConfirmDialog = true },
-                        shape = RoundedCornerShape(18.dp),
-                        color = Color(0xFFDC2626),
-                        contentColor = Color.White,
-                        shadowElevation = 10.dp
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        Surface(
+                            onClick = {
+                                if (isRecordingVoice) {
+                                    onStopVoiceRecord()
+                                    showChatSheet = true
+                                } else {
+                                    onStartVoiceRecord()
+                                }
+                            },
+                            shape = RoundedCornerShape(14.dp),
+                            color = if (isRecordingVoice) Color(0xFFDC2626) else MaterialTheme.colorScheme.secondary,
+                            contentColor = Color.White,
+                            shadowElevation = 6.dp,
+                            modifier = Modifier.size(48.dp)
                         ) {
-                            Icon(Icons.Rounded.Sos, contentDescription = "Tombol Darurat SOS", modifier = Modifier.size(22.dp))
-                            Text("SOS", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = if (isRecordingVoice) Icons.Rounded.Stop else Icons.Rounded.Mic,
+                                    contentDescription = "Rekam Suara",
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                        }
+
+                        // Prominent Rounded Elevated Red SOS Button
+                        Surface(
+                            onClick = { showSosConfirmDialog = true },
+                            shape = RoundedCornerShape(16.dp),
+                            color = Color(0xFFDC2626),
+                            contentColor = Color.White,
+                            shadowElevation = 8.dp
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Warning,
+                                    contentDescription = "Tombol Darurat SOS",
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Text("SOS", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            }
                         }
                     }
                 }

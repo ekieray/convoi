@@ -1591,54 +1591,56 @@ export function LiveTrackingMapView({
           </div>
         )}
 
-        {/* Bottom-Right Floating Action Buttons: Chat (Blue), Voice PTT (Orange/Amber), SOS (Vivid Red) */}
-        <div className="absolute bottom-4 right-3 z-20 flex items-center gap-2">
+        {/* Bottom-Right Floating Action Buttons: Chat above Voice PTT + SOS row */}
+        <div className="absolute bottom-3.5 right-3 z-20 flex flex-col items-end gap-2">
           <button
             type="button"
             onClick={() => setShowChatSheet(true)}
-            className="min-h-[48px] px-3.5 rounded-[16px] bg-[#1D4ED8] hover:bg-[#1E40AF] text-white shadow-lg flex items-center gap-1.5 text-xs font-semibold transition-all cursor-pointer whitespace-nowrap"
+            className="min-h-[42px] px-3.5 rounded-[14px] bg-[#1D4ED8] hover:bg-[#1E40AF] text-white shadow-lg flex items-center gap-1.5 text-xs font-semibold transition-all cursor-pointer whitespace-nowrap"
           >
             <MessageCircle className="w-4 h-4 shrink-0" />
             <span>Chat ({messages.length})</span>
           </button>
 
-          <button
-            type="button"
-            onClick={() => {
-              if (isRecordingVoice) {
-                onStopVoiceRecord();
-                setShowChatSheet(true);
-              } else {
-                onStartVoiceRecord();
-              }
-            }}
-            aria-label="Rekam Voice Message"
-            className={`min-h-[48px] px-3.5 rounded-[16px] text-white shadow-lg flex items-center gap-1.5 text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${
-              isRecordingVoice
-                ? 'bg-[#DC2626]'
-                : 'bg-[#EA580C] hover:bg-[#C2410C]'
-            }`}
-          >
-            {isRecordingVoice ? (
-              <>
-                <Square className="w-3.5 h-3.5 fill-current" />
-                <span className="font-mono tabular-nums">
-                  0:{recordingSeconds.toString().padStart(2, '0')}
-                </span>
-              </>
-            ) : (
-              <Mic className="w-4 h-4" />
-            )}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                if (isRecordingVoice) {
+                  onStopVoiceRecord();
+                  setShowChatSheet(true);
+                } else {
+                  onStartVoiceRecord();
+                }
+              }}
+              aria-label="Rekam Voice Message"
+              className={`min-h-[46px] min-w-[46px] px-3 rounded-[15px] text-white shadow-lg flex items-center justify-center gap-1.5 text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${
+                isRecordingVoice
+                  ? 'bg-[#DC2626]'
+                  : 'bg-[#EA580C] hover:bg-[#C2410C]'
+              }`}
+            >
+              {isRecordingVoice ? (
+                <>
+                  <Square className="w-3.5 h-3.5 fill-current" />
+                  <span className="font-mono tabular-nums">
+                    0:{recordingSeconds.toString().padStart(2, '0')}
+                  </span>
+                </>
+              ) : (
+                <Mic className="w-4 h-4" />
+              )}
+            </button>
 
-          <button
-            type="button"
-            onClick={() => setShowSosConfirm(true)}
-            className="min-h-[50px] px-4 rounded-[18px] bg-[#DC2626] hover:bg-[#B91C1C] active:scale-[0.97] text-white shadow-xl flex items-center gap-1.5 text-xs font-bold tracking-wide transition-all cursor-pointer whitespace-nowrap"
-          >
-            <AlertTriangle className="w-4 h-4 shrink-0" />
-            <span>SOS</span>
-          </button>
+            <button
+              type="button"
+              onClick={() => setShowSosConfirm(true)}
+              className="min-h-[46px] px-3.5 rounded-[15px] bg-[#DC2626] hover:bg-[#B91C1C] active:scale-[0.97] text-white shadow-xl flex items-center gap-1.5 text-xs font-bold tracking-wide transition-all cursor-pointer whitespace-nowrap"
+            >
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              <span>SOS</span>
+            </button>
+          </div>
         </div>
       </div>
 
