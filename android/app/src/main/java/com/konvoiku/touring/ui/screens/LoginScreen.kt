@@ -107,6 +107,7 @@ fun LoginScreen(
     onClearAuthError: () -> Unit = {},
     onGoogleSignIn: (Activity?) -> Unit = {},
     onOpenGoogleBrowserSync: () -> Unit = {},
+    onOpenCustomGoogleBrowserSync: (String) -> Unit = {},
     onSubmitGoogleSyncToken: (String) -> Unit = {},
     onFacebookSignIn: (Activity?) -> Unit = {},
     onForgotPassword: (String) -> Unit = {},
@@ -129,8 +130,10 @@ fun LoginScreen(
     var confirmPassword by remember { mutableStateOf("") }
     var showPassword by remember { mutableStateOf(false) }
     var localError by remember { mutableStateOf<String?>(null) }
-    var showManualTokenInput by remember { mutableStateOf(false) }
+    var showManualTokenInput by remember(showGoogleBrowserFallback) { mutableStateOf(showGoogleBrowserFallback) }
     var manualSyncToken by remember { mutableStateOf("") }
+    var showCustomBridgeInput by remember { mutableStateOf(false) }
+    var customBridgeUrl by remember { mutableStateOf("") }
 
     var pendingSocialProvider by remember { mutableStateOf<AuthProviderType?>(null) }
     var socialNameInput by remember { mutableStateOf("") }
@@ -375,67 +378,95 @@ fun LoginScreen(
                                 }
                             )
 
-                            if (showGoogleBrowserFallback) {
-                                OutlinedButton(
-                                    onClick = {
-                                        localError = null
-                                        onClearAuthError()
+                            OutlinedButton(
+                                onClick = {
+                                    localError = null
+                                    onClearAuthError()
+                                    if (customBridgeUrl.isNotBlank()) {
+                                        onOpenCustomGoogleBrowserSync(customBridgeUrl)
+                                    } else {
                                         onOpenGoogleBrowserSync()
-                                    },
-                                    enabled = !isAuthLoading,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(46.dp),
-                                    shape = RoundedCornerShape(14.dp),
-                                    border = BorderStroke(1.dp, Color(0xFF2563EB))
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.OpenInBrowser,
-                                        contentDescription = null,
-                                        tint = Color(0xFF2563EB),
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text(
-                                        text = "Sinkronkan Google via Browser",
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = Color(0xFF2563EB)
-                                    )
-                                }
+                                    }
+                                },
+                                enabled = !isAuthLoading,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(46.dp),
+                                shape = RoundedCornerShape(14.dp),
+                                border = BorderStroke(1.dp, Color(0xFF2563EB))
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.OpenInBrowser,
+                                    contentDescription = null,
+                                    tint = Color(0xFF2563EB),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "Sinkronkan Google via Browser",
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color(0xFF2563EB)
+                                )
+                            }
 
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
                                 TextButton(
-                                    onClick = { showManualTokenInput = !showManualTokenInput },
-                                    modifier = Modifier.align(Alignment.End)
+                                    onClick = { showCustomBridgeInput = !showCustomBridgeInput }
                                 ) {
                                     Text(
-                                        text = if (showManualTokenInput) "Tutup tempel token" else "Sudah login di browser? Tempel link/token",
-                                        fontSize = 12.sp,
+                                        text = if (showCustomBridgeInput) "Tutup URL kustom" else "URL web kustom?",
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                TextButton(
+                                    onClick = { showManualTokenInput = !showManualTokenInput }
+                                ) {
+                                    Text(
+                                        text = if (showManualTokenInput) "Tutup tempel token" else "Sudah login di browser?",
+                                        fontSize = 11.sp,
                                         color = Color(0xFF2563EB)
                                     )
                                 }
+                            }
 
-                                if (showManualTokenInput) {
-                                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        OutlinedTextField(
-                                            value = manualSyncToken,
-                                            onValueChange = { manualSyncToken = it },
-                                            label = { Text("Tempel link konvoiku://auth atau token") },
-                                            singleLine = true,
-                                            modifier = Modifier.fillMaxWidth(),
-                                            shape = RoundedCornerShape(12.dp)
-                                        )
-                                        Button(
-                                            onClick = {
-                                                localError = null
-                                                onClearAuthError()
-                                                onSubmitGoogleSyncToken(manualSyncToken)
-                                            },
-                                            enabled = !isAuthLoading && manualSyncToken.isNotBlank(),
-                                            modifier = Modifier.fillMaxWidth(),
-                                            shape = RoundedCornerShape(12.dp)
-                                        ) {
-                                            Text("Terapkan Sinkronisasi Google", fontWeight = FontWeight.SemiBold)
-                                        }
+                            if (showCustomBridgeInput) {
+                                OutlinedTextField(
+                                    value = customBridgeUrl,
+                                    onValueChange = { customBridgeUrl = it },
+                                    label = { Text("URL Web KonvoiKu (opsional)") },
+                                    placeholder = { Text("https://...run.app") },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                            }
+
+                            if (showManualTokenInput) {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedTextField(
+                                        value = manualSyncToken,
+                                        onValueChange = { manualSyncToken = it },
+                                        label = { Text("Tempel link konvoiku://auth atau token") },
+                                        singleLine = true,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        shape = RoundedCornerShape(12.dp)
+                                    )
+                                    Button(
+                                        onClick = {
+                                            localError = null
+                                            onClearAuthError()
+                                            onSubmitGoogleSyncToken(manualSyncToken)
+                                        },
+                                        enabled = !isAuthLoading && manualSyncToken.isNotBlank(),
+                                        modifier = Modifier.fillMaxWidth(),
+                                        shape = RoundedCornerShape(12.dp)
+                                    ) {
+                                        Text("Terapkan Sinkronisasi Google", fontWeight = FontWeight.SemiBold)
                                     }
                                 }
                             }

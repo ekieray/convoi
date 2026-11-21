@@ -181,6 +181,10 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
         subscribeToGlobalConfig()
         startPresenceHeartbeatLoop()
         startLiveMapTicker()
+        viewModelScope.launch {
+            val activeBase = syncRepo.resolveActiveWebBaseUrl()
+            _uiState.update { it.copy(activeWebBaseUrl = activeBase) }
+        }
         if (gpsTracker.hasLocationPermission()) {
             startGpsTracking()
         }
@@ -725,7 +729,7 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun openGoogleBrowserSync(context: Context) {
+    fun openGoogleBrowserSync(context: Context, customBaseUrl: String? = null) {
         viewModelScope.launch {
             _uiState.update {
                 it.copy(
@@ -733,7 +737,9 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
                     authInfoMessage = "Memeriksa halaman sinkronisasi Google yang aktif..."
                 )
             }
-            val targetUrl = syncRepo.resolveActiveGoogleBridgeUrl()
+            val activeBase = syncRepo.resolveActiveWebBaseUrl(customBaseUrl)
+            _uiState.update { it.copy(activeWebBaseUrl = activeBase) }
+            val targetUrl = "$activeBase/?mobile_auth=google"
             runCatching {
                 withContext(Dispatchers.Main) {
                     val intent = Intent(Intent.ACTION_VIEW, Uri.parse(targetUrl)).apply {
@@ -746,7 +752,7 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
             }.onSuccess {
                 _uiState.update {
                     it.copy(
-                        authInfoMessage = "Browser dibuka. Setelah login Google selesai, ketuk 'Buka Aplikasi KonvoiKu' atau salin link/tokennya ke kolom di bawah."
+                        authInfoMessage = "Browser dibuka ($activeBase). Setelah login Google selesai, ketuk 'Buka Aplikasi KonvoiKu' atau salin link/tokennya ke kolom di bawah."
                     )
                 }
             }.onFailure {
@@ -798,14 +804,42 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
                     )
                 }
             }
-        } else if (dataUri.scheme == "https" && dataUri.host == "konvoiku.id") {
+        } else {
             val roomCode = extractRoomId(dataUri.toString())
-            if (roomCode.isNotBlank()) {
+            val isRoomInvite = roomCode.length >= 4 && (
+                (dataUri.scheme == "konvoiku" && dataUri.host == "join") ||
+                    (dataUri.scheme == "https" && (
+                        dataUri.host == "konvoiku.id" ||
+                            dataUri.host?.endsWith(".run.app") == true ||
+                            !dataUri.getQueryParameter("room").isNullOrBlank()
+                        ))
+                )
+            if (isRoomInvite) {
                 _uiState.update {
-                    it.copy(joinInput = roomCode, joinError = null)
+                    it.copy(
+                        joinInput = roomCode,
+                        joinError = null,
+                        pendingInviteRoomId = roomCode,
+                        selectedRole = UserRole.MEMBER
+                    )
                 }
             }
         }
+    }
+
+    fun consumePendingInviteNavigation(): String? {
+        val pending = _uiState.value.pendingInviteRoomId ?: return null
+        _uiState.update { it.copy(pendingInviteRoomId = null) }
+        return pending
+    }
+
+    fun clearRoomSetupError() {
+        _uiState.update { it.copy(roomSetupError = null) }
+    }
+
+    fun buildWebRoomShareLink(roomId: String): String {
+        val base = _uiState.value.activeWebBaseUrl.trimEnd('/')
+        return "$base/?room=${Uri.encode(roomId.trim().uppercase(Locale.ROOT))}"
     }
 
     fun signInWithFacebook(activity: Activity?, onSuccess: () -> Unit = {}) {
@@ -1223,11 +1257,15 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun createNewTourRoom(customTitle: String = "Konvoi Touring Akhir Pekan") {
+    fun createNewTourRoom(
+        customTitle: String = "Konvoi Touring Akhir Pekan",
+        onSuccess: () -> Unit = {}
+    ) {
         val state = _uiState.value
         if (!state.globalConfig.allowNewRooms && !syncRepo.isVerifiedAdminSession()) {
+            val msg = "Pembuatan room baru sedang dijeda sementara oleh Admin Backend."
             _uiState.update {
-                it.copy(authError = "Pembuatan room baru sedang dijeda sementara oleh Admin Backend.")
+                it.copy(authError = msg, roomSetupError = msg)
             }
             return
         }
@@ -1251,46 +1289,66 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
 
         if (syncRepo.isAvailable()) {
             viewModelScope.launch {
+                _uiState.update { it.copy(isCreatingRoom = true, roomSetupError = null) }
                 val uid = syncRepo.ensureSignedInUid()
-                if (uid != null) {
-                    val syncedOk = syncRepo.createSyncedRoom(
+                if (uid == null) {
+                    _uiState.update {
+                        it.copy(
+                            isCreatingRoom = false,
+                            roomSetupError = "Autentikasi cloud belum terhubung. Pastikan internet aktif lalu coba lagi."
+                        )
+                    }
+                    return@launch
+                }
+                val syncedOk = syncRepo.createSyncedRoom(
+                    roomId = roomCode,
+                    roomTitle = customTitle,
+                    leaderUid = uid,
+                    profile = profile,
+                    routeConfig = routeConfig,
+                    initialLat = startLat,
+                    initialLng = startLng
+                )
+                if (syncedOk) {
+                    val syncedRoom = TourRoom(
                         roomId = roomCode,
                         roomTitle = customTitle,
+                        inviteLink = mockLink,
+                        createdAtLabel = "Sinkronisasi Cloud",
+                        members = emptyList(),
+                        isSyncedRoom = true,
                         leaderUid = uid,
-                        profile = profile,
-                        routeConfig = routeConfig,
-                        initialLat = startLat,
-                        initialLng = startLng
+                        actingLeaderUid = uid
                     )
-                    if (syncedOk) {
-                        val syncedRoom = TourRoom(
-                            roomId = roomCode,
-                            roomTitle = customTitle,
-                            inviteLink = mockLink,
-                            createdAtLabel = "Sinkronisasi Cloud",
-                            members = emptyList(),
-                            isSyncedRoom = true,
-                            leaderUid = uid
+                    _uiState.update {
+                        it.copy(
+                            activeRoom = syncedRoom,
+                            selectedRole = UserRole.TOUR_LEADER,
+                            selectedMemberId = uid,
+                            lastCompletedTrip = null,
+                            isCloudSyncConnected = true,
+                            isCreatingRoom = false,
+                            roomSetupError = null
                         )
-                        _uiState.update {
-                            it.copy(
-                                activeRoom = syncedRoom,
-                                selectedMemberId = uid,
-                                lastCompletedTrip = null,
-                                isCloudSyncConnected = true
-                            )
-                        }
-                        attachRoomSubscription(roomCode, uid)
-                        pushPresenceSnapshotNow()
-                        return@launch
+                    }
+                    attachRoomSubscription(roomCode, uid)
+                    pushPresenceSnapshotNow()
+                    withContext(Dispatchers.Main) {
+                        onSuccess()
+                    }
+                } else {
+                    _uiState.update {
+                        it.copy(
+                            isCreatingRoom = false,
+                            roomSetupError = "Gagal membuat room di server cloud. Periksa koneksi internet Anda lalu coba lagi."
+                        )
                     }
                 }
-                createLocalDemoRoom(roomCode, customTitle, mockLink, startLat, startLng)
-                pushPresenceSnapshotNow()
             }
         } else {
             createLocalDemoRoom(roomCode, customTitle, mockLink, startLat, startLng)
             pushPresenceSnapshotNow()
+            onSuccess()
         }
     }
 
@@ -1470,10 +1528,22 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
     fun extractRoomId(rawInput: String): String {
         val trimmed = rawInput.trim()
         if (trimmed.isEmpty()) return ""
-        return trimmed.substringAfterLast("/", missingDelimiterValue = trimmed)
+        Regex("[?&]room=([A-Za-z0-9_-]{4,32})", RegexOption.IGNORE_CASE)
+            .find(trimmed)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.let { return it.uppercase(Locale.ROOT) }
+        Regex("/join/([A-Za-z0-9_-]{4,32})", RegexOption.IGNORE_CASE)
+            .find(trimmed)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.let { return it.uppercase(Locale.ROOT) }
+        val candidate = trimmed.substringAfterLast("/", missingDelimiterValue = trimmed)
             .substringBefore("?")
+            .substringBefore("#")
             .trim()
-            .uppercase()
+            .uppercase(Locale.ROOT)
+        return if (Regex("^[A-Z0-9_-]{4,32}$").matches(candidate)) candidate else ""
     }
 
     fun joinConvoyRoom(onSuccess: () -> Unit = {}): Boolean {
@@ -1490,48 +1560,59 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
             val startLat = state.userGpsLat ?: -6.65
             val startLng = state.userGpsLng ?: 106.85
             viewModelScope.launch {
+                _uiState.update { it.copy(isJoiningRoom = true, joinError = null) }
                 val uid = syncRepo.ensureSignedInUid()
-                if (uid != null) {
-                    val result = syncRepo.joinSyncedRoom(
-                        roomId = extractedId,
-                        uid = uid,
-                        profile = state.vehicleProfile,
-                        initialLat = startLat,
-                        initialLng = startLng
-                    )
-                    if (result.isSuccess) {
-                        val role = result.getOrDefault(UserRole.MEMBER)
-                        lastComputedRouteSig = ""
-                        seedRecordedTrackFromStart(startLat, startLng)
-                        _uiState.update {
-                            it.copy(
-                                selectedRole = role,
-                                joinError = null,
-                                selectedMemberId = uid,
-                                lastCompletedTrip = null,
-                                activeRoom = TourRoom(
-                                    roomId = extractedId,
-                                    roomTitle = "Room $extractedId",
-                                    inviteLink = "https://konvoiku.id/join/$extractedId",
-                                    createdAtLabel = "Terhubung Cloud",
-                                    members = emptyList(),
-                                    isSyncedRoom = true
-                                )
+                if (uid == null) {
+                    _uiState.update {
+                        it.copy(
+                            isJoiningRoom = false,
+                            joinError = "Gagal menghubungkan autentikasi cloud. Periksa koneksi internet Anda."
+                        )
+                    }
+                    return@launch
+                }
+                val result = syncRepo.joinSyncedRoom(
+                    roomId = extractedId,
+                    uid = uid,
+                    profile = state.vehicleProfile,
+                    initialLat = startLat,
+                    initialLng = startLng
+                )
+                if (result.isSuccess) {
+                    val role = result.getOrDefault(UserRole.MEMBER)
+                    lastComputedRouteSig = ""
+                    seedRecordedTrackFromStart(startLat, startLng)
+                    _uiState.update {
+                        it.copy(
+                            selectedRole = role,
+                            joinError = null,
+                            isJoiningRoom = false,
+                            pendingInviteRoomId = null,
+                            selectedMemberId = uid,
+                            lastCompletedTrip = null,
+                            activeRoom = TourRoom(
+                                roomId = extractedId,
+                                roomTitle = "Room $extractedId",
+                                inviteLink = "https://konvoiku.id/join/$extractedId",
+                                createdAtLabel = "Terhubung Cloud",
+                                members = emptyList(),
+                                isSyncedRoom = true
                             )
-                        }
-                        attachRoomSubscription(extractedId, uid)
-                        pushPresenceSnapshotNow()
+                        )
+                    }
+                    attachRoomSubscription(extractedId, uid)
+                    pushPresenceSnapshotNow()
+                    withContext(Dispatchers.Main) {
                         onSuccess()
-                        return@launch
-                    } else {
-                        _uiState.update {
-                            it.copy(joinError = result.exceptionOrNull()?.message ?: "Room tidak ditemukan")
-                        }
-                        return@launch
+                    }
+                } else {
+                    _uiState.update {
+                        it.copy(
+                            isJoiningRoom = false,
+                            joinError = result.exceptionOrNull()?.message ?: "Room $extractedId tidak ditemukan atau sudah berakhir."
+                        )
                     }
                 }
-                joinLocalDemoRoom(extractedId)
-                onSuccess()
             }
             return true
         }
@@ -1539,6 +1620,11 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
         joinLocalDemoRoom(extractedId)
         onSuccess()
         return true
+    }
+
+    fun joinOfflineDemoRoom(roomIdRaw: String = _uiState.value.joinInput) {
+        val roomId = extractRoomId(roomIdRaw).takeIf { it.length >= 4 } ?: "KNV-8492"
+        joinLocalDemoRoom(roomId)
     }
 
     private fun joinLocalDemoRoom(extractedId: String) {

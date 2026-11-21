@@ -12,14 +12,18 @@ import {
   Copy,
   Flag,
   Gauge,
+  Loader2,
   LocateFixed,
   Map as MapIcon,
   MapPin,
   Plus,
   RotateCcw,
   Route,
+  Search,
+  Share2,
   Trash2,
   UserPlus,
+  X,
   Zap,
 } from 'lucide-react';
 import {
@@ -36,6 +40,8 @@ import { TomTomRoutePickerModal } from '../map/TomTomRoutePicker';
 import {
   fetchTomTomRoute,
   getTomTomTileUrl,
+  searchTomTomPlaces,
+  TomTomPlaceResult,
 } from '../../services/tomtomMapService';
 import { LatLngPoint } from '../../utils/geo';
 
@@ -80,6 +86,7 @@ interface TourLeaderViewProps {
   vehicleType?: VehicleType;
   isAuthenticated?: boolean;
   isCreatingRoom?: boolean;
+  createRoomError?: string | null;
   userGpsLocation?: LatLngPoint | null;
   darkMode?: boolean;
   onGoogleSignIn?: () => void;
@@ -299,6 +306,7 @@ export function TourLeaderView({
   vehicleType = 'MOTOR',
   isAuthenticated,
   isCreatingRoom,
+  createRoomError,
   userGpsLocation,
   darkMode,
   onGoogleSignIn,
@@ -329,13 +337,71 @@ export function TourLeaderView({
     activeRoom?.roomTitle || 'Konvoi Puncak Pass Weekend'
   );
   const [checkpointDraft, setCheckpointDraft] = useState('');
-  const [copiedType, setCopiedType] = useState<'id' | 'link' | null>(null);
+  const [copiedType, setCopiedType] = useState<'id' | 'link' | 'web' | null>(null);
   const [previewStats, setPreviewStats] = useState<{
     distanceMeters: number;
     durationMillis: number;
   } | null>(null);
 
-  const handleCopy = async (text: string, type: 'id' | 'link') => {
+  const [originSearchQuery, setOriginSearchQuery] = useState('');
+  const [originSearchResults, setOriginSearchResults] = useState<TomTomPlaceResult[]>([]);
+  const [isSearchingOrigin, setIsSearchingOrigin] = useState(false);
+
+  const [destSearchQuery, setDestSearchQuery] = useState('');
+  const [destSearchResults, setDestSearchResults] = useState<TomTomPlaceResult[]>([]);
+  const [isSearchingDest, setIsSearchingDest] = useState(false);
+
+  useEffect(() => {
+    const trimmed = originSearchQuery.trim();
+    if (trimmed.length < 2) {
+      setOriginSearchResults([]);
+      setIsSearchingOrigin(false);
+      return;
+    }
+    let cancelled = false;
+    setIsSearchingOrigin(true);
+    const timer = window.setTimeout(async () => {
+      try {
+        const res = await searchTomTomPlaces(trimmed);
+        if (!cancelled) setOriginSearchResults(res);
+      } catch {
+        if (!cancelled) setOriginSearchResults([]);
+      } finally {
+        if (!cancelled) setIsSearchingOrigin(false);
+      }
+    }, 320);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [originSearchQuery]);
+
+  useEffect(() => {
+    const trimmed = destSearchQuery.trim();
+    if (trimmed.length < 2) {
+      setDestSearchResults([]);
+      setIsSearchingDest(false);
+      return;
+    }
+    let cancelled = false;
+    setIsSearchingDest(true);
+    const timer = window.setTimeout(async () => {
+      try {
+        const res = await searchTomTomPlaces(trimmed);
+        if (!cancelled) setDestSearchResults(res);
+      } catch {
+        if (!cancelled) setDestSearchResults([]);
+      } finally {
+        if (!cancelled) setIsSearchingDest(false);
+      }
+    }, 320);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [destSearchQuery]);
+
+  const handleCopy = async (text: string, type: 'id' | 'link' | 'web') => {
     try {
       await navigator.clipboard.writeText(text);
     } catch {
@@ -343,6 +409,31 @@ export function TourLeaderView({
     }
     setCopiedType(type);
     setTimeout(() => setCopiedType(null), 1800);
+  };
+
+  const getWebRoomShareLink = (roomId: string) => {
+    if (typeof window === 'undefined') {
+      return `https://konvoiku.id/join/${encodeURIComponent(roomId)}`;
+    }
+    return `${window.location.origin}/?room=${encodeURIComponent(roomId)}`;
+  };
+
+  const handleNativeShareRoom = async (room: TourRoom) => {
+    const webLink = getWebRoomShareLink(room.roomId);
+    const shareText = `Gabung konvoi "${room.roomTitle}" di KonvoiKu!\nKode Room: ${room.roomId}\nLink Browser: ${webLink}\nLink APK: ${room.inviteLink}`;
+    if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
+      try {
+        await navigator.share({
+          title: `Undangan Konvoi ${room.roomId}`,
+          text: shareText,
+          url: webLink,
+        });
+        return;
+      } catch {
+        // User cancelled or unsupported fallback to copy
+      }
+    }
+    await handleCopy(webLink, 'web');
   };
 
   const handleStepMapClick = (lat: number, lng: number) => {
@@ -501,6 +592,70 @@ export function TourLeaderView({
                     </span>
                   </button>
 
+                  {/* Search Area Keberangkatan (Start) */}
+                  <div className="space-y-1.5">
+                    <label
+                      htmlFor="originAreaSearchInput"
+                      className="block text-xs font-semibold text-[#334155] dark:text-[#CBD5E1]"
+                    >
+                      Cari Area / Alamat Keberangkatan
+                    </label>
+                    <div className="relative">
+                      <Search className="w-4 h-4 text-[#64748B] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      <input
+                        id="originAreaSearchInput"
+                        type="text"
+                        value={originSearchQuery}
+                        onChange={(e) => setOriginSearchQuery(e.target.value)}
+                        placeholder="Cari SPBU, rest area, kota, atau alamat start..."
+                        className="w-full min-h-[42px] pl-9 pr-9 rounded-[12px] bg-[#F8FAFC] dark:bg-[#0B1117] border border-[#CBD5E1] dark:border-[#334155] focus:border-[#EA580C] text-xs outline-none"
+                      />
+                      {isSearchingOrigin ? (
+                        <Loader2 className="w-4 h-4 text-[#EA580C] animate-spin absolute right-3 top-1/2 -translate-y-1/2" />
+                      ) : originSearchQuery ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setOriginSearchQuery('');
+                            setOriginSearchResults([]);
+                          }}
+                          aria-label="Hapus pencarian start"
+                          className="w-7 h-7 rounded-full flex items-center justify-center text-[#64748B] hover:bg-[#E2E8F0] dark:hover:bg-[#1E293B] absolute right-1.5 top-1/2 -translate-y-1/2 cursor-pointer"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      ) : null}
+                    </div>
+                    {originSearchResults.length > 0 && (
+                      <div className="max-h-44 overflow-y-auto rounded-xl border border-[#E2E8F0] dark:border-[#334155] bg-white dark:bg-[#0B1117] divide-y divide-[#E2E8F0] dark:divide-[#1E293B] shadow-sm">
+                        {originSearchResults.map((res, i) => (
+                          <button
+                            key={`${res.lat}-${res.lng}-${i}`}
+                            type="button"
+                            onClick={() => {
+                              onPickOriginLatLng(
+                                res.lat,
+                                res.lng,
+                                res.name,
+                                res.address
+                              );
+                              setOriginSearchQuery('');
+                              setOriginSearchResults([]);
+                            }}
+                            className="w-full px-3 py-2 text-left hover:bg-[#FFF7ED] dark:hover:bg-[#431407]/40 transition-colors cursor-pointer"
+                          >
+                            <p className="text-xs font-semibold truncate text-[#0F172A] dark:text-[#F1F5F9]">
+                              {res.name}
+                            </p>
+                            <p className="text-[10px] text-[#64748B] dark:text-[#94A3B8] truncate">
+                              {res.address}
+                            </p>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
                   <div className="space-y-2">
                     <p className="text-xs font-semibold text-[#334155] dark:text-[#CBD5E1]">
                       Atau Pilih Titik Kumpul Populer
@@ -578,9 +733,73 @@ export function TourLeaderView({
                     </h3>
                   </div>
 
+                  {/* Search Area Tujuan */}
+                  <div className="space-y-1.5">
+                    <label
+                      htmlFor="destAreaSearchInput"
+                      className="block text-xs font-semibold text-[#334155] dark:text-[#CBD5E1]"
+                    >
+                      Cari Area / Lokasi Tujuan
+                    </label>
+                    <div className="relative">
+                      <Search className="w-4 h-4 text-[#64748B] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      <input
+                        id="destAreaSearchInput"
+                        type="text"
+                        value={destSearchQuery}
+                        onChange={(e) => setDestSearchQuery(e.target.value)}
+                        placeholder="Cari destinasi, wisata, cafe, atau alamat tujuan..."
+                        className="w-full min-h-[42px] pl-9 pr-9 rounded-[12px] bg-[#F8FAFC] dark:bg-[#0B1117] border border-[#CBD5E1] dark:border-[#334155] focus:border-[#16A34A] text-xs outline-none"
+                      />
+                      {isSearchingDest ? (
+                        <Loader2 className="w-4 h-4 text-[#16A34A] animate-spin absolute right-3 top-1/2 -translate-y-1/2" />
+                      ) : destSearchQuery ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setDestSearchQuery('');
+                            setDestSearchResults([]);
+                          }}
+                          aria-label="Hapus pencarian tujuan"
+                          className="w-7 h-7 rounded-full flex items-center justify-center text-[#64748B] hover:bg-[#E2E8F0] dark:hover:bg-[#1E293B] absolute right-1.5 top-1/2 -translate-y-1/2 cursor-pointer"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      ) : null}
+                    </div>
+                    {destSearchResults.length > 0 && (
+                      <div className="max-h-44 overflow-y-auto rounded-xl border border-[#E2E8F0] dark:border-[#334155] bg-white dark:bg-[#0B1117] divide-y divide-[#E2E8F0] dark:divide-[#1E293B] shadow-sm">
+                        {destSearchResults.map((res, i) => (
+                          <button
+                            key={`${res.lat}-${res.lng}-${i}`}
+                            type="button"
+                            onClick={() => {
+                              onPickDestinationLatLng(
+                                res.lat,
+                                res.lng,
+                                res.name,
+                                res.address
+                              );
+                              setDestSearchQuery('');
+                              setDestSearchResults([]);
+                            }}
+                            className="w-full px-3 py-2 text-left hover:bg-[#ECFDF5] dark:hover:bg-[#064E3B]/40 transition-colors cursor-pointer"
+                          >
+                            <p className="text-xs font-semibold truncate text-[#0F172A] dark:text-[#F1F5F9]">
+                              {res.name}
+                            </p>
+                            <p className="text-[10px] text-[#64748B] dark:text-[#94A3B8] truncate">
+                              {res.address}
+                            </p>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
                   <div className="space-y-2">
                     <p className="text-xs font-semibold text-[#334155] dark:text-[#CBD5E1]">
-                      Pilih Destinasi Utama
+                      Atau Pilih Destinasi Populer
                     </p>
                     <div className="grid grid-cols-2 gap-2">
                       {destinationPresets.map((preset) => {
@@ -962,6 +1181,12 @@ export function TourLeaderView({
 
               <div className="h-px bg-[#E2E8F0] dark:bg-[#334155]" />
 
+              {createRoomError && (
+                <div className="rounded-xl bg-[#FEF2F2] dark:bg-[#450A0A]/40 border border-[#FECACA] dark:border-[#991B1B] px-3 py-2.5 text-xs text-[#B91C1C] dark:text-[#FCA5A5]">
+                  {createRoomError}
+                </div>
+              )}
+
               {/* Stepper Footer Actions */}
               <div className="flex items-center gap-2.5">
                 {currentStep > 0 && (
@@ -999,7 +1224,7 @@ export function TourLeaderView({
                         ? 'Membuat Room...'
                         : isAuthenticated
                           ? 'Buat Room Cloud & Mulai'
-                          : 'Buat Room & Mulai'}
+                          : 'Buat Room Demo & Mulai'}
                     </span>
                   </button>
                 )}
@@ -1009,7 +1234,7 @@ export function TourLeaderView({
         ) : (
           activeRoom && (
             <>
-              {/* Active Room Info Card */}
+              {/* Active Room Info Card + Menu Bagikan Link & Kode */}
               <div className="rounded-[20px] bg-white dark:bg-[#141C24] border border-[#E2E8F0] dark:border-[#334155] p-5 space-y-4">
                 <div className="flex items-center justify-between gap-3">
                   <div>
@@ -1030,27 +1255,68 @@ export function TourLeaderView({
                     ) : (
                       <Copy className="w-3.5 h-3.5" />
                     )}
-                    <span>{copiedType === 'id' ? 'Disalin' : 'Salin ID'}</span>
+                    <span>{copiedType === 'id' ? 'Disalin' : 'Salin Kode'}</span>
                   </button>
                 </div>
 
                 <div className="h-px bg-[#E2E8F0] dark:bg-[#334155]" />
 
-                <div className="flex items-center justify-between gap-2 rounded-xl bg-[#F1F5F9] dark:bg-[#1E293B] px-3.5 py-2.5">
-                  <span className="text-xs font-mono truncate">
-                    {activeRoom.inviteLink}
-                  </span>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-2 rounded-xl bg-[#F1F5F9] dark:bg-[#1E293B] px-3.5 py-2">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-[10px] font-semibold text-[#64748B] dark:text-[#94A3B8]">
+                        Link Undangan Browser (Web)
+                      </p>
+                      <p className="text-xs font-mono truncate">
+                        {getWebRoomShareLink(activeRoom.roomId)}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleCopy(getWebRoomShareLink(activeRoom.roomId), 'web')
+                      }
+                      aria-label="Salin Link Web"
+                      className="min-w-[36px] min-h-[36px] rounded-lg flex items-center justify-center text-[#1D4ED8] dark:text-[#60A5FA] cursor-pointer shrink-0"
+                    >
+                      {copiedType === 'web' ? (
+                        <Check className="w-4 h-4 text-[#16A34A]" />
+                      ) : (
+                        <Copy className="w-4 h-4" />
+                      )}
+                    </button>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2 rounded-xl bg-[#F1F5F9] dark:bg-[#1E293B] px-3.5 py-2">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-[10px] font-semibold text-[#64748B] dark:text-[#94A3B8]">
+                        Link Undangan APK (Deep Link)
+                      </p>
+                      <p className="text-xs font-mono truncate">
+                        {activeRoom.inviteLink}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleCopy(activeRoom.inviteLink, 'link')}
+                      aria-label="Salin Link APK"
+                      className="min-w-[36px] min-h-[36px] rounded-lg flex items-center justify-center text-[#1D4ED8] dark:text-[#60A5FA] cursor-pointer shrink-0"
+                    >
+                      {copiedType === 'link' ? (
+                        <Check className="w-4 h-4 text-[#16A34A]" />
+                      ) : (
+                        <Copy className="w-4 h-4" />
+                      )}
+                    </button>
+                  </div>
+
                   <button
                     type="button"
-                    onClick={() => handleCopy(activeRoom.inviteLink, 'link')}
-                    aria-label="Salin Link"
-                    className="min-w-[36px] min-h-[36px] rounded-lg flex items-center justify-center text-[#1D4ED8] dark:text-[#60A5FA] cursor-pointer shrink-0"
+                    onClick={() => handleNativeShareRoom(activeRoom)}
+                    className="w-full min-h-[42px] px-3.5 py-2 rounded-xl bg-[#EFF6FF] dark:bg-[#1E3A8A]/50 border border-[#BFDBFE] dark:border-[#1E40AF] text-[#1D4ED8] dark:text-[#93C5FD] text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer"
                   >
-                    {copiedType === 'link' ? (
-                      <Check className="w-4 h-4 text-[#16A34A]" />
-                    ) : (
-                      <Copy className="w-4 h-4" />
-                    )}
+                    <Share2 className="w-4 h-4 shrink-0" />
+                    <span>Bagikan Link & Kode Room</span>
                   </button>
                 </div>
 

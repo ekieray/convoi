@@ -129,22 +129,48 @@ class FirestoreConvoyRepository {
 
     fun currentUserEmail(): String = getAuth()?.currentUser?.email.orEmpty()
 
-    suspend fun resolveActiveGoogleBridgeUrl(): String = withContext(Dispatchers.IO) {
-        val sharedReady = runCatching {
-            val conn = (URL("$SHARED_BASE_URL/api/health").openConnection() as HttpURLConnection).apply {
-                requestMethod = "GET"
-                instanceFollowRedirects = false
-                connectTimeout = 2500
-                readTimeout = 2500
-            }
-            try {
-                conn.responseCode in 200..399
-            } finally {
-                conn.disconnect()
-            }
-        }.getOrDefault(false)
+    private fun normalizeRoomId(raw: String): String =
+        raw.trim().uppercase(Locale.ROOT)
 
-        if (sharedReady) SHARED_GOOGLE_BRIDGE_URL else DEV_GOOGLE_BRIDGE_URL
+    private fun isSafeHttpBaseUrl(raw: String): String? {
+        val clean = raw.trim().trimEnd('/')
+        if (clean.isEmpty()) return null
+        return if (clean.startsWith("https://", ignoreCase = true) || clean.startsWith("http://", ignoreCase = true)) {
+            clean
+        } else {
+            null
+        }
+    }
+
+    private fun probeKonvoikuHealth(baseUrl: String): Boolean = runCatching {
+        val conn = (URL("$baseUrl/api/health").openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            instanceFollowRedirects = true
+            connectTimeout = 3000
+            readTimeout = 3000
+        }
+        try {
+            if (conn.responseCode !in 200..299) return@runCatching false
+            val body = conn.inputStream.bufferedReader().use { it.readText() }
+            body.contains("\"service\"") && body.contains("konvoiku")
+        } finally {
+            conn.disconnect()
+        }
+    }.getOrDefault(false)
+
+    suspend fun resolveActiveWebBaseUrl(customBaseUrl: String? = null): String = withContext(Dispatchers.IO) {
+        val customClean = customBaseUrl?.let { isSafeHttpBaseUrl(it) }
+        if (customClean != null) {
+            return@withContext customClean
+        }
+        if (probeKonvoikuHealth(SHARED_BASE_URL)) return@withContext SHARED_BASE_URL
+        if (probeKonvoikuHealth(DEV_BASE_URL)) return@withContext DEV_BASE_URL
+        SHARED_BASE_URL
+    }
+
+    suspend fun resolveActiveGoogleBridgeUrl(customBaseUrl: String? = null): String {
+        val base = resolveActiveWebBaseUrl(customBaseUrl)
+        return "$base/?mobile_auth=google"
     }
 
     fun observeAuthState(onChanged: (FirebaseUser?) -> Unit): () -> Unit {
@@ -341,6 +367,7 @@ class FirestoreConvoyRepository {
         initialLng: Double
     ): Boolean {
         val db = getFirestore() ?: return false
+        val cleanRoomId = normalizeRoomId(roomId)
         val origin = routeConfig.waypoints.firstOrNull()
         val dest = routeConfig.waypoints.lastOrNull()
         val encoded = GeoUtils.encodePolyline(
@@ -349,7 +376,7 @@ class FirestoreConvoyRepository {
 
         return runCatching {
             val roomData = hashMapOf(
-                "roomId" to roomId,
+                "roomId" to cleanRoomId,
                 "roomTitle" to roomTitle.trim().ifBlank { "Konvoi Touring" }.take(100),
                 "leaderUid" to leaderUid,
                 "coLeaderUid" to "",
@@ -383,11 +410,11 @@ class FirestoreConvoyRepository {
                 "createdAt" to FieldValue.serverTimestamp(),
                 "updatedAt" to FieldValue.serverTimestamp()
             )
-            db.collection("rooms").document(roomId).set(roomData).await()
+            db.collection("rooms").document(cleanRoomId).set(roomData).await()
 
             val memberData = hashMapOf(
                 "uid" to leaderUid,
-                "roomId" to roomId,
+                "roomId" to cleanRoomId,
                 "fullName" to profile.fullName.trim().ifBlank { "Tour Leader" }.take(80),
                 "vehicleType" to profile.vehicleType.name,
                 "vehicleDetail" to profile.displayVehicleLabel.take(80),
@@ -409,12 +436,12 @@ class FirestoreConvoyRepository {
                 "joinedAt" to FieldValue.serverTimestamp(),
                 "updatedAt" to FieldValue.serverTimestamp()
             )
-            db.collection("rooms").document(roomId)
+            db.collection("rooms").document(cleanRoomId)
                 .collection("members").document(leaderUid)
                 .set(memberData).await()
 
             routeConfig.checkpoints.forEach { cp ->
-                addCheckpoint(roomId, leaderUid, cp)
+                addCheckpoint(cleanRoomId, leaderUid, cp)
             }
             true
         }.getOrDefault(false)
@@ -428,17 +455,43 @@ class FirestoreConvoyRepository {
         initialLng: Double
     ): Result<UserRole> {
         val db = getFirestore() ?: return Result.failure(IllegalStateException("Firestore unavailable"))
+        val cleanRoomId = normalizeRoomId(roomId)
         return runCatching {
-            val snap = db.collection("rooms").document(roomId).get().await()
+            val snap = db.collection("rooms").document(cleanRoomId).get().await()
             if (!snap.exists()) {
-                throw IllegalArgumentException("Room $roomId tidak ditemukan di server.")
+                throw IllegalArgumentException("Room $cleanRoomId tidak ditemukan di server.")
             }
             val leaderUid = snap.getString("leaderUid").orEmpty()
             val role = if (leaderUid == uid) UserRole.TOUR_LEADER else UserRole.MEMBER
+            val memberRef = db.collection("rooms").document(cleanRoomId)
+                .collection("members").document(uid)
+            val existingMember = runCatching { memberRef.get().await() }.getOrNull()
+
+            if (existingMember != null && existingMember.exists()) {
+                val existingRole = runCatching {
+                    UserRole.valueOf(existingMember.getString("role") ?: role.name)
+                }.getOrDefault(role)
+                memberRef.update(
+                    mapOf(
+                        "fullName" to profile.fullName.trim().ifBlank { "Anggota" }.take(80),
+                        "vehicleType" to profile.vehicleType.name,
+                        "vehicleDetail" to profile.displayVehicleLabel.take(80),
+                        "licensePlate" to profile.licensePlate.ifBlank { "B 2026 KNV" }.take(24),
+                        "avatarPreset" to profile.avatarPreset.name,
+                        "conditionStatus" to MemberConditionStatus.AMAN.name,
+                        "connectionStatus" to ConnectionStatus.CONNECTED.name,
+                        "lastLocationText" to "GPS Aktif",
+                        "latitude" to initialLat,
+                        "longitude" to initialLng,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                ).await()
+                return@runCatching existingRole
+            }
 
             val memberData = hashMapOf(
                 "uid" to uid,
-                "roomId" to roomId,
+                "roomId" to cleanRoomId,
                 "fullName" to profile.fullName.trim().ifBlank { "Anggota" }.take(80),
                 "vehicleType" to profile.vehicleType.name,
                 "vehicleDetail" to profile.displayVehicleLabel.take(80),
@@ -460,9 +513,7 @@ class FirestoreConvoyRepository {
                 "joinedAt" to FieldValue.serverTimestamp(),
                 "updatedAt" to FieldValue.serverTimestamp()
             )
-            db.collection("rooms").document(roomId)
-                .collection("members").document(uid)
-                .set(memberData).await()
+            memberRef.set(memberData).await()
             role
         }
     }
@@ -476,9 +527,10 @@ class FirestoreConvoyRepository {
         onMessages: (List<RoomMessage>) -> Unit
     ): () -> Unit {
         val db = getFirestore() ?: return {}
+        val cleanRoomId = normalizeRoomId(roomId)
         val regs = mutableListOf<ListenerRegistration>()
 
-        regs += db.collection("rooms").document(roomId)
+        regs += db.collection("rooms").document(cleanRoomId)
             .addSnapshotListener { snap, _ ->
                 if (snap == null || !snap.exists()) return@addSnapshotListener
                 val decoded = GeoUtils.decodePolyline(snap.getString("encodedPolyline").orEmpty())
@@ -501,12 +553,16 @@ class FirestoreConvoyRepository {
                 val rawInstList = snap.get("routeInstructions") as? List<*>
                 val parsedInstructions = rawInstList.orEmpty().mapNotNull { item ->
                     val map = item as? Map<*, *> ?: return@mapNotNull null
-                    val lat = (map["lat"] as? Number)?.toDouble() ?: return@mapNotNull null
-                    val lng = (map["lng"] as? Number)?.toDouble() ?: return@mapNotNull null
+                    val lat = ((map["lat"] as? Number) ?: (map["latitude"] as? Number))
+                        ?.toDouble()?.takeIf { it.isFinite() } ?: return@mapNotNull null
+                    val lng = ((map["lng"] as? Number) ?: (map["longitude"] as? Number))
+                        ?.toDouble()?.takeIf { it.isFinite() } ?: return@mapNotNull null
+                    val offsetMeters = ((map["offsetMeters"] as? Number) ?: (map["routeOffsetInMeters"] as? Number))
+                        ?.toInt() ?: 0
                     RouteInstruction(
                         latitude = lat,
                         longitude = lng,
-                        routeOffsetInMeters = (map["offsetMeters"] as? Number)?.toInt() ?: 0,
+                        routeOffsetInMeters = offsetMeters,
                         maneuver = (map["maneuver"] as? String)?.ifBlank { "STRAIGHT" } ?: "STRAIGHT",
                         message = (map["message"] as? String).orEmpty(),
                         street = (map["street"] as? String).orEmpty()
@@ -540,7 +596,7 @@ class FirestoreConvoyRepository {
                 )
                 onRoomHeader(
                     SyncedRoomHeader(
-                        roomId = snap.getString("roomId") ?: roomId,
+                        roomId = snap.getString("roomId") ?: cleanRoomId,
                         roomTitle = snap.getString("roomTitle") ?: "Konvoi Live",
                         leaderUid = leaderUid,
                         coLeaderUid = snap.getString("coLeaderUid") ?: "",
@@ -553,9 +609,9 @@ class FirestoreConvoyRepository {
                 )
             }
 
-        regs += db.collection("rooms").document(roomId)
+        regs += db.collection("rooms").document(cleanRoomId)
             .collection("members")
-            .whereEqualTo("roomId", roomId)
+            .whereEqualTo("roomId", cleanRoomId)
             .addSnapshotListener { snap, _ ->
                 if (snap == null) return@addSnapshotListener
                 val members = snap.documents.mapIndexed { idx, doc ->
@@ -604,9 +660,9 @@ class FirestoreConvoyRepository {
                 onMembers(members)
             }
 
-        regs += db.collection("rooms").document(roomId)
+        regs += db.collection("rooms").document(cleanRoomId)
             .collection("checkpoints")
-            .whereEqualTo("roomId", roomId)
+            .whereEqualTo("roomId", cleanRoomId)
             .addSnapshotListener { snap, _ ->
                 if (snap == null) return@addSnapshotListener
                 val cps = snap.documents.map { doc ->
@@ -622,9 +678,9 @@ class FirestoreConvoyRepository {
                 onCheckpoints(cps)
             }
 
-        regs += db.collection("rooms").document(roomId)
+        regs += db.collection("rooms").document(cleanRoomId)
             .collection("messages")
-            .whereEqualTo("roomId", roomId)
+            .whereEqualTo("roomId", cleanRoomId)
             .addSnapshotListener { snap, _ ->
                 if (snap == null) return@addSnapshotListener
                 val msgs = snap.documents.sortedBy {
@@ -665,7 +721,8 @@ class FirestoreConvoyRepository {
         routeProgress: Float
     ) {
         val db = getFirestore() ?: return
-        db.collection("rooms").document(roomId)
+        val cleanRoomId = normalizeRoomId(roomId)
+        db.collection("rooms").document(cleanRoomId)
             .collection("members").document(uid)
             .update(
                 mapOf(
@@ -684,6 +741,7 @@ class FirestoreConvoyRepository {
 
     fun updateRouteConfig(roomId: String, config: ConvoyRouteConfig) {
         val db = getFirestore() ?: return
+        val cleanRoomId = normalizeRoomId(roomId)
         val origin = config.waypoints.firstOrNull()
         val dest = config.waypoints.lastOrNull()
         val encoded = GeoUtils.encodePolyline(
@@ -711,17 +769,18 @@ class FirestoreConvoyRepository {
             updates["destLat"] = dest.latitude
             updates["destLng"] = dest.longitude
         }
-        db.collection("rooms").document(roomId).update(updates)
+        db.collection("rooms").document(cleanRoomId).update(updates)
     }
 
     fun addCheckpoint(roomId: String, uid: String, cp: RestCheckpoint) {
         val db = getFirestore() ?: return
-        db.collection("rooms").document(roomId)
+        val cleanRoomId = normalizeRoomId(roomId)
+        db.collection("rooms").document(cleanRoomId)
             .collection("checkpoints").document(cp.id)
             .set(
                 mapOf(
                     "id" to cp.id,
-                    "roomId" to roomId,
+                    "roomId" to cleanRoomId,
                     "createdByUid" to uid,
                     "name" to cp.name.take(100),
                     "latitude" to cp.latitude,
@@ -735,7 +794,8 @@ class FirestoreConvoyRepository {
 
     fun removeCheckpoint(roomId: String, checkpointId: String) {
         val db = getFirestore() ?: return
-        db.collection("rooms").document(roomId)
+        val cleanRoomId = normalizeRoomId(roomId)
+        db.collection("rooms").document(cleanRoomId)
             .collection("checkpoints").document(checkpointId)
             .delete()
     }

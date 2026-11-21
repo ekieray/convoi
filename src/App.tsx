@@ -15,6 +15,7 @@ import { TripDetailView } from './components/screens/TripDetailView';
 import { TripHistoryView } from './components/screens/TripHistoryView';
 import { VehicleProfileView } from './components/screens/VehicleProfileView';
 import {
+  consumeGoogleRedirectResult,
   mapFirebaseAuthError,
   sendResetPasswordEmail,
   signInWithEmail,
@@ -467,9 +468,18 @@ function generateUniqueRoomId(): string {
 function extractRoomId(raw: string): string {
   const trimmed = raw.trim();
   if (!trimmed) return '';
-  const withoutQuery = trimmed.split('?')[0];
+  const queryMatch = trimmed.match(/[?&]room=([A-Za-z0-9_-]{4,32})/i);
+  if (queryMatch?.[1]) {
+    return queryMatch[1].toUpperCase();
+  }
+  const joinPathMatch = trimmed.match(/\/join\/([A-Za-z0-9_-]{4,32})/i);
+  if (joinPathMatch?.[1]) {
+    return joinPathMatch[1].toUpperCase();
+  }
+  const withoutQuery = trimmed.split('?')[0].replace(/\/+$/, '');
   const segments = withoutQuery.split('/');
-  return (segments[segments.length - 1] || trimmed).trim().toUpperCase();
+  const candidate = (segments[segments.length - 1] || trimmed).trim().toUpperCase();
+  return /^[A-Za-z0-9_-]{4,32}$/.test(candidate) ? candidate : '';
 }
 
 const DEFAULT_TRIP_HISTORY: TripHistoryRecord[] = [
@@ -684,7 +694,20 @@ export default function App() {
   const [isSavingProfile, setIsSavingProfile] = useState(false);
   const [profileSyncMessage, setProfileSyncMessage] = useState<string | null>(null);
   const [isCreatingRoom, setIsCreatingRoom] = useState(false);
+  const [createRoomError, setCreateRoomError] = useState<string | null>(null);
   const [isJoiningRoom, setIsJoiningRoom] = useState(false);
+  const [pendingInviteRoomId, setPendingInviteRoomId] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('mobile_auth') === 'google') return null;
+    const qRoom = params.get('room');
+    if (qRoom) {
+      const code = extractRoomId(qRoom);
+      if (code.length >= 4) return code;
+    }
+    const pathMatch = window.location.pathname.match(/\/join\/([A-Za-z0-9_-]{4,32})/i);
+    return pathMatch?.[1] ? pathMatch[1].toUpperCase() : null;
+  });
   const [isMobileGoogleBridge] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
     const params = new URLSearchParams(window.location.search);
@@ -704,7 +727,7 @@ export default function App() {
   );
 
   const [activeRoom, setActiveRoom] = useState<TourRoom | null>(null);
-  const [joinInput, setJoinInput] = useState('');
+  const [joinInput, setJoinInput] = useState(() => pendingInviteRoomId || '');
   const [joinError, setJoinError] = useState<string | null>(null);
   const [selectedMemberId, setSelectedMemberId] = useState<string | null>(null);
   const [isSimulationRunning, setIsSimulationRunning] = useState(true);
@@ -958,6 +981,71 @@ export default function App() {
     return () => unsubAuth();
   }, []);
 
+  // Recover Firebase Google redirect auth result (browser popup fallback & Android bridge)
+  useEffect(() => {
+    let cancelled = false;
+    consumeGoogleRedirectResult()
+      .then((res) => {
+        if (cancelled || !res) return;
+        if (res.mode === 'mobile_bridge' && res.user) {
+          if (res.idToken) {
+            const deepLink = `konvoiku://auth?id_token=${encodeURIComponent(res.idToken)}`;
+            setMobileBridgeEmail(res.user.email || '');
+            setMobileBridgeDeepLink(deepLink);
+            window.location.href = deepLink;
+          } else {
+            setMobileBridgeError(
+              'Sesi Google tersimpan, silakan ketuk "Masuk dengan Akun Google" sekali lagi untuk mengirim token ke aplikasi Android.'
+            );
+          }
+          return;
+        }
+        if (res.user) {
+          setLocalUserName(null);
+          saveLocalSession(null);
+          setAuthError(null);
+          setAuthInfoMessage(
+            `Berhasil masuk dengan Google (${res.user.email || res.user.displayName || 'terverifikasi'}).`
+          );
+          setIsSigningIn(false);
+          setNavDirection(1);
+          setCurrentRoute((prev) => (prev === 'login' ? 'role_selection' : prev));
+        }
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        const msg = mapFirebaseAuthError(err, 'Google');
+        if (isMobileGoogleBridge) {
+          setMobileBridgeError(msg);
+        } else {
+          setAuthError(msg);
+        }
+        setIsSigningIn(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isMobileGoogleBridge]);
+
+  // Auto-open Join Tour page when user arrives from ?room=KNV-XXXX or /join/KNV-XXXX
+  useEffect(() => {
+    if (!pendingInviteRoomId || isMobileGoogleBridge || activeRoom) return;
+    if (!authUser && !localUserName) return;
+    setJoinInput(pendingInviteRoomId);
+    setSelectedRole('MEMBER');
+    setPendingInviteRoomId(null);
+    setNavDirection(1);
+    setCurrentRoute('join_tour');
+    if (typeof window !== 'undefined') {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('room');
+      if (url.pathname.startsWith('/join/')) {
+        url.pathname = '/';
+      }
+      window.history.replaceState({}, '', url.toString());
+    }
+  }, [pendingInviteRoomId, isMobileGoogleBridge, activeRoom, authUser, localUserName]);
+
   // Subscribe to Global App Config (/app_config/global)
   useEffect(() => {
     const unsubConfig = subscribeToGlobalAppConfig((cfg) => {
@@ -1094,7 +1182,8 @@ export default function App() {
     enabled:
       Boolean(activeRoom) ||
       currentRoute === 'live_map' ||
-      currentRoute === 'tour_leader',
+      currentRoute === 'tour_leader' ||
+      currentRoute === 'join_tour',
     onFix: handleGpsFix,
   });
 
@@ -1149,7 +1238,7 @@ export default function App() {
           ...snapshot.routeConfig,
           checkpoints: latestCheckpoints,
         };
-        const sig = `${mergedConfig.destinationName}|${mergedConfig.totalRouteMeters}|${mergedConfig.waypoints.length}`;
+        const sig = `${mergedConfig.originName ?? ''}|${mergedConfig.destinationName}|${mergedConfig.routePreference ?? 'fastest'}|${Math.round(mergedConfig.totalRouteMeters / 50)}|${mergedConfig.waypoints.length}`;
         lastSyncedRouteSigRef.current = sig;
         setRouteConfig(mergedConfig);
         setSosState(snapshot.sosState);
@@ -1818,6 +1907,7 @@ export default function App() {
     // Cloud Synced Firestore Room if authenticated
     if (authUser) {
       setIsCreatingRoom(true);
+      setCreateRoomError(null);
       try {
         const dest = effectiveConfig.waypoints[effectiveConfig.waypoints.length - 1];
         const hasExplicitOrigin =
@@ -1875,6 +1965,11 @@ export default function App() {
         navigateTo('live_map', 1);
       } catch (err) {
         console.error('Gagal membuat synced room:', err);
+        setCreateRoomError(
+          err instanceof Error
+            ? `Gagal membuat room cloud: ${err.message}`
+            : 'Gagal terhubung ke Firebase Firestore. Periksa koneksi internet dan coba lagi.'
+        );
       } finally {
         setIsCreatingRoom(false);
       }
@@ -2032,49 +2127,56 @@ export default function App() {
       return;
     }
 
-    if (authUser) {
-      setIsJoiningRoom(true);
-      setJoinError(null);
-      try {
-        const initLat = gps.lastFix?.latitude ?? -6.65;
-        const initLng = gps.lastFix?.longitude ?? 106.85;
-        await saveUserPrivateProfile(authUser.uid, vehicleProfile);
-        const res = await joinSyncedRoom({
-          roomId: code,
-          uid: authUser.uid,
-          profile: vehicleProfile,
-          initialLat: initLat,
-          initialLng: initLng,
-        });
-        if (!res.ok) {
-          setJoinError(res.error || 'Gagal bergabung ke room.');
-          return;
-        }
-        setSelectedRole(res.role);
-        setSelectedMemberId(authUser.uid);
-        recordedTrackRef.current = gps.lastFix
-          ? [{ lat: gps.lastFix.latitude, lng: gps.lastFix.longitude }]
-          : [];
-        setLastCompletedTrip(null);
-        setActiveRoom({
-          roomId: code,
-          roomTitle: `Room ${code}`,
-          inviteLink: `https://konvoiku.id/join/${code}`,
-          createdAtLabel: 'Terhubung Cloud',
-          isSyncedRoom: true,
-          members: [],
-        });
-        navigateTo('live_map', 1);
-      } catch (err) {
-        setJoinError(
-          err instanceof Error ? err.message : 'Gagal terhubung ke Firestore.'
-        );
-      } finally {
-        setIsJoiningRoom(false);
-      }
+    if (!authUser) {
+      setJoinError(
+        'Masuk dengan Google atau Email di atas untuk bergabung ke room live antar-perangkat, atau pilih "Simulasi Demo Offline".'
+      );
       return;
     }
 
+    setIsJoiningRoom(true);
+    setJoinError(null);
+    try {
+      const initLat = gps.lastFix?.latitude ?? -6.65;
+      const initLng = gps.lastFix?.longitude ?? 106.85;
+      await saveUserPrivateProfile(authUser.uid, vehicleProfile);
+      const res = await joinSyncedRoom({
+        roomId: code,
+        uid: authUser.uid,
+        profile: vehicleProfile,
+        initialLat: initLat,
+        initialLng: initLng,
+      });
+      if (!res.ok) {
+        setJoinError(res.error || 'Gagal bergabung ke room.');
+        return;
+      }
+      setSelectedRole(res.role);
+      setSelectedMemberId(authUser.uid);
+      recordedTrackRef.current = gps.lastFix
+        ? [{ lat: gps.lastFix.latitude, lng: gps.lastFix.longitude }]
+        : [];
+      setLastCompletedTrip(null);
+      setActiveRoom({
+        roomId: code,
+        roomTitle: `Room ${code}`,
+        inviteLink: `https://konvoiku.id/join/${code}`,
+        createdAtLabel: 'Terhubung Cloud',
+        isSyncedRoom: true,
+        members: [],
+      });
+      navigateTo('live_map', 1);
+    } catch (err) {
+      setJoinError(
+        err instanceof Error ? err.message : 'Gagal terhubung ke Firestore.'
+      );
+    } finally {
+      setIsJoiningRoom(false);
+    }
+  };
+
+  const joinOfflineDemoRoom = (rawCode: string) => {
+    const code = extractRoomId(rawCode) || 'KNV-8492';
     // Offline Demo join fallback
     const hostTpl = DEFAULT_CONVOY_TEMPLATES[0];
     const peer1Tpl = DEFAULT_CONVOY_TEMPLATES[1];
@@ -3396,6 +3498,12 @@ export default function App() {
               >
                 Buka Aplikasi KonvoiKu
               </a>
+              <a
+                href={`intent://auth${mobileBridgeDeepLink.slice('konvoiku://auth'.length)}#Intent;scheme=konvoiku;package=com.konvoiku.touring;end`}
+                className="w-full min-h-[42px] px-4 py-2 rounded-xl bg-[#EFF6FF] dark:bg-[#1E3A8A]/40 border border-[#BFDBFE] dark:border-[#1E40AF] text-[#1D4ED8] dark:text-[#93C5FD] font-semibold text-xs flex items-center justify-center transition-colors"
+              >
+                Jika Tidak Terbuka, Coba Alternatif Chrome Intent
+              </a>
               <button
                 type="button"
                 onClick={handleCopyMobileBridgeLink}
@@ -3786,6 +3894,7 @@ export default function App() {
                         vehicleType={vehicleProfile.vehicleType}
                         isAuthenticated={Boolean(authUser)}
                         isCreatingRoom={isCreatingRoom}
+                        createRoomError={createRoomError}
                         userGpsLocation={
                           gps.lastFix
                             ? {
@@ -3832,6 +3941,9 @@ export default function App() {
                           setJoinError(null);
                         }}
                         onJoinSubmit={handleJoinSubmit}
+                        onJoinDemoOffline={() =>
+                          joinOfflineDemoRoom(extractRoomId(joinInput) || 'KNV-8492')
+                        }
                         onBack={() => navigateTo('vehicle_profile', -1)}
                       />
                     )}
@@ -3882,7 +3994,19 @@ export default function App() {
                           setIsSimulationRunning((prev) => !prev)
                         }
                         onSelectPreset={handleSelectPreset}
-                        onPickDestinationLatLng={handlePickDestinationLatLng}
+                        onPickDestinationLatLng={(
+                          lat,
+                          lng,
+                          placeName,
+                          addressLabel
+                        ) =>
+                          handlePickDestinationLatLng(
+                            lat,
+                            lng,
+                            placeName,
+                            addressLabel
+                          )
+                        }
                         onTogglePickMode={(enabled) => {
                           if (enabled) {
                             setIsPickingCheckpointOnMap(false);

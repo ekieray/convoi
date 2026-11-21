@@ -630,5 +630,10 @@ data class ConvoyUiState(
     val isAdminMonitoringLoading: Boolean = false,
     val adminMonitorError: String? = null,
     val isSavingGlobalConfig: Boolean = false,
-    val globalConfigFeedback: String? = null
+    val globalConfigFeedback: String? = null,
+    val pendingInviteRoomId: String? = null,
+    val roomSetupError: String? = null,
+    val isCreatingRoom: Boolean = false,
+    val isJoiningRoom: Boolean = false,
+    val activeWebBaseUrl: String = "https://ais-pre-mbwxrxf647cphhl5i4ggug-588877716211.asia-southeast1.run.app"
 )

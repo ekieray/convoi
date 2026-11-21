@@ -638,10 +638,22 @@ export function LiveTomTomConvoyMap({
     followTrigger,
   ]);
 
+  const lastFittedWaypointsKeyRef = useRef<string>('');
+
   // Fit entire route & focused member (disabled while Navigation Mode is active)
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || fitAllTrigger === 0 || activeNavMode) return;
+    if (!map || activeNavMode) return;
+
+    const wpSig = waypoints
+      .map((w) => `${w.latitude.toFixed(4)},${w.longitude.toFixed(4)}`)
+      .join('|');
+    const shouldAutoFitOnSync =
+      waypoints.length >= 2 && wpSig !== lastFittedWaypointsKeyRef.current;
+    if (fitAllTrigger === 0 && !shouldAutoFitOnSync) return;
+    if (waypoints.length >= 2) {
+      lastFittedWaypointsKeyRef.current = wpSig;
+    }
 
     const bounds = L.latLngBounds([]);
     waypoints.forEach((w) => bounds.extend([w.latitude, w.longitude]));
@@ -654,7 +666,7 @@ export function LiveTomTomConvoyMap({
     if (bounds.isValid()) {
       map.fitBounds(bounds, { padding: [46, 46], maxZoom: 15 });
     }
-  }, [fitAllTrigger, activeNavMode]);
+  }, [fitAllTrigger, activeNavMode, routeKey]);
 
   const adjustZoom = (delta: number) => {
     const map = mapRef.current;

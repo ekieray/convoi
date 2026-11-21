@@ -50,6 +50,15 @@ fun ConvoyNavGraph(
     val uiState by viewModel.uiState.collectAsState()
     val appContext = LocalContext.current
 
+    LaunchedEffect(uiState.isLoggedIn, uiState.pendingInviteRoomId) {
+        if (uiState.isLoggedIn && uiState.pendingInviteRoomId != null) {
+            viewModel.consumePendingInviteNavigation()
+            navController.navigate(ConvoyRoute.JoinTour.route) {
+                launchSingleTop = true
+            }
+        }
+    }
+
     NavHost(
         navController = navController,
         startDestination = if (uiState.isLoggedIn) ConvoyRoute.RoleSelection.route else ConvoyRoute.Login.route,
@@ -104,6 +113,9 @@ fun ConvoyNavGraph(
                 },
                 onOpenGoogleBrowserSync = {
                     viewModel.openGoogleBrowserSync(appContext)
+                },
+                onOpenCustomGoogleBrowserSync = { customUrl ->
+                    viewModel.openGoogleBrowserSync(appContext, customUrl)
                 },
                 onSubmitGoogleSyncToken = { raw ->
                     viewModel.importGoogleSyncInput(raw) {
@@ -286,6 +298,9 @@ fun ConvoyNavGraph(
                 vehicleType = uiState.vehicleProfile.vehicleType,
                 userGpsLat = uiState.userGpsLat,
                 userGpsLng = uiState.userGpsLng,
+                isCreatingRoom = uiState.isCreatingRoom,
+                roomSetupError = uiState.roomSetupError,
+                activeWebBaseUrl = uiState.activeWebBaseUrl,
                 onPickOriginLatLng = { lat, lng, placeName, addressLabel ->
                     viewModel.setCustomOriginLatLng(lat, lng, placeName, addressLabel)
                 },
@@ -303,8 +318,9 @@ fun ConvoyNavGraph(
                 onUpdateMaxStragglerDistance = viewModel::updateMaxStragglerDistance,
                 onToggleSoundAlert = viewModel::toggleSoundAlert,
                 onCreateRoom = { title ->
-                    viewModel.createNewTourRoom(title)
-                    navController.navigate(ConvoyRoute.LiveMap.route)
+                    viewModel.createNewTourRoom(title) {
+                        navController.navigate(ConvoyRoute.LiveMap.route)
+                    }
                 },
                 onSimulateJoin = { viewModel.simulateMemberJoin() },
                 onRemoveMember = viewModel::removeMember,
@@ -321,11 +337,16 @@ fun ConvoyNavGraph(
                 joinError = uiState.joinError,
                 extractedRoomId = viewModel.extractRoomId(uiState.joinInput),
                 vehicleProfile = uiState.vehicleProfile,
+                isJoining = uiState.isJoiningRoom,
                 onInputChange = viewModel::updateJoinInput,
                 onJoinSubmit = {
                     viewModel.joinConvoyRoom {
                         navController.navigate(ConvoyRoute.LiveMap.route)
                     }
+                },
+                onJoinDemoOffline = {
+                    viewModel.joinOfflineDemoRoom()
+                    navController.navigate(ConvoyRoute.LiveMap.route)
                 },
                 onBack = { navController.popBackStack() }
             )
@@ -356,14 +377,15 @@ fun ConvoyNavGraph(
                 isLeaderTroubleSimActive = uiState.isLeaderTroubleSimActive,
                 gpsStatus = uiState.gpsStatus,
                 gpsAccuracyMeters = uiState.gpsAccuracyMeters,
+                activeWebBaseUrl = uiState.activeWebBaseUrl,
                 destinationPresets = viewModel.destinationPresets,
                 onLocationPermissionResult = viewModel::onLocationPermissionResult,
                 onRetryGps = viewModel::startGpsTracking,
                 onSelectMember = viewModel::selectMapMember,
                 onToggleSimulation = viewModel::toggleSimulation,
                 onSelectPreset = viewModel::selectDestinationPreset,
-                onPickCustomDestinationLatLng = { lat, lng ->
-                    viewModel.setCustomDestinationLatLng(lat, lng)
+                onPickCustomDestinationLatLng = { lat, lng, name, addr ->
+                    viewModel.setCustomDestinationLatLng(lat, lng, name, addr)
                 },
                 onTogglePickMode = viewModel::setPickingDestinationMode,
                 onStartPickCheckpoint = viewModel::startPickingCheckpointOnMap,

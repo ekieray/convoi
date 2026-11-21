@@ -5,6 +5,7 @@ import {
   BellRing,
   Bike,
   Car,
+  Check,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -12,11 +13,14 @@ import {
   Clock,
   Cloud,
   Coffee,
+  Copy,
   Eye,
   EyeOff,
   Flag,
   Gauge,
   Info,
+  Link2,
+  Loader2,
   LocateFixed,
   MapPin,
   MessageCircle,
@@ -25,8 +29,10 @@ import {
   Pause,
   Play,
   Route,
+  Search,
   Send,
   Settings,
+  Share2,
   Shield,
   Square,
   Trash2,
@@ -59,6 +65,10 @@ import {
 import { ConvoyAvatar } from '../ConvoyAvatar';
 import { LiveTomTomConvoyMap } from '../map/LiveTomTomConvoyMap';
 import { GpsPermissionStatus } from '../../hooks/useDeviceGps';
+import {
+  searchTomTomPlaces,
+  TomTomPlaceResult,
+} from '../../services/tomtomMapService';
 import { LatLngPoint } from '../../utils/geo';
 
 interface LiveTrackingMapViewProps {
@@ -98,7 +108,12 @@ interface LiveTrackingMapViewProps {
   onSelectMember: (memberId: string) => void;
   onToggleSimulation: () => void;
   onSelectPreset: (preset: DestinationPreset) => void;
-  onPickDestinationLatLng: (lat: number, lng: number) => void;
+  onPickDestinationLatLng: (
+    lat: number,
+    lng: number,
+    placeName?: string,
+    addressLabel?: string
+  ) => void;
   onTogglePickMode: (enabled: boolean) => void;
   onStartPickCheckpoint: (name: string) => void;
   onCancelPickCheckpoint: () => void;
@@ -359,6 +374,15 @@ export function LiveTrackingMapView({
   const [participantsExpanded, setParticipantsExpanded] = useState(false);
   const [showChatSheet, setShowChatSheet] = useState(false);
   const [showLeaderSettings, setShowLeaderSettings] = useState(false);
+  const [showShareRoomModal, setShowShareRoomModal] = useState(false);
+  const [shareCopiedType, setShareCopiedType] = useState<
+    'id' | 'web' | 'link' | null
+  >(null);
+  const [destSearchQuery, setDestSearchQuery] = useState('');
+  const [destSearchResults, setDestSearchResults] = useState<
+    TomTomPlaceResult[]
+  >([]);
+  const [isSearchingDest, setIsSearchingDest] = useState(false);
   const [showSosConfirm, setShowSosConfirm] = useState(false);
   const [showFinishTripConfirm, setShowFinishTripConfirm] = useState(false);
   const [chatText, setChatText] = useState('');
@@ -368,6 +392,71 @@ export function LiveTrackingMapView({
     lng: number;
   } | null>(null);
   const [tapCheckpointNameInput, setTapCheckpointNameInput] = useState('');
+
+  useEffect(() => {
+    if (!showLeaderSettings) return;
+    const trimmed = destSearchQuery.trim();
+    if (trimmed.length < 2) {
+      setDestSearchResults([]);
+      setIsSearchingDest(false);
+      return;
+    }
+    let cancelled = false;
+    setIsSearchingDest(true);
+    const timer = window.setTimeout(async () => {
+      try {
+        const res = await searchTomTomPlaces(trimmed);
+        if (!cancelled) setDestSearchResults(res);
+      } catch {
+        if (!cancelled) setDestSearchResults([]);
+      } finally {
+        if (!cancelled) setIsSearchingDest(false);
+      }
+    }, 320);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [destSearchQuery, showLeaderSettings]);
+
+  const getWebRoomShareLink = (roomId: string) => {
+    if (typeof window === 'undefined') {
+      return `https://konvoiku.id/join/${encodeURIComponent(roomId)}`;
+    }
+    return `${window.location.origin}/?room=${encodeURIComponent(roomId)}`;
+  };
+
+  const handleCopyShare = async (
+    text: string,
+    type: 'id' | 'web' | 'link'
+  ) => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Ignore clipboard failure
+    }
+    setShareCopiedType(type);
+    window.setTimeout(() => setShareCopiedType(null), 1800);
+  };
+
+  const handleNativeShareRoom = async () => {
+    if (!activeRoom) return;
+    const webLink = getWebRoomShareLink(activeRoom.roomId);
+    const shareText = `Gabung konvoi "${activeRoom.roomTitle}" di KonvoiKu!\nKode Room: ${activeRoom.roomId}\nLink Browser: ${webLink}\nLink APK: ${activeRoom.inviteLink}`;
+    if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
+      try {
+        await navigator.share({
+          title: `Undangan Konvoi ${activeRoom.roomId}`,
+          text: shareText,
+          url: webLink,
+        });
+        return;
+      } catch {
+        // Fallback to copy
+      }
+    }
+    await handleCopyShare(webLink, 'web');
+  };
 
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
   const prevAlertKeyRef = useRef('');
@@ -601,6 +690,18 @@ export function LiveTrackingMapView({
             </button>
           )}
 
+          {activeRoom && (
+            <button
+              type="button"
+              onClick={() => setShowShareRoomModal(true)}
+              title="Bagikan Link / Kode Room"
+              aria-label="Bagikan Link atau Kode Room"
+              className="min-w-[32px] min-h-[32px] px-1.5 rounded-lg bg-[#EFF6FF] dark:bg-[#1E3A8A]/50 text-[#1D4ED8] dark:text-[#93C5FD] border border-[#BFDBFE] dark:border-[#1E40AF] flex items-center justify-center gap-1 text-[10px] font-semibold cursor-pointer shrink-0"
+            >
+              <Share2 className="w-3.5 h-3.5 shrink-0" />
+            </button>
+          )}
+
           <button
             type="button"
             onClick={() => setShowFinishTripConfirm(true)}
@@ -609,17 +710,19 @@ export function LiveTrackingMapView({
             Selesai
           </button>
 
-          <button
-            type="button"
-            onClick={() =>
-              onSwitchPreviewRole(
-                role === 'TOUR_LEADER' ? 'MEMBER' : 'TOUR_LEADER'
-              )
-            }
-            className="px-2 py-1.5 rounded-lg bg-[#EFF6FF] dark:bg-[#1E3A8A] text-[10px] font-semibold text-[#1D4ED8] dark:text-[#DBEAFE] transition-colors cursor-pointer whitespace-nowrap"
-          >
-            {role === 'TOUR_LEADER' ? 'Leader' : 'Anggota'}
-          </button>
+          {!activeRoom?.isSyncedRoom && (
+            <button
+              type="button"
+              onClick={() =>
+                onSwitchPreviewRole(
+                  role === 'TOUR_LEADER' ? 'MEMBER' : 'TOUR_LEADER'
+                )
+              }
+              className="px-2 py-1.5 rounded-lg bg-[#EFF6FF] dark:bg-[#1E3A8A] text-[10px] font-semibold text-[#1D4ED8] dark:text-[#DBEAFE] transition-colors cursor-pointer whitespace-nowrap"
+            >
+              {role === 'TOUR_LEADER' ? 'Leader' : 'Anggota'}
+            </button>
+          )}
 
           {isEffectiveLeader && (
             <button
@@ -1377,6 +1480,20 @@ export function LiveTrackingMapView({
                   </span>
                 </div>
               ) : null}
+
+              {activeRoom && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowSideInfoDrawer(false);
+                    setShowShareRoomModal(true);
+                  }}
+                  className="w-full mt-1.5 min-h-[34px] px-2.5 rounded-xl bg-[#EFF6FF] dark:bg-[#1E3A8A]/40 border border-[#BFDBFE] dark:border-[#1E40AF] text-[#1D4ED8] dark:text-[#93C5FD] text-[11px] font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <Share2 className="w-3.5 h-3.5 shrink-0" />
+                  <span>Bagikan Link &amp; Kode ({activeRoom.roomId})</span>
+                </button>
+              )}
             </div>
 
             {/* Convoy Participants & Quick Self Condition */}
@@ -2125,6 +2242,124 @@ export function LiveTrackingMapView({
         </div>
       )}
 
+      {/* Share Room Link & Code Modal */}
+      {showShareRoomModal && activeRoom && (
+        <div className="absolute inset-0 z-50 bg-black/55 backdrop-blur-[2px] flex items-center justify-center p-5">
+          <div className="w-full max-w-[336px] rounded-[24px] bg-white dark:bg-[#141C24] border border-[#E2E8F0] dark:border-[#334155] p-5 space-y-4 shadow-2xl">
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="w-10 h-10 rounded-xl bg-[#EFF6FF] dark:bg-[#1E3A8A]/50 text-[#1D4ED8] dark:text-[#93C5FD] flex items-center justify-center shrink-0">
+                  <Share2 className="w-5 h-5" />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="text-sm font-bold truncate">
+                    Bagikan Room Konvoi
+                  </h3>
+                  <p className="text-[11px] text-[#64748B] dark:text-[#94A3B8] truncate">
+                    {activeRoom.roomTitle}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowShareRoomModal(false)}
+                aria-label="Tutup Bagikan Room"
+                className="w-8 h-8 rounded-full flex items-center justify-center hover:bg-[#F1F5F9] dark:hover:bg-[#1E293B] cursor-pointer shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="rounded-2xl bg-[#F8FAFC] dark:bg-[#0B1117] border border-[#E2E8F0] dark:border-[#334155] p-3 flex items-center justify-between gap-2">
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-[#64748B] dark:text-[#94A3B8]">
+                  Kode Room
+                </p>
+                <p className="text-xl font-extrabold font-mono tracking-widest text-[#1D4ED8] dark:text-[#60A5FA]">
+                  {activeRoom.roomId}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => handleCopyShare(activeRoom.roomId, 'id')}
+                className="px-3 py-2 rounded-xl bg-[#1D4ED8] hover:bg-[#1E40AF] text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+              >
+                {shareCopiedType === 'id' ? (
+                  <Check className="w-3.5 h-3.5" />
+                ) : (
+                  <Copy className="w-3.5 h-3.5" />
+                )}
+                <span>{shareCopiedType === 'id' ? 'Disalin' : 'Salin'}</span>
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              <div className="rounded-xl bg-[#F8FAFC] dark:bg-[#0B1117] border border-[#E2E8F0] dark:border-[#334155] p-2.5 flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="text-[10px] font-semibold text-[#64748B] dark:text-[#94A3B8]">
+                    Link Browser (Web)
+                  </p>
+                  <p className="text-[11px] font-mono truncate">
+                    {getWebRoomShareLink(activeRoom.roomId)}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    handleCopyShare(
+                      getWebRoomShareLink(activeRoom.roomId),
+                      'web'
+                    )
+                  }
+                  className="px-2.5 py-1.5 rounded-lg border border-[#CBD5E1] dark:border-[#334155] text-[11px] font-semibold flex items-center gap-1 cursor-pointer shrink-0"
+                >
+                  {shareCopiedType === 'web' ? (
+                    <Check className="w-3.5 h-3.5 text-[#16A34A]" />
+                  ) : (
+                    <Link2 className="w-3.5 h-3.5" />
+                  )}
+                  <span>{shareCopiedType === 'web' ? 'OK' : 'Salin'}</span>
+                </button>
+              </div>
+
+              <div className="rounded-xl bg-[#F8FAFC] dark:bg-[#0B1117] border border-[#E2E8F0] dark:border-[#334155] p-2.5 flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="text-[10px] font-semibold text-[#64748B] dark:text-[#94A3B8]">
+                    Deep Link Android APK
+                  </p>
+                  <p className="text-[11px] font-mono truncate">
+                    {activeRoom.inviteLink}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    handleCopyShare(activeRoom.inviteLink, 'link')
+                  }
+                  className="px-2.5 py-1.5 rounded-lg border border-[#CBD5E1] dark:border-[#334155] text-[11px] font-semibold flex items-center gap-1 cursor-pointer shrink-0"
+                >
+                  {shareCopiedType === 'link' ? (
+                    <Check className="w-3.5 h-3.5 text-[#16A34A]" />
+                  ) : (
+                    <Copy className="w-3.5 h-3.5" />
+                  )}
+                  <span>{shareCopiedType === 'link' ? 'OK' : 'Salin'}</span>
+                </button>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleNativeShareRoom}
+              className="w-full min-h-[44px] rounded-xl bg-[#EA580C] hover:bg-[#C2410C] text-white text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <Share2 className="w-4 h-4" />
+              <span>Bagikan Undangan Konvoi</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Leader Route, Checkpoints & Slider Settings Sheet */}
       {showLeaderSettings && isEffectiveLeader && (
         <div className="absolute inset-0 z-40 bg-black/50 backdrop-blur-[2px] flex items-end">
@@ -2146,10 +2381,69 @@ export function LiveTrackingMapView({
               </button>
             </div>
 
-            <div className="space-y-2">
+            <div className="space-y-2.5">
               <p className="text-xs font-semibold text-[#334155] dark:text-[#CBD5E1]">
-                Titik Tujuan Akhir & Garis Rute Resmi
+                Titik Tujuan Akhir &amp; Garis Rute Resmi
               </p>
+
+              {/* Inline TomTom Search Area */}
+              <div className="space-y-1.5">
+                <div className="relative flex items-center">
+                  <Search className="w-3.5 h-3.5 text-[#64748B] absolute left-3 pointer-events-none" />
+                  <input
+                    type="text"
+                    value={destSearchQuery}
+                    onChange={(e) => setDestSearchQuery(e.target.value)}
+                    placeholder="Cari kota, tempat wisata, SPBU, atau alamat..."
+                    className="w-full min-h-[40px] pl-8 pr-8 rounded-xl bg-[#F8FAFC] dark:bg-[#0B1117] border border-[#CBD5E1] dark:border-[#334155] text-xs outline-none focus:border-[#1D4ED8]"
+                  />
+                  {isSearchingDest ? (
+                    <Loader2 className="w-3.5 h-3.5 text-[#1D4ED8] animate-spin absolute right-3" />
+                  ) : destSearchQuery ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDestSearchQuery('');
+                        setDestSearchResults([]);
+                      }}
+                      className="w-6 h-6 rounded-full flex items-center justify-center text-[#64748B] hover:bg-[#E2E8F0] dark:hover:bg-[#1E293B] absolute right-2 cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  ) : null}
+                </div>
+
+                {destSearchResults.length > 0 && (
+                  <div className="rounded-xl border border-[#CBD5E1] dark:border-[#334155] bg-[#F8FAFC] dark:bg-[#0B1117] divide-y divide-[#E2E8F0] dark:divide-[#334155] max-h-[168px] overflow-y-auto">
+                    {destSearchResults.map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => {
+                          onPickDestinationLatLng(
+                            item.lat,
+                            item.lng,
+                            item.name,
+                            item.address
+                          );
+                          setDestSearchQuery('');
+                          setDestSearchResults([]);
+                          setShowLeaderSettings(false);
+                        }}
+                        className="w-full px-3 py-2 text-left hover:bg-[#EFF6FF] dark:hover:bg-[#1E3A8A]/40 transition-colors cursor-pointer"
+                      >
+                        <p className="text-xs font-semibold truncate">
+                          {item.name}
+                        </p>
+                        <p className="text-[10px] text-[#64748B] dark:text-[#94A3B8] truncate">
+                          {item.address}
+                        </p>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               <div className="grid grid-cols-2 gap-2">
                 {destinationPresets.map((preset) => {
                   const active = routeConfig.destinationName === preset.name;

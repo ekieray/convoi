@@ -60,6 +60,7 @@ import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CloudDone
 import androidx.compose.material.icons.rounded.Coffee
+import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.DirectionsCar
 import androidx.compose.material.icons.rounded.EditLocationAlt
@@ -69,6 +70,7 @@ import androidx.compose.material.icons.rounded.Flag
 import androidx.compose.material.icons.rounded.GpsFixed
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Layers
+import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.LocalCafe
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.MyLocation
@@ -78,7 +80,9 @@ import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Remove
 import androidx.compose.material.icons.rounded.Route
 import androidx.compose.material.icons.rounded.Schedule
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Sos
 import androidx.compose.material.icons.rounded.Speed
@@ -135,7 +139,9 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -145,6 +151,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.konvoiku.touring.data.TomTomApiService
+import com.konvoiku.touring.data.TomTomPlaceResult
 import com.konvoiku.touring.model.ChatMessageType
 import com.konvoiku.touring.model.ConvoyMember
 import com.konvoiku.touring.model.ConvoyRouteConfig
@@ -199,13 +206,14 @@ fun LiveTrackingMapScreen(
     isLeaderTroubleSimActive: Boolean = false,
     gpsStatus: GpsTrackingStatus = GpsTrackingStatus.IDLE,
     gpsAccuracyMeters: Int = 20,
+    activeWebBaseUrl: String = "https://ais-pre-mbwxrxf647cphhl5i4ggug-588877716211.asia-southeast1.run.app",
     destinationPresets: List<ConvoyViewModel.DestinationPreset>,
     onLocationPermissionResult: (Boolean) -> Unit = {},
     onRetryGps: () -> Unit = {},
     onSelectMember: (String) -> Unit,
     onToggleSimulation: () -> Unit,
     onSelectPreset: (ConvoyViewModel.DestinationPreset) -> Unit,
-    onPickCustomDestinationLatLng: (Double, Double) -> Unit,
+    onPickCustomDestinationLatLng: (Double, Double, String?, String?) -> Unit,
     onTogglePickMode: (Boolean) -> Unit,
     onStartPickCheckpoint: (String) -> Unit,
     onCancelPickCheckpoint: () -> Unit,
@@ -240,6 +248,11 @@ fun LiveTrackingMapScreen(
     var isParticipantsExpanded by remember { mutableStateOf(false) }
     var showChatSheet by remember { mutableStateOf(false) }
     var showLeaderSettingsSheet by remember { mutableStateOf(false) }
+    var showShareRoomDialog by remember { mutableStateOf(false) }
+    var copiedShareHint by remember { mutableStateOf<String?>(null) }
+    var destSearchQuery by remember { mutableStateOf("") }
+    var destSearchResults by remember { mutableStateOf<List<TomTomPlaceResult>>(emptyList()) }
+    var isSearchingDest by remember { mutableStateOf(false) }
     var showSosConfirmDialog by remember { mutableStateOf(false) }
     var showFinishTripDialog by remember { mutableStateOf(false) }
     var chatInputText by remember { mutableStateOf("") }
@@ -248,6 +261,20 @@ fun LiveTrackingMapScreen(
     val openSideDrawer: () -> Unit = {
         showSideInfoDrawer = true
         sideInfoTouchTick += 1
+    }
+
+    LaunchedEffect(showLeaderSettingsSheet, destSearchQuery) {
+        if (!showLeaderSettingsSheet) return@LaunchedEffect
+        val q = destSearchQuery.trim()
+        if (q.length < 2) {
+            destSearchResults = emptyList()
+            isSearchingDest = false
+            return@LaunchedEffect
+        }
+        isSearchingDest = true
+        delay(320)
+        destSearchResults = TomTomApiService.searchPlaces(q)
+        isSearchingDest = false
     }
 
     LaunchedEffect(showSideInfoDrawer, sideInfoTouchTick) {
@@ -263,6 +290,7 @@ fun LiveTrackingMapScreen(
     var checkpointDraftName by remember { mutableStateOf("") }
     var tappedCheckpointLatLng by remember { mutableStateOf<LatLngGeo?>(null) }
 
+    val clipboardManager = LocalClipboardManager.current
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var hasRequestedPermissionOnce by remember { mutableStateOf(false) }
@@ -554,6 +582,20 @@ fun LiveTrackingMapScreen(
                                 modifier = Modifier.size(20.dp)
                             )
                         }
+                    }
+                    IconButton(
+                        onClick = {
+                            copiedShareHint = null
+                            showShareRoomDialog = true
+                        },
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Share,
+                            contentDescription = "Bagikan Link & Kode Room",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(19.dp)
+                        )
                     }
                     TextButton(
                         onClick = { showFinishTripDialog = true },
@@ -884,7 +926,7 @@ fun LiveTrackingMapScreen(
                     },
                     onMapTap = { lat, lng ->
                         if (isPickingDestinationOnMap) {
-                            onPickCustomDestinationLatLng(lat, lng)
+                            onPickCustomDestinationLatLng(lat, lng, null, null)
                         } else if (isPickingCheckpointOnMap) {
                             if (pendingCheckpointName.isNotBlank()) {
                                 onConfirmAddCheckpointLatLng(pendingCheckpointName, lat, lng)
@@ -1765,6 +1807,23 @@ fun LiveTrackingMapScreen(
                                             Text(coLeaderMember.fullName, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                                         }
                                     }
+                                    if (activeRoom != null) {
+                                        OutlinedButton(
+                                            onClick = {
+                                                copiedShareHint = null
+                                                showSideInfoDrawer = false
+                                                showShareRoomDialog = true
+                                            },
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(top = 4.dp),
+                                            shape = RoundedCornerShape(10.dp)
+                                        ) {
+                                            Icon(Icons.Rounded.Share, contentDescription = null, modifier = Modifier.size(14.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("Bagikan Link & Kode (${activeRoom.roomId})", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                                        }
+                                    }
                                 }
 
                                 HorizontalDivider(color = MaterialTheme.colorScheme.outline)
@@ -2194,6 +2253,136 @@ fun LiveTrackingMapScreen(
         )
     }
 
+    if (showShareRoomDialog && activeRoom != null) {
+        val webShareLink = "${activeWebBaseUrl.trimEnd('/')}/?room=${Uri.encode(activeRoom.roomId)}"
+        AlertDialog(
+            onDismissRequest = { showShareRoomDialog = false },
+            icon = { Icon(Icons.Rounded.Share, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+            title = { Text("Bagikan Undangan Konvoi", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column {
+                                Text("KODE ROOM", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(
+                                    text = activeRoom.roomId,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 18.sp,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                            TextButton(
+                                onClick = {
+                                    clipboardManager.setText(AnnotatedString(activeRoom.roomId))
+                                    copiedShareHint = "Kode Room ${activeRoom.roomId} disalin"
+                                }
+                            ) {
+                                Icon(Icons.Rounded.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Salin")
+                            }
+                        }
+                    }
+
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.background,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Rounded.Link, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Link Browser", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(webShareLink, fontSize = 11.sp, fontFamily = FontFamily.Monospace, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                            IconButton(
+                                onClick = {
+                                    clipboardManager.setText(AnnotatedString(webShareLink))
+                                    copiedShareHint = "Link Browser disalin"
+                                }
+                            ) {
+                                Icon(Icons.Rounded.ContentCopy, contentDescription = "Salin Link Web", modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    }
+
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.background,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Rounded.Share, contentDescription = null, tint = Color(0xFFEA580C), modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Link APK KonvoiKu", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(activeRoom.inviteLink, fontSize = 11.sp, fontFamily = FontFamily.Monospace, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                            IconButton(
+                                onClick = {
+                                    clipboardManager.setText(AnnotatedString(activeRoom.inviteLink))
+                                    copiedShareHint = "Link APK disalin"
+                                }
+                            ) {
+                                Icon(Icons.Rounded.ContentCopy, contentDescription = "Salin Link APK", modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    }
+
+                    if (!copiedShareHint.isNullOrBlank()) {
+                        Text(
+                            text = copiedShareHint.orEmpty(),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color(0xFF15803D)
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val shareBody = "Gabung konvoi \"${activeRoom.roomTitle}\" di KonvoiKu!\nKode Room: ${activeRoom.roomId}\nLink Web: $webShareLink\nLink Aplikasi: ${activeRoom.inviteLink}"
+                        val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_SUBJECT, "Undangan Konvoi ${activeRoom.roomId}")
+                            putExtra(Intent.EXTRA_TEXT, shareBody)
+                        }
+                        context.startActivity(Intent.createChooser(sendIntent, "Bagikan Undangan Konvoi"))
+                    }
+                ) {
+                    Icon(Icons.Rounded.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Bagikan")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showShareRoomDialog = false }) {
+                    Text("Tutup")
+                }
+            }
+        )
+    }
+
     // Leader Route, Checkpoints & Straggler Settings Bottom Sheet
     if (showLeaderSettingsSheet && isEffectiveLeader) {
         ModalBottomSheet(
@@ -2220,6 +2409,67 @@ fun LiveTrackingMapScreen(
 
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Titik Tujuan Akhir & Garis Rute Resmi", style = MaterialTheme.typography.labelLarge)
+                    OutlinedTextField(
+                        value = destSearchQuery,
+                        onValueChange = { destSearchQuery = it },
+                        label = { Text("Cari Area Tujuan Baru") },
+                        placeholder = { Text("Mis. Puncak, Ciwidey, Rest Area...") },
+                        leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
+                        trailingIcon = {
+                            if (destSearchQuery.isNotEmpty()) {
+                                IconButton(onClick = {
+                                    destSearchQuery = ""
+                                    destSearchResults = emptyList()
+                                }) {
+                                    Icon(Icons.Rounded.Close, contentDescription = "Hapus")
+                                }
+                            }
+                        },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (isSearchingDest || destSearchResults.isNotEmpty()) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.background,
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column {
+                                if (isSearchingDest) {
+                                    Text(
+                                        text = "Mencari lokasi tujuan di TomTom...",
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(12.dp)
+                                    )
+                                } else {
+                                    destSearchResults.take(4).forEach { result ->
+                                        Column(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    onPickCustomDestinationLatLng(
+                                                        result.latitude,
+                                                        result.longitude,
+                                                        result.name,
+                                                        result.address
+                                                    )
+                                                    destSearchQuery = ""
+                                                    destSearchResults = emptyList()
+                                                }
+                                                .padding(horizontal = 12.dp, vertical = 9.dp)
+                                        ) {
+                                            Text(result.name, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                            Text(result.address, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        }
+                                        HorizontalDivider()
+                                    }
+                                }
+                            }
+                        }
+                    }
                     destinationPresets.chunked(2).forEach { rowPresets ->
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             rowPresets.forEach { preset ->

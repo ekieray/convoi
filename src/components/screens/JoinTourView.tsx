@@ -12,6 +12,7 @@ interface JoinTourViewProps {
   onGoogleSignIn?: () => void;
   onInputChange: (val: string) => void;
   onJoinSubmit: () => void;
+  onJoinDemoOffline?: () => void;
   onBack: () => void;
 }
 
@@ -25,6 +26,7 @@ export function JoinTourView({
   onGoogleSignIn,
   onInputChange,
   onJoinSubmit,
+  onJoinDemoOffline,
   onBack,
 }: JoinTourViewProps) {
   const handlePaste = async () => {
@@ -128,8 +130,8 @@ export function JoinTourView({
           </div>
 
           {/* Quick Demo Sample */}
-          <div className="flex items-center gap-2 text-xs text-[#64748B] dark:text-[#94A3B8]">
-            <span>Contoh offline:</span>
+          <div className="flex flex-wrap items-center gap-2 text-xs text-[#64748B] dark:text-[#94A3B8]">
+            <span>Contoh kode:</span>
             <button
               type="button"
               onClick={() => onInputChange('https://konvoiku.id/join/KNV-8492')}
@@ -137,6 +139,15 @@ export function JoinTourView({
             >
               KNV-8492
             </button>
+            {!isAuthenticated && onJoinDemoOffline && (
+              <button
+                type="button"
+                onClick={onJoinDemoOffline}
+                className="px-2.5 py-1.5 rounded-lg border border-[#FDBA74] bg-[#FFF7ED] dark:bg-[#431407]/40 text-[#C2410C] dark:text-[#FDBA74] font-semibold transition-colors cursor-pointer"
+              >
+                Simulasi Demo Offline
+              </button>
+            )}
           </div>
 
           {/* Registered Rider Summary */}

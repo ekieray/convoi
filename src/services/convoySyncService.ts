@@ -386,7 +386,8 @@ export async function joinSyncedRoom(params: {
   initialLat: number;
   initialLng: number;
 }): Promise<{ ok: boolean; error?: string; role: UserRole }> {
-  const { roomId, uid, profile, initialLat, initialLng } = params;
+  const roomId = params.roomId.trim().toUpperCase();
+  const { uid, profile, initialLat, initialLng } = params;
   const roomPath = `rooms/${roomId}`;
 
   let roomData: Record<string, unknown> | undefined;
@@ -528,16 +529,24 @@ export function subscribeToSyncedRoom(
         ? d.routeInstructions
             .map((item: unknown) => {
               const obj = item as Record<string, unknown>;
+              const lat = Number(obj?.latitude ?? obj?.lat ?? 0);
+              const lng = Number(obj?.longitude ?? obj?.lng ?? 0);
+              const offset = Number(obj?.routeOffsetInMeters ?? obj?.offsetMeters ?? 0);
               return {
-                latitude: Number(obj?.latitude ?? 0),
-                longitude: Number(obj?.longitude ?? 0),
-                routeOffsetInMeters: Number(obj?.routeOffsetInMeters ?? 0),
+                latitude: lat,
+                longitude: lng,
+                routeOffsetInMeters: offset,
                 maneuver: String(obj?.maneuver ?? 'STRAIGHT'),
                 message: String(obj?.message ?? 'Ikuti rute'),
                 street: typeof obj?.street === 'string' ? obj.street : '',
               };
             })
-            .filter((ins: RouteInstruction) => Boolean(ins.message))
+            .filter(
+              (ins: RouteInstruction) =>
+                Boolean(ins.message) &&
+                Number.isFinite(ins.latitude) &&
+                Number.isFinite(ins.longitude)
+            )
         : cachedExistingConfig?.routeInstructions;
 
       const nextConfig: ConvoyRouteConfig = {

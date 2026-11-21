@@ -27,10 +27,12 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -56,8 +58,10 @@ fun JoinTourScreen(
     joinError: String?,
     extractedRoomId: String,
     vehicleProfile: VehicleProfile,
+    isJoining: Boolean = false,
     onInputChange: (String) -> Unit,
     onJoinSubmit: () -> Unit,
+    onJoinDemoOffline: () -> Unit = {},
     onBack: () -> Unit
 ) {
     val clipboardManager = LocalClipboardManager.current
@@ -203,30 +207,66 @@ fun JoinTourScreen(
 
             Spacer(modifier = Modifier.weight(1f))
 
-            Button(
-                onClick = onJoinSubmit,
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .navigationBarsPadding()
                     .imePadding()
-                    .padding(bottom = 20.dp)
-                    .height(52.dp),
-                shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.secondary,
-                    contentColor = androidx.compose.ui.graphics.Color.White
-                )
+                    .padding(bottom = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Rounded.Login,
-                    contentDescription = null,
-                    modifier = Modifier.size(20.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "Masuk Konvoi",
-                    fontWeight = FontWeight.SemiBold
-                )
+                Button(
+                    onClick = onJoinSubmit,
+                    enabled = !isJoining,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(52.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.secondary,
+                        contentColor = androidx.compose.ui.graphics.Color.White
+                    )
+                ) {
+                    if (isJoining) {
+                        CircularProgressIndicator(
+                            color = androidx.compose.ui.graphics.Color.White,
+                            strokeWidth = 2.dp,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Menghubungkan Room...",
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Rounded.Login,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Masuk Konvoi",
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+
+                OutlinedButton(
+                    onClick = onJoinDemoOffline,
+                    enabled = !isJoining,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(44.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+                ) {
+                    Text(
+                        text = "Coba Simulasi Demo Offline (KNV-8492)",
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
             }
         }
     }

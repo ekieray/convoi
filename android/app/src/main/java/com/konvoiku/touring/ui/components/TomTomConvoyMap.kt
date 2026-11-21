@@ -268,6 +268,29 @@ fun TomTomConvoyMap(
         }
     }
 
+    val labelsOverlay = remember {
+        TilesOverlay(MapTileProviderBasic(context, labelsSource), context).apply {
+            loadingBackgroundColor = Color.TRANSPARENT
+        }
+    }
+    val trafficOverlay = remember {
+        TilesOverlay(MapTileProviderBasic(context, trafficSource), context).apply {
+            loadingBackgroundColor = Color.TRANSPARENT
+        }
+    }
+    val eventsOverlay = remember {
+        MapEventsOverlay(object : MapEventsReceiver {
+            override fun singleTapConfirmedHelper(p: GeoPoint?): Boolean {
+                if (p != null) {
+                    currentOnMapTap(p.latitude, p.longitude)
+                }
+                return false
+            }
+
+            override fun longPressHelper(p: GeoPoint?): Boolean = false
+        })
+    }
+
     AndroidView(
         modifier = modifier,
         factory = { mapView },
@@ -280,39 +303,27 @@ fun TomTomConvoyMap(
                 mv.setTileSource(desiredSource)
             }
 
-            mv.overlays.clear()
-
-            // Tap listener overlay
-            mv.overlays.add(
-                MapEventsOverlay(object : MapEventsReceiver {
-                    override fun singleTapConfirmedHelper(p: GeoPoint?): Boolean {
-                        if (p != null) {
-                            currentOnMapTap(p.latitude, p.longitude)
-                        }
-                        return false
-                    }
-
-                    override fun longPressHelper(p: GeoPoint?): Boolean = false
-                })
-            )
-
-            // Satellite labels overlay
+            // Ensure persistent tap & base tile overlays exist without recreating tile providers every 2s
+            if (!mv.overlays.contains(eventsOverlay)) {
+                mv.overlays.add(0, eventsOverlay)
+            }
             if (mapStyle == TomTomMapStyle.SATELLITE) {
-                val labelsProvider = MapTileProviderBasic(context, labelsSource)
-                val labelsOverlay = TilesOverlay(labelsProvider, context).apply {
-                    loadingBackgroundColor = Color.TRANSPARENT
+                if (!mv.overlays.contains(labelsOverlay)) {
+                    mv.overlays.add(labelsOverlay)
                 }
-                mv.overlays.add(labelsOverlay)
+            } else {
+                mv.overlays.remove(labelsOverlay)
+            }
+            if (showTraffic) {
+                if (!mv.overlays.contains(trafficOverlay)) {
+                    mv.overlays.add(trafficOverlay)
+                }
+            } else {
+                mv.overlays.remove(trafficOverlay)
             }
 
-            // TomTom Live Traffic overlay
-            if (showTraffic) {
-                val trafficProvider = MapTileProviderBasic(context, trafficSource)
-                val trafficOverlay = TilesOverlay(trafficProvider, context).apply {
-                    loadingBackgroundColor = Color.TRANSPARENT
-                }
-                mv.overlays.add(trafficOverlay)
-            }
+            // Remove only dynamic vector overlays (Polyline & Marker) before redrawing
+            mv.overlays.removeAll { it is Polyline || it is Marker }
 
             // Route polyline (white casing + blue primary road line)
             if (polylinePoints.size >= 2) {

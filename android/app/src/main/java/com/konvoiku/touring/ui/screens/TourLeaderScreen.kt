@@ -1,5 +1,7 @@
 package com.konvoiku.touring.ui.screens
 
+import android.content.Intent
+import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -34,6 +36,7 @@ import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.DirectionsCar
 import androidx.compose.material.icons.rounded.Flag
+import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.LocalCafe
 import androidx.compose.material.icons.rounded.LocationOn
 import androidx.compose.material.icons.rounded.Map
@@ -42,6 +45,8 @@ import androidx.compose.material.icons.rounded.PersonAdd
 import androidx.compose.material.icons.rounded.Remove
 import androidx.compose.material.icons.rounded.RestartAlt
 import androidx.compose.material.icons.rounded.Route
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.TwoWheeler
 import androidx.compose.material.icons.rounded.Warning
@@ -85,6 +90,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -123,6 +129,9 @@ fun TourLeaderScreen(
     vehicleType: VehicleType = VehicleType.MOTOR,
     userGpsLat: Double? = null,
     userGpsLng: Double? = null,
+    isCreatingRoom: Boolean = false,
+    roomSetupError: String? = null,
+    activeWebBaseUrl: String = "https://ais-pre-mbwxrxf647cphhl5i4ggug-588877716211.asia-southeast1.run.app",
     onPickOriginLatLng: (latitude: Double, longitude: Double, placeName: String, addressLabel: String) -> Unit = { _, _, _, _ -> },
     onUseGpsAsOrigin: () -> Boolean = { false },
     onSelectPreset: (ConvoyViewModel.DestinationPreset) -> Unit,
@@ -141,6 +150,7 @@ fun TourLeaderScreen(
     onEnterMapPlaceholder: () -> Unit,
     onBack: () -> Unit
 ) {
+    val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
@@ -153,6 +163,40 @@ fun TourLeaderScreen(
     var viaPoints by remember { mutableStateOf<List<RoutePoint>>(emptyList()) }
     var isComputingPreviewRoute by remember { mutableStateOf(false) }
     var previewDurationMin by remember { mutableStateOf<Int?>(null) }
+
+    var originSearchQuery by remember { mutableStateOf("") }
+    var originSearchResults by remember { mutableStateOf<List<TomTomPlaceResult>>(emptyList()) }
+    var isSearchingOrigin by remember { mutableStateOf(false) }
+
+    var destSearchQuery by remember { mutableStateOf("") }
+    var destSearchResults by remember { mutableStateOf<List<TomTomPlaceResult>>(emptyList()) }
+    var isSearchingDest by remember { mutableStateOf(false) }
+
+    LaunchedEffect(originSearchQuery) {
+        val q = originSearchQuery.trim()
+        if (q.length < 2) {
+            originSearchResults = emptyList()
+            isSearchingOrigin = false
+            return@LaunchedEffect
+        }
+        isSearchingOrigin = true
+        delay(320)
+        originSearchResults = TomTomApiService.searchPlaces(q)
+        isSearchingOrigin = false
+    }
+
+    LaunchedEffect(destSearchQuery) {
+        val q = destSearchQuery.trim()
+        if (q.length < 2) {
+            destSearchResults = emptyList()
+            isSearchingDest = false
+            return@LaunchedEffect
+        }
+        isSearchingDest = true
+        delay(320)
+        destSearchResults = TomTomApiService.searchPlaces(q)
+        isSearchingDest = false
+    }
 
     val stepTitles = listOf("Start", "Tujuan", "Rute", "Istirahat", "Jarak")
 
@@ -336,7 +380,7 @@ fun TourLeaderScreen(
                                                 if (ok) {
                                                     snackbarHostState.showSnackbar("Titik keberangkatan diset ke posisi GPS Anda saat ini.")
                                                 } else {
-                                                    snackbarHostState.showSnackbar("GPS perangkat belum siap. Pilih hub populer atau ketuk peta di bawah.")
+                                                    snackbarHostState.showSnackbar("GPS perangkat belum siap. Pilih hub populer atau cari area di bawah.")
                                                 }
                                             }
                                         },
@@ -350,6 +394,73 @@ fun TourLeaderScreen(
                                         Icon(Icons.Rounded.MyLocation, contentDescription = null, modifier = Modifier.size(18.dp))
                                         Spacer(modifier = Modifier.width(8.dp))
                                         Text("Gunakan Lokasi GPS Saya Sekarang", fontWeight = FontWeight.SemiBold)
+                                    }
+
+                                    // Inline TomTom Area Search for Start
+                                    OutlinedTextField(
+                                        value = originSearchQuery,
+                                        onValueChange = { originSearchQuery = it },
+                                        label = { Text("Cari Area / Titik Start") },
+                                        placeholder = { Text("Mis. Senayan, Rest Area KM 57, Bandung...") },
+                                        leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
+                                        trailingIcon = {
+                                            if (originSearchQuery.isNotEmpty()) {
+                                                IconButton(onClick = {
+                                                    originSearchQuery = ""
+                                                    originSearchResults = emptyList()
+                                                }) {
+                                                    Icon(Icons.Rounded.Close, contentDescription = "Hapus pencarian")
+                                                }
+                                            }
+                                        },
+                                        singleLine = true,
+                                        shape = RoundedCornerShape(14.dp),
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+
+                                    if (isSearchingOrigin || originSearchResults.isNotEmpty()) {
+                                        Surface(
+                                            shape = RoundedCornerShape(14.dp),
+                                            color = MaterialTheme.colorScheme.background,
+                                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Column {
+                                                if (isSearchingOrigin) {
+                                                    Text(
+                                                        text = "Mencari area start di TomTom...",
+                                                        fontSize = 12.sp,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                        modifier = Modifier.padding(12.dp)
+                                                    )
+                                                } else {
+                                                    originSearchResults.take(5).forEach { result ->
+                                                        Column(
+                                                            modifier = Modifier
+                                                                .fillMaxWidth()
+                                                                .clickable {
+                                                                    onPickOriginLatLng(
+                                                                        result.latitude,
+                                                                        result.longitude,
+                                                                        result.name,
+                                                                        result.address
+                                                                    )
+                                                                    originSearchQuery = ""
+                                                                    originSearchResults = emptyList()
+                                                                    coroutineScope.launch {
+                                                                        snackbarHostState.showSnackbar("Titik Start dipilih: ${result.name}")
+                                                                    }
+                                                                }
+                                                                .padding(horizontal = 12.dp, vertical = 10.dp)
+                                                        ) {
+                                                            Text(result.name, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                                            Text(result.address, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                                        }
+                                                        HorizontalDivider()
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
 
                                     Text(
@@ -473,6 +584,74 @@ fun TourLeaderScreen(
                                     ) {
                                         Icon(Icons.Rounded.Flag, contentDescription = null, tint = Color(0xFF16A34A))
                                         Text("2. Menentukan Tujuan Akhir", style = MaterialTheme.typography.titleLarge)
+                                    }
+
+                                    // Inline TomTom Area Search for Destination
+                                    OutlinedTextField(
+                                        value = destSearchQuery,
+                                        onValueChange = { destSearchQuery = it },
+                                        label = { Text("Cari Area / Lokasi Tujuan") },
+                                        placeholder = { Text("Mis. Puncak Pass, Lembang, Ciwidey...") },
+                                        leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
+                                        trailingIcon = {
+                                            if (destSearchQuery.isNotEmpty()) {
+                                                IconButton(onClick = {
+                                                    destSearchQuery = ""
+                                                    destSearchResults = emptyList()
+                                                }) {
+                                                    Icon(Icons.Rounded.Close, contentDescription = "Hapus pencarian")
+                                                }
+                                            }
+                                        },
+                                        singleLine = true,
+                                        shape = RoundedCornerShape(14.dp),
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+
+                                    if (isSearchingDest || destSearchResults.isNotEmpty()) {
+                                        Surface(
+                                            shape = RoundedCornerShape(14.dp),
+                                            color = MaterialTheme.colorScheme.background,
+                                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Column {
+                                                if (isSearchingDest) {
+                                                    Text(
+                                                        text = "Mencari area tujuan di TomTom...",
+                                                        fontSize = 12.sp,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                        modifier = Modifier.padding(12.dp)
+                                                    )
+                                                } else {
+                                                    destSearchResults.take(5).forEach { result ->
+                                                        Column(
+                                                            modifier = Modifier
+                                                                .fillMaxWidth()
+                                                                .clickable {
+                                                                    viaPoints = emptyList()
+                                                                    onPickDestinationLatLng(
+                                                                        result.latitude,
+                                                                        result.longitude,
+                                                                        result.name,
+                                                                        result.address
+                                                                    )
+                                                                    destSearchQuery = ""
+                                                                    destSearchResults = emptyList()
+                                                                    coroutineScope.launch {
+                                                                        snackbarHostState.showSnackbar("Lokasi tujuan dipilih: ${result.name}")
+                                                                    }
+                                                                }
+                                                                .padding(horizontal = 12.dp, vertical = 10.dp)
+                                                        ) {
+                                                            Text(result.name, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                                            Text(result.address, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                                        }
+                                                        HorizontalDivider()
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
 
                                     Text(
@@ -1004,6 +1183,22 @@ fun TourLeaderScreen(
 
                             HorizontalDivider(color = MaterialTheme.colorScheme.outline)
 
+                            if (!roomSetupError.isNullOrBlank()) {
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = Color(0xFFFEF2F2),
+                                    border = BorderStroke(1.dp, Color(0xFFFECACA)),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        text = roomSetupError,
+                                        color = Color(0xFFB91C1C),
+                                        fontSize = 12.sp,
+                                        modifier = Modifier.padding(12.dp)
+                                    )
+                                }
+                            }
+
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -1011,6 +1206,7 @@ fun TourLeaderScreen(
                                 if (currentStep > 0) {
                                     OutlinedButton(
                                         onClick = { currentStep-- },
+                                        enabled = !isCreatingRoom,
                                         modifier = Modifier.weight(1f).height(48.dp),
                                         shape = RoundedCornerShape(14.dp)
                                     ) {
@@ -1033,6 +1229,7 @@ fun TourLeaderScreen(
                                         onClick = {
                                             onCreateRoom(tourNameDraft.ifBlank { "Konvoi Touring Akhir Pekan" })
                                         },
+                                        enabled = !isCreatingRoom,
                                         modifier = Modifier.weight(1f).height(48.dp),
                                         shape = RoundedCornerShape(14.dp),
                                         colors = ButtonDefaults.buttonColors(
@@ -1040,9 +1237,19 @@ fun TourLeaderScreen(
                                             contentColor = Color.White
                                         )
                                     ) {
-                                        Icon(Icons.Rounded.Check, contentDescription = null, modifier = Modifier.size(18.dp))
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Buat Room & Mulai", fontWeight = FontWeight.SemiBold)
+                                        if (isCreatingRoom) {
+                                            CircularProgressIndicator(
+                                                color = Color.White,
+                                                strokeWidth = 2.dp,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text("Membuat Room...", fontWeight = FontWeight.SemiBold)
+                                        } else {
+                                            Icon(Icons.Rounded.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("Buat Room & Mulai", fontWeight = FontWeight.SemiBold)
+                                        }
                                     }
                                 }
                             }
@@ -1052,6 +1259,7 @@ fun TourLeaderScreen(
 
                 item { Spacer(modifier = Modifier.height(28.dp)) }
             } else if (activeRoom != null) {
+                val webShareLink = "${activeWebBaseUrl.trimEnd('/')}/?room=${Uri.encode(activeRoom.roomId)}"
                 item {
                     Spacer(modifier = Modifier.height(6.dp))
                     Card(
@@ -1069,7 +1277,7 @@ fun TourLeaderScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Column {
+                                Column(modifier = Modifier.weight(1f)) {
                                     Text(
                                         text = activeRoom.roomTitle,
                                         style = MaterialTheme.typography.bodyMedium,
@@ -1087,47 +1295,109 @@ fun TourLeaderScreen(
                                     onClick = {
                                         clipboardManager.setText(AnnotatedString(activeRoom.roomId))
                                         coroutineScope.launch {
-                                            snackbarHostState.showSnackbar("Room ID ${activeRoom.roomId} disalin")
+                                            snackbarHostState.showSnackbar("Kode Room ${activeRoom.roomId} disalin")
                                         }
                                     },
                                     shape = RoundedCornerShape(12.dp)
                                 ) {
                                     Icon(Icons.Rounded.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
                                     Spacer(modifier = Modifier.width(6.dp))
-                                    Text("Salin ID")
+                                    Text("Salin Kode")
                                 }
                             }
 
                             HorizontalDivider(color = MaterialTheme.colorScheme.outline)
 
+                            // Link Browser (?room=...)
                             Surface(
                                 color = MaterialTheme.colorScheme.surfaceVariant,
                                 shape = RoundedCornerShape(12.dp),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Row(
-                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text(
-                                        text = activeRoom.inviteLink,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        fontFamily = FontFamily.Monospace,
-                                        modifier = Modifier.weight(1f),
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
+                                    Icon(Icons.Rounded.Link, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text("Link Undangan Web", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        Text(
+                                            text = webShareLink,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontFamily = FontFamily.Monospace,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = {
+                                            clipboardManager.setText(AnnotatedString(webShareLink))
+                                            coroutineScope.launch {
+                                                snackbarHostState.showSnackbar("Link undangan web disalin")
+                                            }
+                                        }
+                                    ) {
+                                        Icon(Icons.Rounded.ContentCopy, contentDescription = "Salin Link Web", tint = MaterialTheme.colorScheme.primary)
+                                    }
+                                }
+                            }
+
+                            // Link APK (konvoiku.id/join/...)
+                            Surface(
+                                color = MaterialTheme.colorScheme.surfaceVariant,
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(Icons.Rounded.LocationOn, contentDescription = null, tint = Color(0xFFEA580C), modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text("Link Deep-Link APK", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        Text(
+                                            text = activeRoom.inviteLink,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontFamily = FontFamily.Monospace,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
                                     IconButton(
                                         onClick = {
                                             clipboardManager.setText(AnnotatedString(activeRoom.inviteLink))
                                             coroutineScope.launch {
-                                                snackbarHostState.showSnackbar("Link undangan disalin")
+                                                snackbarHostState.showSnackbar("Link undangan APK disalin")
                                             }
                                         }
                                     ) {
-                                        Icon(Icons.Rounded.ContentCopy, contentDescription = "Salin Link", tint = MaterialTheme.colorScheme.primary)
+                                        Icon(Icons.Rounded.ContentCopy, contentDescription = "Salin Link APK", tint = MaterialTheme.colorScheme.primary)
                                     }
                                 }
+                            }
+
+                            Button(
+                                onClick = {
+                                    val shareBody = "Gabung konvoi \"${activeRoom.roomTitle}\" di KonvoiKu!\nKode Room: ${activeRoom.roomId}\nLink Web: $webShareLink\nLink Aplikasi: ${activeRoom.inviteLink}"
+                                    val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                                        type = "text/plain"
+                                        putExtra(Intent.EXTRA_SUBJECT, "Undangan Konvoi ${activeRoom.roomId}")
+                                        putExtra(Intent.EXTRA_TEXT, shareBody)
+                                    }
+                                    context.startActivity(Intent.createChooser(sendIntent, "Bagikan Link & Kode Room"))
+                                },
+                                modifier = Modifier.fillMaxWidth().height(46.dp),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.primary,
+                                    contentColor = Color.White
+                                )
+                            ) {
+                                Icon(Icons.Rounded.Share, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Bagikan Link & Kode Room", fontWeight = FontWeight.SemiBold)
                             }
 
                             Row(
@@ -1141,14 +1411,16 @@ fun TourLeaderScreen(
                                 ) {
                                     Text("Buat ID Baru")
                                 }
-                                Button(
-                                    onClick = onSimulateJoin,
-                                    modifier = Modifier.weight(1f),
-                                    shape = RoundedCornerShape(12.dp)
-                                ) {
-                                    Icon(Icons.Rounded.PersonAdd, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text("Simulasi Anggota")
+                                if (!activeRoom.isSyncedRoom) {
+                                    OutlinedButton(
+                                        onClick = onSimulateJoin,
+                                        modifier = Modifier.weight(1f),
+                                        shape = RoundedCornerShape(12.dp)
+                                    ) {
+                                        Icon(Icons.Rounded.PersonAdd, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Simulasi")
+                                    }
                                 }
                             }
                         }

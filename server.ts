@@ -44,10 +44,12 @@ async function startServer() {
     process.env.TOMTOM_API_KEY?.trim() || DEFAULT_TOMTOM_TRIAL_KEY;
 
   app.get('/api/health', (_req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
     res.json({ ok: true, service: 'konvoiku' });
   });
 
   app.get('/api/tomtom/status', (_req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
     res.json({
       configured: Boolean(getTomTomApiKey()),
       provider: 'tomtom',

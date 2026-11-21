@@ -3,11 +3,13 @@ import {
   createUserWithEmailAndPassword,
   FacebookAuthProvider,
   getAuth,
+  getRedirectResult,
   GoogleAuthProvider,
   onAuthStateChanged,
   sendPasswordResetEmail,
   signInWithEmailAndPassword,
   signInWithPopup,
+  signInWithRedirect,
   signOut,
   updateProfile,
   User,
@@ -102,21 +104,109 @@ export async function testFirestoreConnection(): Promise<boolean> {
   }
 }
 
+const REDIRECT_MODE_STORAGE_KEY = 'konvoiku_pending_google_redirect';
+
+function isRunningInIframe(): boolean {
+  try {
+    return typeof window !== 'undefined' && window.self !== window.top;
+  } catch {
+    return true;
+  }
+}
+
+function shouldFallbackToRedirect(error: unknown): boolean {
+  const code =
+    typeof error === 'object' && error !== null && 'code' in error
+      ? String((error as { code?: unknown }).code || '')
+      : '';
+  return (
+    code === 'auth/popup-blocked' ||
+    code === 'auth/operation-not-supported-in-this-environment'
+  );
+}
+
 export async function signInWithGoogle(): Promise<User> {
-  const cred = await signInWithPopup(auth, googleProvider);
-  return cred.user;
+  try {
+    const cred = await signInWithPopup(auth, googleProvider);
+    return cred.user;
+  } catch (error) {
+    if (shouldFallbackToRedirect(error) && !isRunningInIframe()) {
+      try {
+        sessionStorage.setItem(REDIRECT_MODE_STORAGE_KEY, 'web');
+      } catch {
+        // ignore storage restrictions
+      }
+      await signInWithRedirect(auth, googleProvider);
+      throw new Error('Mengarahkan ke halaman login Google...');
+    }
+    throw error;
+  }
 }
 
 export async function signInWithGoogleForMobileBridge(): Promise<{
   user: User;
   idToken: string | null;
 }> {
-  const cred = await signInWithPopup(auth, googleProvider);
-  const oauthCredential = GoogleAuthProvider.credentialFromResult(cred);
-  return {
-    user: cred.user,
-    idToken: oauthCredential?.idToken ?? null,
-  };
+  try {
+    const cred = await signInWithPopup(auth, googleProvider);
+    const oauthCredential = GoogleAuthProvider.credentialFromResult(cred);
+    return {
+      user: cred.user,
+      idToken: oauthCredential?.idToken ?? null,
+    };
+  } catch (error) {
+    if (shouldFallbackToRedirect(error) && !isRunningInIframe()) {
+      try {
+        sessionStorage.setItem(REDIRECT_MODE_STORAGE_KEY, 'mobile_bridge');
+      } catch {
+        // ignore storage restrictions
+      }
+      await signInWithRedirect(auth, googleProvider);
+      throw new Error('Mengarahkan ke halaman login Google...');
+    }
+    throw error;
+  }
+}
+
+export async function consumeGoogleRedirectResult(): Promise<{
+  mode: 'web' | 'mobile_bridge' | null;
+  user: User | null;
+  idToken: string | null;
+}> {
+  let pendingMode: 'web' | 'mobile_bridge' | null = null;
+  try {
+    const stored = sessionStorage.getItem(REDIRECT_MODE_STORAGE_KEY);
+    if (stored === 'mobile_bridge' || stored === 'web') {
+      pendingMode = stored;
+    }
+  } catch {
+    pendingMode = null;
+  }
+
+  try {
+    const result = await getRedirectResult(auth);
+    try {
+      sessionStorage.removeItem(REDIRECT_MODE_STORAGE_KEY);
+    } catch {
+      // ignore
+    }
+    if (!result) {
+      return { mode: null, user: null, idToken: null };
+    }
+    const oauthCredential = GoogleAuthProvider.credentialFromResult(result);
+    return {
+      mode: pendingMode ?? 'web',
+      user: result.user,
+      idToken: oauthCredential?.idToken ?? null,
+    };
+  } catch (err) {
+    try {
+      sessionStorage.removeItem(REDIRECT_MODE_STORAGE_KEY);
+    } catch {
+      // ignore
+    }
+    throw err;
+  }
 }
 
 export async function signInWithFacebook(): Promise<User> {
@@ -166,6 +256,12 @@ export function mapFirebaseAuthError(error: unknown, providerLabel = 'Akun'): st
       : '';
   const msg = error instanceof Error ? error.message : String(error || '');
 
+  if (code === 'auth/unauthorized-domain') {
+    return `Domain browser saat ini (${typeof window !== 'undefined' ? window.location.hostname : 'host'}) belum ditambahkan ke Firebase Console → Authentication → Settings → Authorized domains.`;
+  }
+  if (code === 'auth/popup-blocked') {
+    return 'Jendela popup Google diblokir oleh browser. Izinkan pop-up untuk situs ini atau buka di tab browser utama.';
+  }
   if (code === 'auth/operation-not-allowed') {
     return `Provider ${providerLabel} belum diaktifkan di Firebase Console (Authentication → Sign-in method).`;
   }
