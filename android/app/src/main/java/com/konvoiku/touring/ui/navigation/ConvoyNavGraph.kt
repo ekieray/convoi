@@ -225,6 +225,7 @@ fun ConvoyNavGraph(
                 isCloudConnected = uiState.isCloudSyncConnected,
                 isAuthLoading = uiState.isAuthLoading,
                 authError = uiState.authError,
+                authInfoMessage = uiState.authInfoMessage,
                 isMonitoringLoading = uiState.isAdminMonitoringLoading,
                 globalConfig = uiState.globalConfig,
                 presenceList = uiState.adminPresenceList,
@@ -235,6 +236,9 @@ fun ConvoyNavGraph(
                 configFeedback = uiState.globalConfigFeedback,
                 onGoogleSignIn = { activity -> viewModel.signInWithGoogle(activity) },
                 onOpenGoogleBrowserSync = { viewModel.openGoogleBrowserSync(appContext) },
+                onOpenCustomGoogleBrowserSync = { customUrl ->
+                    viewModel.openGoogleBrowserSync(appContext, customUrl)
+                },
                 onSubmitGoogleSyncToken = { raw -> viewModel.importGoogleSyncInput(raw) },
                 onStartMonitoring = viewModel::startAdminMonitoring,
                 onStopMonitoring = viewModel::stopAdminMonitoring,

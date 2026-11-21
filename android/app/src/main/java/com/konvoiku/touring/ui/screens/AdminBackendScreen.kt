@@ -107,6 +107,7 @@ fun AdminBackendScreen(
     isCloudConnected: Boolean = true,
     isAuthLoading: Boolean = false,
     authError: String? = null,
+    authInfoMessage: String? = null,
     isMonitoringLoading: Boolean = false,
     globalConfig: GlobalAppConfig,
     presenceList: List<UserPresenceInfo>,
@@ -117,6 +118,7 @@ fun AdminBackendScreen(
     configFeedback: String?,
     onGoogleSignIn: (Activity?) -> Unit = {},
     onOpenGoogleBrowserSync: () -> Unit = {},
+    onOpenCustomGoogleBrowserSync: (String) -> Unit = {},
     onSubmitGoogleSyncToken: (String) -> Unit = {},
     onStartMonitoring: () -> Unit,
     onStopMonitoring: () -> Unit,
@@ -128,6 +130,8 @@ fun AdminBackendScreen(
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
+    var showCustomBridgeInput by remember { mutableStateOf(false) }
+    var customBridgeUrl by remember { mutableStateOf("") }
     var showManualTokenInput by remember { mutableStateOf(false) }
     var manualSyncToken by remember { mutableStateOf("") }
 
@@ -382,6 +386,22 @@ fun AdminBackendScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
 
+                        if (!authInfoMessage.isNullOrBlank()) {
+                            Surface(
+                                color = Color(0xFFECFDF5),
+                                shape = RoundedCornerShape(12.dp),
+                                border = BorderStroke(1.dp, Color(0xFFA7F3D0)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = authInfoMessage,
+                                    fontSize = 11.sp,
+                                    color = Color(0xFF065F46),
+                                    modifier = Modifier.padding(10.dp)
+                                )
+                            }
+                        }
+
                         val diagnostic = authError ?: monitorError
                         if (!diagnostic.isNullOrBlank()) {
                             Surface(
@@ -428,7 +448,13 @@ fun AdminBackendScreen(
                         }
 
                         OutlinedButton(
-                            onClick = onOpenGoogleBrowserSync,
+                            onClick = {
+                                if (customBridgeUrl.isNotBlank()) {
+                                    onOpenCustomGoogleBrowserSync(customBridgeUrl)
+                                } else {
+                                    onOpenGoogleBrowserSync()
+                                }
+                            },
                             enabled = !isAuthLoading,
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -450,14 +476,40 @@ fun AdminBackendScreen(
                             )
                         }
 
-                        TextButton(
-                            onClick = { showManualTokenInput = !showManualTokenInput },
-                            modifier = Modifier.fillMaxWidth()
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(
-                                text = if (showManualTokenInput) "Tutup tempel token" else "Sudah login di browser? Tempel link/token",
-                                fontSize = 12.sp,
-                                color = Color(0xFF2563EB)
+                            TextButton(
+                                onClick = { showCustomBridgeInput = !showCustomBridgeInput }
+                            ) {
+                                Text(
+                                    text = if (showCustomBridgeInput) "Tutup URL kustom" else "URL web kustom?",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            TextButton(
+                                onClick = { showManualTokenInput = !showManualTokenInput }
+                            ) {
+                                Text(
+                                    text = if (showManualTokenInput) "Tutup tempel token" else "Sudah login di browser?",
+                                    fontSize = 11.sp,
+                                    color = Color(0xFF2563EB)
+                                )
+                            }
+                        }
+
+                        if (showCustomBridgeInput) {
+                            OutlinedTextField(
+                                value = customBridgeUrl,
+                                onValueChange = { customBridgeUrl = it },
+                                label = { Text("URL Web KonvoiKu (opsional)") },
+                                placeholder = { Text("https://...run.app") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp)
                             )
                         }
 

@@ -182,7 +182,10 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
         startPresenceHeartbeatLoop()
         startLiveMapTicker()
         viewModelScope.launch {
-            val activeBase = syncRepo.resolveActiveWebBaseUrl()
+            val savedCustomUrl = profilePrefs.getString("custom_web_base_url", null)
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+            val activeBase = syncRepo.resolveActiveWebBaseUrl(savedCustomUrl)
             _uiState.update { it.copy(activeWebBaseUrl = activeBase) }
         }
         if (gpsTracker.hasLocationPermission()) {
@@ -468,7 +471,7 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
         authUnsubscribe = syncRepo.observeAuthState { user ->
             val available = syncRepo.isAvailable()
             val verifiedAdmin = syncRepo.isVerifiedAdminSession()
-            if (user != null && !user.isAnonymous) {
+            if (user != null && !user.isAnonymous && !syncRepo.isDeviceCloudGuestUser(user)) {
                 val detectedProvider = detectProvider(user)
                 viewModelScope.launch {
                     syncFirebaseUserProfile(user, detectedProvider)
@@ -557,7 +560,7 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
         val firebaseUid = syncRepo.currentUid()
         val isVerifiedAdmin = syncRepo.isVerifiedAdminSession()
 
-        if (firebaseUser != null && !firebaseUser.isAnonymous && firebaseEmail.isNotBlank()) {
+        if (firebaseUser != null && !firebaseUser.isAnonymous && !syncRepo.isDeviceCloudGuestUser(firebaseUser) && firebaseEmail.isNotBlank()) {
             val provider = detectProvider(firebaseUser)
             val savedProfile = loadProfileByEmail(firebaseEmail)
             val displayName = firebaseUser.displayName.orEmpty().trim()
@@ -606,7 +609,7 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
             }
         }
 
-        if (firebaseUid != null && firebaseUser != null && !firebaseUser.isAnonymous) {
+        if (firebaseUid != null && firebaseUser != null && !firebaseUser.isAnonymous && !syncRepo.isDeviceCloudGuestUser(firebaseUser)) {
             viewModelScope.launch {
                 syncFirebaseUserProfile(firebaseUser, detectProvider(firebaseUser))
             }
@@ -678,6 +681,7 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
                 val err = result.exceptionOrNull()
                 val raw = err?.message.orEmpty().lowercase(Locale.ROOT)
                 val cancelled = raw.contains("cancel") || raw.contains("closed")
+                val reasonHint = err?.localizedMessage?.takeIf { it.isNotBlank() }?.let { " ($it)" }.orEmpty()
                 _uiState.update {
                     it.copy(
                         isAuthLoading = false,
@@ -685,7 +689,7 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
                         authError = if (cancelled) {
                             "Login Google dibatalkan. Silakan coba lagi."
                         } else {
-                            "Login Google langsung di APK membutuhkan registrasi SHA-1 di Firebase, atau klik tombol 'Sinkronkan Google via Browser' di bawah agar langsung tersinkronisasi."
+                            "Login Google langsung di APK membutuhkan registrasi SHA-1 di Firebase$reasonHint. Gunakan tombol 'Sinkronkan Google via Browser' atau Email/Kata Sandi."
                         }
                     )
                 }
@@ -737,9 +741,30 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
                     authInfoMessage = "Memeriksa halaman sinkronisasi Google yang aktif..."
                 )
             }
-            val activeBase = syncRepo.resolveActiveWebBaseUrl(customBaseUrl)
-            _uiState.update { it.copy(activeWebBaseUrl = activeBase) }
-            val targetUrl = "$activeBase/?mobile_auth=google"
+            val savedCustomUrl = profilePrefs.getString("custom_web_base_url", null)
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+            val explicitCustom = customBaseUrl?.trim()?.takeIf { it.isNotEmpty() }
+            val resolution = syncRepo.resolveWebBridgeUrl(explicitCustom ?: savedCustomUrl)
+
+            if (resolution.baseUrl.isBlank()) {
+                _uiState.update {
+                    it.copy(
+                        authInfoMessage = null,
+                        showGoogleBrowserFallback = true,
+                        authError = resolution.errorMessage
+                            ?: "Halaman web login browser tidak tersedia (404 Page Not Found). Isi 'URL web kustom?' dengan alamat Web KonvoiKu yang aktif."
+                    )
+                }
+                return@launch
+            }
+
+            if (explicitCustom != null) {
+                profilePrefs.edit().putString("custom_web_base_url", resolution.baseUrl).apply()
+            }
+            _uiState.update { it.copy(activeWebBaseUrl = resolution.baseUrl) }
+            val targetUrl = "${resolution.baseUrl}/?mobile_auth=google"
+
             runCatching {
                 withContext(Dispatchers.Main) {
                     val intent = Intent(Intent.ACTION_VIEW, Uri.parse(targetUrl)).apply {
@@ -752,7 +777,11 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
             }.onSuccess {
                 _uiState.update {
                     it.copy(
-                        authInfoMessage = "Browser dibuka ($activeBase). Setelah login Google selesai, ketuk 'Buka Aplikasi KonvoiKu' atau salin link/tokennya ke kolom di bawah."
+                        authInfoMessage = if (resolution.isDevProxy) {
+                            "Browser dibuka ke Dev Preview (${resolution.baseUrl}). Pastikan Chrome memakai akun Google pemilik AI Studio, lalu selesaikan login & ketuk 'Buka Aplikasi KonvoiKu' atau salin link/tokennya."
+                        } else {
+                            "Browser dibuka (${resolution.baseUrl}). Setelah login Google selesai, ketuk 'Buka Aplikasi KonvoiKu' atau salin link/tokennya ke kolom di bawah."
+                        }
                     )
                 }
             }.onFailure {
@@ -1190,7 +1219,15 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
                 vehicleProfile = merged
             )
         }
-        pushPresenceSnapshotNow()
+        if (syncRepo.isAvailable()) {
+            viewModelScope.launch {
+                val uid = syncRepo.ensureSignedInUid()
+                if (uid != null) {
+                    syncRepo.saveUserPrivateProfile(uid, merged)
+                    pushPresenceSnapshotNow()
+                }
+            }
+        }
     }
 
     fun logoutUser() {
@@ -1290,17 +1327,23 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
         if (syncRepo.isAvailable()) {
             viewModelScope.launch {
                 _uiState.update { it.copy(isCreatingRoom = true, roomSetupError = null) }
-                val uid = syncRepo.ensureSignedInUid()
+                val authResult = syncRepo.ensureSignedInUidResult()
+                val uid = authResult.getOrNull()
                 if (uid == null) {
+                    val reason = authResult.exceptionOrNull()?.localizedMessage
+                        ?.takeIf { it.isNotBlank() }
+                        ?.let { " ($it)" }
+                        .orEmpty()
                     _uiState.update {
                         it.copy(
                             isCreatingRoom = false,
-                            roomSetupError = "Autentikasi cloud belum terhubung. Pastikan internet aktif lalu coba lagi."
+                            roomSetupError = "Autentikasi cloud belum terhubung$reason. Pastikan internet aktif lalu coba lagi."
                         )
                     }
                     return@launch
                 }
-                val syncedOk = syncRepo.createSyncedRoom(
+                syncRepo.saveUserPrivateProfile(uid, profile)
+                val createResult = syncRepo.createSyncedRoomResult(
                     roomId = roomCode,
                     roomTitle = customTitle,
                     leaderUid = uid,
@@ -1309,7 +1352,7 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
                     initialLat = startLat,
                     initialLng = startLng
                 )
-                if (syncedOk) {
+                if (createResult.isSuccess) {
                     val syncedRoom = TourRoom(
                         roomId = roomCode,
                         roomTitle = customTitle,
@@ -1337,10 +1380,14 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
                         onSuccess()
                     }
                 } else {
+                    val reason = createResult.exceptionOrNull()?.localizedMessage
+                        ?.takeIf { it.isNotBlank() }
+                        ?.let { " ($it)" }
+                        .orEmpty()
                     _uiState.update {
                         it.copy(
                             isCreatingRoom = false,
-                            roomSetupError = "Gagal membuat room di server cloud. Periksa koneksi internet Anda lalu coba lagi."
+                            roomSetupError = "Gagal membuat room di server cloud$reason. Periksa koneksi internet Anda lalu coba lagi."
                         )
                     }
                 }
@@ -1561,16 +1608,22 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
             val startLng = state.userGpsLng ?: 106.85
             viewModelScope.launch {
                 _uiState.update { it.copy(isJoiningRoom = true, joinError = null) }
-                val uid = syncRepo.ensureSignedInUid()
+                val authResult = syncRepo.ensureSignedInUidResult()
+                val uid = authResult.getOrNull()
                 if (uid == null) {
+                    val reason = authResult.exceptionOrNull()?.localizedMessage
+                        ?.takeIf { it.isNotBlank() }
+                        ?.let { " ($it)" }
+                        .orEmpty()
                     _uiState.update {
                         it.copy(
                             isJoiningRoom = false,
-                            joinError = "Gagal menghubungkan autentikasi cloud. Periksa koneksi internet Anda."
+                            joinError = "Gagal menghubungkan autentikasi cloud$reason. Periksa koneksi internet Anda."
                         )
                     }
                     return@launch
                 }
+                syncRepo.saveUserPrivateProfile(uid, state.vehicleProfile)
                 val result = syncRepo.joinSyncedRoom(
                     roomId = extractedId,
                     uid = uid,

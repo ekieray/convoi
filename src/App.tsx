@@ -16,6 +16,8 @@ import { TripHistoryView } from './components/screens/TripHistoryView';
 import { VehicleProfileView } from './components/screens/VehicleProfileView';
 import {
   consumeGoogleRedirectResult,
+  ensureCloudSignedInUser,
+  isDeviceCloudGuestEmail,
   mapFirebaseAuthError,
   sendResetPasswordEmail,
   signInWithEmail,
@@ -714,7 +716,9 @@ export default function App() {
     return (
       params.get('mobile_auth') === 'google' ||
       window.location.pathname === '/mobile-auth' ||
-      window.location.pathname === '/mobile-auth/'
+      window.location.pathname === '/mobile-auth/' ||
+      window.location.pathname === '/auth/google' ||
+      window.location.pathname === '/auth/google/'
     );
   });
   const [mobileBridgeBusy, setMobileBridgeBusy] = useState(false);
@@ -917,6 +921,9 @@ export default function App() {
     const unsubAuth = subscribeToAuthState(async (user) => {
       setAuthUser(user);
       if (user) {
+        if (isDeviceCloudGuestEmail(user.email)) {
+          return;
+        }
         setAuthError(null);
         const rawProviderId = user.providerData?.[0]?.providerId || '';
         const detectedProvider: AuthProviderId = rawProviderId.includes('facebook')
@@ -992,7 +999,7 @@ export default function App() {
             const deepLink = `konvoiku://auth?id_token=${encodeURIComponent(res.idToken)}`;
             setMobileBridgeEmail(res.user.email || '');
             setMobileBridgeDeepLink(deepLink);
-            window.location.href = deepLink;
+            setMobileBridgeError(null);
           } else {
             setMobileBridgeError(
               'Sesi Google tersimpan, silakan ketuk "Masuk dengan Akun Google" sekali lagi untuk mengirim token ke aplikasi Android.'
@@ -1495,7 +1502,11 @@ export default function App() {
     setAuthError(null);
     setAuthInfoMessage(null);
     try {
-      await signInWithGoogle();
+      const { user, redirected } = await signInWithGoogle();
+      if (redirected || !user) {
+        setAuthInfoMessage('Mengarahkan ke halaman login Google...');
+        return;
+      }
       setLocalUserName(null);
       saveLocalSession(null);
       setNavDirection(1);
@@ -1904,177 +1915,76 @@ export default function App() {
     const memberInitLat = gps.lastFix?.latitude ?? startLat;
     const memberInitLng = gps.lastFix?.longitude ?? startLng;
 
-    // Cloud Synced Firestore Room if authenticated
-    if (authUser) {
-      setIsCreatingRoom(true);
-      setCreateRoomError(null);
-      try {
-        const dest = effectiveConfig.waypoints[effectiveConfig.waypoints.length - 1];
-        const hasExplicitOrigin =
-          effectiveConfig.originLockedByLeader || effectiveConfig.waypoints.length >= 2;
-        const nextWaypoints: RoutePoint[] =
-          !hasExplicitOrigin && gps.lastFix && dest
-            ? buildPolylineToDestination(
-                {
-                  xFraction: 0.14,
-                  yFraction: 0.86,
-                  latitude: gps.lastFix.latitude,
-                  longitude: gps.lastFix.longitude,
-                },
-                dest
-              )
-            : effectiveConfig.waypoints;
+    // Cloud Synced Firestore Room (auto-provisions device cloud session if needed)
+    setIsCreatingRoom(true);
+    setCreateRoomError(null);
+    try {
+      const cloudUser = authUser ?? (await ensureCloudSignedInUser());
+      setAuthUser(cloudUser);
+      const dest = effectiveConfig.waypoints[effectiveConfig.waypoints.length - 1];
+      const hasExplicitOrigin =
+        effectiveConfig.originLockedByLeader || effectiveConfig.waypoints.length >= 2;
+      const nextWaypoints: RoutePoint[] =
+        !hasExplicitOrigin && gps.lastFix && dest
+          ? buildPolylineToDestination(
+              {
+                xFraction: 0.14,
+                yFraction: 0.86,
+                latitude: gps.lastFix.latitude,
+                longitude: gps.lastFix.longitude,
+              },
+              dest
+            )
+          : effectiveConfig.waypoints;
 
-        const nextConfig: ConvoyRouteConfig = {
-          ...effectiveConfig,
-          waypoints: nextWaypoints,
-        };
+      const nextConfig: ConvoyRouteConfig = {
+        ...effectiveConfig,
+        waypoints: nextWaypoints,
+      };
 
-        await saveUserPrivateProfile(authUser.uid, vehicleProfile);
-        await createSyncedRoom({
-          roomId,
-          roomTitle: title,
-          leaderUid: authUser.uid,
-          profile: vehicleProfile,
-          routeConfig: nextConfig,
-          initialLat: memberInitLat,
-          initialLng: memberInitLng,
-        });
+      await saveUserPrivateProfile(cloudUser.uid, vehicleProfile);
+      await createSyncedRoom({
+        roomId,
+        roomTitle: title,
+        leaderUid: cloudUser.uid,
+        profile: vehicleProfile,
+        routeConfig: nextConfig,
+        initialLat: memberInitLat,
+        initialLng: memberInitLng,
+      });
 
-        setRouteConfig(nextConfig);
-        recordedTrackRef.current = gps.lastFix
-          ? [{ lat: gps.lastFix.latitude, lng: gps.lastFix.longitude }]
-          : [];
-        setLastCompletedTrip(null);
-        setIsOffRouteSimActive(false);
-        setIsStragglerSimActive(false);
-        setIsLeaderTroubleSimActive(false);
-        const syncedRoom: TourRoom = {
-          roomId,
-          roomTitle: title,
-          inviteLink: `https://konvoiku.id/join/${roomId}`,
-          createdAtLabel: 'Sinkronisasi Cloud Aktif',
-          isSyncedRoom: true,
-          leaderUid: authUser.uid,
-          actingLeaderUid: authUser.uid,
-          leaderTroubleActive: false,
-          members: [],
-        };
-        setSelectedMemberId(authUser.uid);
-        setActiveRoom(syncedRoom);
-        navigateTo('live_map', 1);
-      } catch (err) {
-        console.error('Gagal membuat synced room:', err);
-        setCreateRoomError(
-          err instanceof Error
-            ? `Gagal membuat room cloud: ${err.message}`
-            : 'Gagal terhubung ke Firebase Firestore. Periksa koneksi internet dan coba lagi.'
-        );
-      } finally {
-        setIsCreatingRoom(false);
-      }
-      return;
+      setRouteConfig(nextConfig);
+      recordedTrackRef.current = gps.lastFix
+        ? [{ lat: gps.lastFix.latitude, lng: gps.lastFix.longitude }]
+        : [];
+      setLastCompletedTrip(null);
+      setIsOffRouteSimActive(false);
+      setIsStragglerSimActive(false);
+      setIsLeaderTroubleSimActive(false);
+      const syncedRoom: TourRoom = {
+        roomId,
+        roomTitle: title,
+        inviteLink: `https://konvoiku.id/join/${roomId}`,
+        createdAtLabel: 'Sinkronisasi Cloud Aktif',
+        isSyncedRoom: true,
+        leaderUid: cloudUser.uid,
+        actingLeaderUid: cloudUser.uid,
+        leaderTroubleActive: false,
+        members: [],
+      };
+      setSelectedMemberId(cloudUser.uid);
+      setActiveRoom(syncedRoom);
+      navigateTo('live_map', 1);
+    } catch (err) {
+      console.error('Gagal membuat synced room:', err);
+      setCreateRoomError(
+        err instanceof Error
+          ? `Gagal membuat room cloud: ${err.message}`
+          : 'Gagal terhubung ke Firebase Firestore. Periksa koneksi internet dan coba lagi.'
+      );
+    } finally {
+      setIsCreatingRoom(false);
     }
-
-    // Offline Demo Room fallback
-    const leader: ConvoyMember = {
-      id: `leader-${Date.now()}`,
-      fullName: vehicleProfile.fullName.trim() || 'Anda (Leader)',
-      vehicleType: vehicleProfile.vehicleType,
-      vehicleDetail:
-        vehicleProfile.vehicleDetail.trim() ||
-        (vehicleProfile.vehicleType === 'MOBIL' ? 'Mobil' : 'Motor'),
-      licensePlate: vehicleProfile.licensePlate.trim() || 'B 1001 LDR',
-      emergencyContact: vehicleProfile.emergencyContact.trim() || '0812-0000-0001',
-      role: 'TOUR_LEADER',
-      joinedAtLabel: 'Baru saja',
-      isCurrentUser: true,
-      isSweeper: false,
-      avatarPreset: vehicleProfile.avatarPreset,
-      avatarPhotoUrl: vehicleProfile.avatarPhotoUrl,
-      conditionStatus: 'AMAN',
-      connectionStatus: 'CONNECTED',
-      lastLocationText: gps.lastFix ? 'GPS Live' : 'Puncak Pass KM 49',
-      lastUpdatedLabel: 'Baru saja',
-      routeDistanceMeters: 8880,
-      offRouteMeters: 0,
-      convoyOrderRank: 1,
-      mapPosition: gps.lastFix
-        ? {
-            routeProgress: 0.2,
-            xFraction: 0.3,
-            yFraction: 0.7,
-            latitude: startLat,
-            longitude: startLng,
-            speedKmh: gps.lastFix.speedKmh,
-            heading: gps.lastFix.heading,
-            accuracyMeters: gps.lastFix.accuracyMeters,
-          }
-        : interpolateAlongPolyline(0.74, effectiveConfig.waypoints, 0, 60),
-    };
-
-    const peers: ConvoyMember[] = DEFAULT_CONVOY_TEMPLATES.slice(0, 3).map(
-      (tpl, idx) => ({
-        id: `sim-${idx}-${Date.now()}`,
-        fullName: tpl.fullName,
-        vehicleType: tpl.vehicleType,
-        vehicleDetail: tpl.vehicleDetail,
-        licensePlate: tpl.licensePlate,
-        emergencyContact: tpl.emergencyContact,
-        role: 'MEMBER',
-        joinedAtLabel: 'Aktif di room',
-        isCurrentUser: false,
-        isSweeper: idx === 1,
-        avatarPreset: tpl.avatarPreset,
-        conditionStatus: tpl.conditionStatus,
-        connectionStatus: tpl.connectionStatus,
-        lastLocationText: tpl.lastLocationText,
-        lastUpdatedLabel: tpl.connectionStatus === 'WEAK_SIGNAL' ? '4 dtk lalu' : 'Baru saja',
-        routeDistanceMeters: Math.round(tpl.baseProgress * effectiveConfig.totalRouteMeters),
-        offRouteMeters: 0,
-        convoyOrderRank: idx + 2,
-        mapPosition: interpolateAlongPolyline(
-          tpl.baseProgress,
-          effectiveConfig.waypoints,
-          0,
-          tpl.baseSpeed
-        ),
-      })
-    );
-
-    setSimIndex(0);
-    recordedTrackRef.current = gps.lastFix
-      ? [{ lat: gps.lastFix.latitude, lng: gps.lastFix.longitude }]
-      : [];
-    setLastCompletedTrip(null);
-    setIsOffRouteSimActive(false);
-    setIsStragglerSimActive(false);
-    setIsLeaderTroubleSimActive(false);
-    setSosState({
-      isActive: false,
-      senderId: '',
-      senderName: '',
-      senderVehicle: '',
-      latitude: 0,
-      longitude: 0,
-      locationText: '',
-      triggeredAtLabel: '',
-    });
-    setMessages(createInitialMessages(roomId));
-    const room: TourRoom = {
-      roomId,
-      roomTitle: title,
-      inviteLink: `https://konvoiku.id/join/${roomId}`,
-      createdAtLabel: 'Mode Demo Offline',
-      isSyncedRoom: false,
-      leaderUid: leader.id,
-      actingLeaderUid: leader.id,
-      leaderTroubleActive: false,
-      members: [leader, ...peers],
-    };
-    setSelectedMemberId(leader.id);
-    commitRoomMembers(room.members, effectiveConfig, room);
-    navigateTo('live_map', 1);
   };
 
   const handleSimulateJoin = () => {
@@ -2127,22 +2037,17 @@ export default function App() {
       return;
     }
 
-    if (!authUser) {
-      setJoinError(
-        'Masuk dengan Google atau Email di atas untuk bergabung ke room live antar-perangkat, atau pilih "Simulasi Demo Offline".'
-      );
-      return;
-    }
-
     setIsJoiningRoom(true);
     setJoinError(null);
     try {
+      const cloudUser = authUser ?? (await ensureCloudSignedInUser());
+      setAuthUser(cloudUser);
       const initLat = gps.lastFix?.latitude ?? -6.65;
       const initLng = gps.lastFix?.longitude ?? 106.85;
-      await saveUserPrivateProfile(authUser.uid, vehicleProfile);
+      await saveUserPrivateProfile(cloudUser.uid, vehicleProfile);
       const res = await joinSyncedRoom({
         roomId: code,
-        uid: authUser.uid,
+        uid: cloudUser.uid,
         profile: vehicleProfile,
         initialLat: initLat,
         initialLng: initLng,
@@ -2152,7 +2057,7 @@ export default function App() {
         return;
       }
       setSelectedRole(res.role);
-      setSelectedMemberId(authUser.uid);
+      setSelectedMemberId(cloudUser.uid);
       recordedTrackRef.current = gps.lastFix
         ? [{ lat: gps.lastFix.latitude, lng: gps.lastFix.longitude }]
         : [];
@@ -3427,7 +3332,10 @@ export default function App() {
     setMobileBridgeDeepLink(null);
     setMobileBridgeCopied(false);
     try {
-      const { user, idToken } = await signInWithGoogleForMobileBridge();
+      const { user, idToken, redirected } = await signInWithGoogleForMobileBridge();
+      if (redirected || !user) {
+        return;
+      }
       if (!idToken) {
         setMobileBridgeError(
           'Token verifikasi Google tidak ditemukan. Silakan ulangi masuk dengan Google.'
@@ -3437,7 +3345,6 @@ export default function App() {
       const deepLink = `konvoiku://auth?id_token=${encodeURIComponent(idToken)}`;
       setMobileBridgeEmail(user.email || '');
       setMobileBridgeDeepLink(deepLink);
-      window.location.href = deepLink;
     } catch (err) {
       setMobileBridgeError(mapFirebaseAuthError(err, 'Google'));
     } finally {
@@ -3499,7 +3406,7 @@ export default function App() {
                 Buka Aplikasi KonvoiKu
               </a>
               <a
-                href={`intent://auth${mobileBridgeDeepLink.slice('konvoiku://auth'.length)}#Intent;scheme=konvoiku;package=com.konvoiku.touring;end`}
+                href={`intent://auth${mobileBridgeDeepLink.slice('konvoiku://auth'.length)}#Intent;scheme=konvoiku;package=com.konvoiku.touring;S.browser_fallback_url=${encodeURIComponent(typeof window !== 'undefined' ? window.location.href : '')};end`}
                 className="w-full min-h-[42px] px-4 py-2 rounded-xl bg-[#EFF6FF] dark:bg-[#1E3A8A]/40 border border-[#BFDBFE] dark:border-[#1E40AF] text-[#1D4ED8] dark:text-[#93C5FD] font-semibold text-xs flex items-center justify-center transition-colors"
               >
                 Jika Tidak Terbuka, Coba Alternatif Chrome Intent

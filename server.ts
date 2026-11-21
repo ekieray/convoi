@@ -507,6 +507,46 @@ async function startServer() {
 
   app.get(['/auth/callback', '/auth/callback/'], handleInstagramCallback);
 
+  // Proxy Firebase Auth & Hosting helper endpoints if hit on this origin
+  const firebaseAuthDomain = 'excellent-victor-7v0ns.firebaseapp.com';
+  app.all(['/__/auth/*', '/__/firebase/*'], async (req: Request, res: Response) => {
+    const targetUrl = `https://${firebaseAuthDomain}${req.originalUrl}`;
+    try {
+      const headers: Record<string, string> = {};
+      const accept = req.get('accept');
+      const contentType = req.get('content-type');
+      if (accept) headers['accept'] = accept;
+      if (contentType) headers['content-type'] = contentType;
+
+      const hasBody = req.method !== 'GET' && req.method !== 'HEAD';
+      const upstream = await fetch(targetUrl, {
+        method: req.method,
+        headers,
+        body: hasBody && req.body && Object.keys(req.body).length > 0
+          ? JSON.stringify(req.body)
+          : undefined,
+        redirect: 'manual',
+      });
+
+      const location = upstream.headers.get('location');
+      if (location) {
+        res.setHeader('Location', location);
+      }
+      const upstreamType = upstream.headers.get('content-type');
+      if (upstreamType) {
+        res.setHeader('Content-Type', upstreamType);
+      }
+      const buf = Buffer.from(await upstream.arrayBuffer());
+      res.status(upstream.status).send(buf);
+    } catch {
+      res.redirect(302, targetUrl);
+    }
+  });
+
+  app.all('/api/*', (_req: Request, res: Response) => {
+    res.status(404).json({ ok: false, error: 'Endpoint API tidak ditemukan.' });
+  });
+
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({

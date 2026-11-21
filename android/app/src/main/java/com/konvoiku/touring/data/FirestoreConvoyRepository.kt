@@ -2,6 +2,7 @@ package com.konvoiku.touring.data
 
 import android.app.Activity
 import android.content.Context
+import android.net.Uri
 import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
 import com.google.firebase.Timestamp
@@ -44,6 +45,7 @@ import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
 
 data class SyncedRoomHeader(
     val roomId: String,
@@ -55,6 +57,20 @@ data class SyncedRoomHeader(
     val leaderTroubleReason: String = "",
     val routeConfig: ConvoyRouteConfig,
     val sosState: SosEmergencyState
+)
+
+enum class WebEndpointStatus {
+    LIVE_DIRECT,
+    DEV_PROXY_AUTH,
+    NOT_FOUND,
+    UNREACHABLE
+}
+
+data class WebBridgeResolution(
+    val baseUrl: String,
+    val isPublishedLive: Boolean,
+    val isDevProxy: Boolean,
+    val errorMessage: String? = null
 )
 
 class FirestoreConvoyRepository {
@@ -132,40 +148,144 @@ class FirestoreConvoyRepository {
     private fun normalizeRoomId(raw: String): String =
         raw.trim().uppercase(Locale.ROOT)
 
-    private fun isSafeHttpBaseUrl(raw: String): String? {
+    private fun normalizeHttpBaseUrl(raw: String): String? {
         val clean = raw.trim().trimEnd('/')
         if (clean.isEmpty()) return null
-        return if (clean.startsWith("https://", ignoreCase = true) || clean.startsWith("http://", ignoreCase = true)) {
-            clean
-        } else {
-            null
+        if (!clean.startsWith("https://", ignoreCase = true) &&
+            !clean.startsWith("http://", ignoreCase = true)
+        ) {
+            return null
         }
+        return runCatching {
+            val parsed = Uri.parse(clean)
+            val scheme = parsed.scheme?.lowercase(Locale.ROOT) ?: return@runCatching null
+            val authority = parsed.encodedAuthority?.takeIf { it.isNotBlank() } ?: return@runCatching null
+            "$scheme://$authority"
+        }.getOrNull()
     }
 
-    private fun probeKonvoikuHealth(baseUrl: String): Boolean = runCatching {
+    private fun probeWebEndpoint(baseUrl: String): WebEndpointStatus = runCatching {
         val conn = (URL("$baseUrl/api/health").openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
-            instanceFollowRedirects = true
-            connectTimeout = 3000
-            readTimeout = 3000
+            instanceFollowRedirects = false
+            connectTimeout = 4000
+            readTimeout = 4000
         }
         try {
-            if (conn.responseCode !in 200..299) return@runCatching false
-            val body = conn.inputStream.bufferedReader().use { it.readText() }
-            body.contains("\"service\"") && body.contains("konvoiku")
+            val code = conn.responseCode
+            val location = conn.getHeaderField("Location").orEmpty().lowercase(Locale.ROOT)
+            if (code in 300..399) {
+                return@runCatching if (
+                    location.contains("__cookie_check") ||
+                    location.contains("accounts.google.com") ||
+                    location.contains("aistudio") ||
+                    location.contains("login")
+                ) {
+                    WebEndpointStatus.DEV_PROXY_AUTH
+                } else {
+                    WebEndpointStatus.UNREACHABLE
+                }
+            }
+            if (code == 404) {
+                return@runCatching WebEndpointStatus.NOT_FOUND
+            }
+            if (code in 200..299) {
+                val body = conn.inputStream.bufferedReader().use { it.readText() }
+                if (body.contains("\"service\"") && body.contains("konvoiku")) {
+                    return@runCatching WebEndpointStatus.LIVE_DIRECT
+                }
+                if (body.contains("__cookie_check") ||
+                    body.contains("_aistudio-iframe") ||
+                    body.contains("Cookie check")
+                ) {
+                    return@runCatching WebEndpointStatus.DEV_PROXY_AUTH
+                }
+                // Static/SPA hosting custom domains might return index.html on unknown routes
+                if (body.contains("KonvoiKu", ignoreCase = true)) {
+                    return@runCatching WebEndpointStatus.LIVE_DIRECT
+                }
+            }
+            WebEndpointStatus.UNREACHABLE
         } finally {
             conn.disconnect()
         }
-    }.getOrDefault(false)
+    }.getOrDefault(WebEndpointStatus.UNREACHABLE)
 
-    suspend fun resolveActiveWebBaseUrl(customBaseUrl: String? = null): String = withContext(Dispatchers.IO) {
-        val customClean = customBaseUrl?.let { isSafeHttpBaseUrl(it) }
-        if (customClean != null) {
-            return@withContext customClean
+    suspend fun resolveWebBridgeUrl(customBaseUrl: String? = null): WebBridgeResolution = withContext(Dispatchers.IO) {
+        val customClean = customBaseUrl?.let { normalizeHttpBaseUrl(it) }
+        if (!customBaseUrl.isNullOrBlank() && customClean == null) {
+            return@withContext WebBridgeResolution(
+                baseUrl = "",
+                isPublishedLive = false,
+                isDevProxy = false,
+                errorMessage = "Format URL web kustom tidak valid. Awali dengan https:// (contoh: https://...run.app)."
+            )
         }
-        if (probeKonvoikuHealth(SHARED_BASE_URL)) return@withContext SHARED_BASE_URL
-        if (probeKonvoikuHealth(DEV_BASE_URL)) return@withContext DEV_BASE_URL
-        SHARED_BASE_URL
+        if (customClean != null) {
+            val customStatus = probeWebEndpoint(customClean)
+            return@withContext when (customStatus) {
+                WebEndpointStatus.NOT_FOUND -> WebBridgeResolution(
+                    baseUrl = "",
+                    isPublishedLive = false,
+                    isDevProxy = false,
+                    errorMessage = "URL kustom ($customClean) mengembalikan 404 Page Not Found. Pastikan URL Web KonvoiKu sudah aktif/dipublikasikan."
+                )
+                WebEndpointStatus.DEV_PROXY_AUTH -> WebBridgeResolution(
+                    baseUrl = customClean,
+                    isPublishedLive = false,
+                    isDevProxy = true
+                )
+                else -> WebBridgeResolution(
+                    baseUrl = customClean,
+                    isPublishedLive = true,
+                    isDevProxy = false
+                )
+            }
+        }
+
+        val sharedStatus = probeWebEndpoint(SHARED_BASE_URL)
+        if (sharedStatus == WebEndpointStatus.LIVE_DIRECT) {
+            return@withContext WebBridgeResolution(
+                baseUrl = SHARED_BASE_URL,
+                isPublishedLive = true,
+                isDevProxy = false
+            )
+        }
+
+        val devStatus = probeWebEndpoint(DEV_BASE_URL)
+        if (devStatus == WebEndpointStatus.LIVE_DIRECT) {
+            return@withContext WebBridgeResolution(
+                baseUrl = DEV_BASE_URL,
+                isPublishedLive = true,
+                isDevProxy = false
+            )
+        }
+        if (devStatus == WebEndpointStatus.DEV_PROXY_AUTH) {
+            return@withContext WebBridgeResolution(
+                baseUrl = DEV_BASE_URL,
+                isPublishedLive = false,
+                isDevProxy = true
+            )
+        }
+        if (sharedStatus == WebEndpointStatus.DEV_PROXY_AUTH) {
+            return@withContext WebBridgeResolution(
+                baseUrl = SHARED_BASE_URL,
+                isPublishedLive = false,
+                isDevProxy = true
+            )
+        }
+
+        WebBridgeResolution(
+            baseUrl = "",
+            isPublishedLive = false,
+            isDevProxy = false,
+            errorMessage = "Server Web Share (ais-pre) belum dipublikasikan (404 Page Not Found) dan server Dev AI Studio tidak dapat diakses. Publikasikan web lewat tombol Share di AI Studio, isi 'URL web kustom?', atau masuk dengan Email & Kata Sandi."
+        )
+    }
+
+    suspend fun resolveActiveWebBaseUrl(customBaseUrl: String? = null): String {
+        val resolution = resolveWebBridgeUrl(customBaseUrl)
+        return resolution.baseUrl.ifBlank { DEV_BASE_URL }
     }
 
     suspend fun resolveActiveGoogleBridgeUrl(customBaseUrl: String? = null): String {
@@ -182,13 +302,55 @@ class FirestoreConvoyRepository {
         return { auth.removeAuthStateListener(listener) }
     }
 
-    suspend fun ensureSignedInUid(): String? {
-        val auth = getAuth() ?: return null
-        auth.currentUser?.uid?.let { return it }
-        return runCatching {
+    fun isDeviceCloudGuestEmail(email: String?): Boolean =
+        email?.trim()?.lowercase(Locale.ROOT)?.endsWith("@guest.konvoiku.id") == true
+
+    fun isDeviceCloudGuestUser(user: FirebaseUser?): Boolean =
+        isDeviceCloudGuestEmail(user?.email)
+
+    suspend fun ensureSignedInUidResult(): Result<String> {
+        val auth = getAuth()
+            ?: return Result.failure(IllegalStateException("Firebase Auth tidak tersedia."))
+        auth.currentUser?.uid?.let { return Result.success(it) }
+
+        val prefs = appContext?.getSharedPreferences("konvoiku_cloud_device_auth", Context.MODE_PRIVATE)
+        val savedEmail = prefs?.getString("cloud_device_email", null)?.trim().orEmpty()
+        val savedPassword = prefs?.getString("cloud_device_password", null)?.trim().orEmpty()
+        if (savedEmail.isNotEmpty() && savedPassword.isNotEmpty()) {
+            val reuseResult = runCatching {
+                auth.signInWithEmailAndPassword(savedEmail, savedPassword).await().user?.uid
+                    ?: throw IllegalStateException("Sesi perangkat cloud kosong.")
+            }
+            if (reuseResult.isSuccess) {
+                return reuseResult
+            }
+        }
+
+        val anonResult = runCatching {
             auth.signInAnonymously().await().user?.uid
-        }.getOrNull()
+                ?: throw IllegalStateException("UID autentikasi anonim kosong.")
+        }
+        if (anonResult.isSuccess) {
+            return anonResult
+        }
+
+        // Fallback when Anonymous Auth is disabled in Firebase Console (ADMIN_ONLY_OPERATION):
+        // provision an isolated per-device Email/Password cloud session.
+        val deviceEmail = "rider.${UUID.randomUUID().toString().replace("-", "").take(16)}@guest.konvoiku.id"
+        val devicePassword = "Knv#${UUID.randomUUID().toString().replace("-", "")}"
+        return runCatching {
+            val created = auth.createUserWithEmailAndPassword(deviceEmail, devicePassword).await()
+            val uid = created.user?.uid
+                ?: throw IllegalStateException("Gagal membuat sesi cloud perangkat.")
+            prefs?.edit()
+                ?.putString("cloud_device_email", deviceEmail)
+                ?.putString("cloud_device_password", devicePassword)
+                ?.apply()
+            uid
+        }
     }
+
+    suspend fun ensureSignedInUid(): String? = ensureSignedInUidResult().getOrNull()
 
     suspend fun signInWithGoogleProvider(activity: Activity): Result<FirebaseUser> {
         val auth = getAuth()
@@ -357,7 +519,7 @@ class FirestoreConvoyRepository {
         }.getOrNull()
     }
 
-    suspend fun createSyncedRoom(
+    suspend fun createSyncedRoomResult(
         roomId: String,
         roomTitle: String,
         leaderUid: String,
@@ -365,8 +527,9 @@ class FirestoreConvoyRepository {
         routeConfig: ConvoyRouteConfig,
         initialLat: Double,
         initialLng: Double
-    ): Boolean {
-        val db = getFirestore() ?: return false
+    ): Result<Unit> {
+        val db = getFirestore()
+            ?: return Result.failure(IllegalStateException("Firestore tidak tersedia."))
         val cleanRoomId = normalizeRoomId(roomId)
         val origin = routeConfig.waypoints.firstOrNull()
         val dest = routeConfig.waypoints.lastOrNull()
@@ -375,6 +538,15 @@ class FirestoreConvoyRepository {
         ).take(16000)
 
         return runCatching {
+            val safeOriginName = routeConfig.originName.trim().ifBlank { "Titik Keberangkatan" }.take(120)
+            val safeOriginAddress = routeConfig.originAddress.trim().ifBlank {
+                String.format(Locale.US, "%.4f, %.4f", origin?.latitude ?: initialLat, origin?.longitude ?: initialLng)
+            }.take(240)
+            val safeDestName = routeConfig.destinationName.trim().ifBlank { "Titik Tujuan" }.take(120)
+            val safeDestAddress = routeConfig.destinationAddress.trim().ifBlank {
+                String.format(Locale.US, "%.4f, %.4f", dest?.latitude ?: -6.645, dest?.longitude ?: 106.99)
+            }.take(240)
+
             val roomData = hashMapOf(
                 "roomId" to cleanRoomId,
                 "roomTitle" to roomTitle.trim().ifBlank { "Konvoi Touring" }.take(100),
@@ -383,10 +555,10 @@ class FirestoreConvoyRepository {
                 "actingLeaderUid" to leaderUid,
                 "leaderTroubleActive" to false,
                 "leaderTroubleReason" to "",
-                "originName" to routeConfig.originName.take(120),
-                "originAddress" to routeConfig.originAddress.take(240),
-                "destinationName" to routeConfig.destinationName.take(120),
-                "destinationAddress" to routeConfig.destinationAddress.take(240),
+                "originName" to safeOriginName,
+                "originAddress" to safeOriginAddress,
+                "destinationName" to safeDestName,
+                "destinationAddress" to safeDestAddress,
                 "destLat" to (dest?.latitude ?: -6.645),
                 "destLng" to (dest?.longitude ?: 106.99),
                 "originLat" to (origin?.latitude ?: initialLat),
@@ -443,9 +615,27 @@ class FirestoreConvoyRepository {
             routeConfig.checkpoints.forEach { cp ->
                 addCheckpoint(cleanRoomId, leaderUid, cp)
             }
-            true
-        }.getOrDefault(false)
+            Unit
+        }
     }
+
+    suspend fun createSyncedRoom(
+        roomId: String,
+        roomTitle: String,
+        leaderUid: String,
+        profile: VehicleProfile,
+        routeConfig: ConvoyRouteConfig,
+        initialLat: Double,
+        initialLng: Double
+    ): Boolean = createSyncedRoomResult(
+        roomId = roomId,
+        roomTitle = roomTitle,
+        leaderUid = leaderUid,
+        profile = profile,
+        routeConfig = routeConfig,
+        initialLat = initialLat,
+        initialLng = initialLng
+    ).isSuccess
 
     suspend fun joinSyncedRoom(
         roomId: String,

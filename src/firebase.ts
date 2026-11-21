@@ -7,6 +7,7 @@ import {
   GoogleAuthProvider,
   onAuthStateChanged,
   sendPasswordResetEmail,
+  signInAnonymously,
   signInWithEmailAndPassword,
   signInWithPopup,
   signInWithRedirect,
@@ -125,10 +126,13 @@ function shouldFallbackToRedirect(error: unknown): boolean {
   );
 }
 
-export async function signInWithGoogle(): Promise<User> {
+export async function signInWithGoogle(): Promise<{
+  user: User | null;
+  redirected: boolean;
+}> {
   try {
     const cred = await signInWithPopup(auth, googleProvider);
-    return cred.user;
+    return { user: cred.user, redirected: false };
   } catch (error) {
     if (shouldFallbackToRedirect(error) && !isRunningInIframe()) {
       try {
@@ -137,15 +141,16 @@ export async function signInWithGoogle(): Promise<User> {
         // ignore storage restrictions
       }
       await signInWithRedirect(auth, googleProvider);
-      throw new Error('Mengarahkan ke halaman login Google...');
+      return { user: null, redirected: true };
     }
     throw error;
   }
 }
 
 export async function signInWithGoogleForMobileBridge(): Promise<{
-  user: User;
+  user: User | null;
   idToken: string | null;
+  redirected: boolean;
 }> {
   try {
     const cred = await signInWithPopup(auth, googleProvider);
@@ -153,6 +158,7 @@ export async function signInWithGoogleForMobileBridge(): Promise<{
     return {
       user: cred.user,
       idToken: oauthCredential?.idToken ?? null,
+      redirected: false,
     };
   } catch (error) {
     if (shouldFallbackToRedirect(error) && !isRunningInIframe()) {
@@ -162,7 +168,7 @@ export async function signInWithGoogleForMobileBridge(): Promise<{
         // ignore storage restrictions
       }
       await signInWithRedirect(auth, googleProvider);
-      throw new Error('Mengarahkan ke halaman login Google...');
+      return { user: null, idToken: null, redirected: true };
     }
     throw error;
   }
@@ -241,6 +247,69 @@ export async function sendResetPasswordEmail(email: string): Promise<void> {
 
 export async function signOutFirebase(): Promise<void> {
   await signOut(auth);
+}
+
+const CLOUD_DEVICE_AUTH_KEY = 'konvoiku_cloud_device_auth_v1';
+
+export function isDeviceCloudGuestEmail(email?: string | null): boolean {
+  return (email || '').trim().toLowerCase().endsWith('@guest.konvoiku.id');
+}
+
+function generateRandomTokenPart(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID().replace(/-/g, '');
+  }
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
+}
+
+export async function ensureCloudSignedInUser(): Promise<User> {
+  if (auth.currentUser) {
+    return auth.currentUser;
+  }
+
+  if (typeof window !== 'undefined') {
+    try {
+      const raw = window.localStorage.getItem(CLOUD_DEVICE_AUTH_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as { email?: string; password?: string };
+        if (parsed.email && parsed.password) {
+          const cred = await signInWithEmailAndPassword(
+            auth,
+            parsed.email,
+            parsed.password
+          );
+          return cred.user;
+        }
+      }
+    } catch {
+      // Fall through to anonymous or fresh device provisioning
+    }
+  }
+
+  try {
+    const anonCred = await signInAnonymously(auth);
+    return anonCred.user;
+  } catch {
+    // Fallback when Anonymous Auth is disabled (ADMIN_ONLY_OPERATION):
+    const deviceEmail = `rider.${generateRandomTokenPart().slice(0, 16)}@guest.konvoiku.id`;
+    const devicePassword = `Knv#${generateRandomTokenPart().slice(0, 24)}`;
+    const cred = await createUserWithEmailAndPassword(
+      auth,
+      deviceEmail,
+      devicePassword
+    );
+    if (typeof window !== 'undefined') {
+      try {
+        window.localStorage.setItem(
+          CLOUD_DEVICE_AUTH_KEY,
+          JSON.stringify({ email: deviceEmail, password: devicePassword })
+        );
+      } catch {
+        // Ignore storage error
+      }
+    }
+    return cred.user;
+  }
 }
 
 export function subscribeToAuthState(
