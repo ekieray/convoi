@@ -4,6 +4,7 @@ import android.app.Activity
 import android.app.Application
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -545,6 +546,7 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
                 isVerifiedAdmin = isVerifiedAdmin,
                 authError = null,
                 showGoogleBrowserFallback = false,
+                showOwnerDevPreviewFallback = false,
                 vehicleProfile = merged
             )
         }
@@ -637,7 +639,8 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.update {
             it.copy(
                 authError = null,
-                authInfoMessage = null
+                authInfoMessage = null,
+                showOwnerDevPreviewFallback = false
             )
         }
     }
@@ -733,11 +736,16 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun openGoogleBrowserSync(context: Context, customBaseUrl: String? = null) {
+    fun openGoogleBrowserSync(
+        context: Context,
+        customBaseUrl: String? = null,
+        allowDevProxyFallback: Boolean = false
+    ) {
         viewModelScope.launch {
             _uiState.update {
                 it.copy(
                     authError = null,
+                    showOwnerDevPreviewFallback = false,
                     authInfoMessage = "Memeriksa halaman sinkronisasi Google yang aktif..."
                 )
             }
@@ -745,13 +753,17 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
                 ?.trim()
                 ?.takeIf { it.isNotEmpty() }
             val explicitCustom = customBaseUrl?.trim()?.takeIf { it.isNotEmpty() }
-            val resolution = syncRepo.resolveWebBridgeUrl(explicitCustom ?: savedCustomUrl)
+            val resolution = syncRepo.resolveWebBridgeUrl(
+                customBaseUrl = explicitCustom ?: savedCustomUrl,
+                allowDevProxyFallback = allowDevProxyFallback
+            )
 
             if (resolution.baseUrl.isBlank()) {
                 _uiState.update {
                     it.copy(
                         authInfoMessage = null,
                         showGoogleBrowserFallback = true,
+                        showOwnerDevPreviewFallback = resolution.isDevProxy && !allowDevProxyFallback,
                         authError = resolution.errorMessage
                             ?: "Halaman web login browser tidak tersedia (404 Page Not Found). Isi 'URL web kustom?' dengan alamat Web KonvoiKu yang aktif."
                     )
@@ -762,24 +774,51 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
             if (explicitCustom != null) {
                 profilePrefs.edit().putString("custom_web_base_url", resolution.baseUrl).apply()
             }
-            _uiState.update { it.copy(activeWebBaseUrl = resolution.baseUrl) }
+            _uiState.update {
+                it.copy(
+                    activeWebBaseUrl = resolution.baseUrl,
+                    showOwnerDevPreviewFallback = false
+                )
+            }
             val targetUrl = "${resolution.baseUrl}/?mobile_auth=google"
 
             runCatching {
                 withContext(Dispatchers.Main) {
-                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(targetUrl)).apply {
+                    val targetUri = Uri.parse(targetUrl)
+                    val baseIntent = Intent(Intent.ACTION_VIEW, targetUri).apply {
+                        addCategory(Intent.CATEGORY_BROWSABLE)
                         if (context !is Activity) {
                             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                         }
                     }
-                    context.startActivity(intent)
+                    val browserProbe = Intent(Intent.ACTION_VIEW, Uri.parse("https://accounts.google.com")).apply {
+                        addCategory(Intent.CATEGORY_BROWSABLE)
+                    }
+                    @Suppress("DEPRECATION")
+                    val externalBrowsers = runCatching {
+                        context.packageManager.queryIntentActivities(
+                            browserProbe,
+                            PackageManager.MATCH_DEFAULT_ONLY
+                        ).mapNotNull { info ->
+                            info.activityInfo?.packageName?.takeIf { it != context.packageName }
+                        }.distinct()
+                    }.getOrDefault(emptyList())
+
+                    val preferredPackage = externalBrowsers.firstOrNull { pkg ->
+                        pkg.contains("chrome", ignoreCase = true)
+                    } ?: externalBrowsers.firstOrNull()
+
+                    if (preferredPackage != null) {
+                        baseIntent.setPackage(preferredPackage)
+                    }
+                    context.startActivity(baseIntent)
                 }
             }.onSuccess {
                 _uiState.update {
                     it.copy(
                         authInfoMessage = if (resolution.isDevProxy) {
                             if (resolution.isSharedUnpublished) {
-                                "Web Share publik (ais-pre) masih 404 (belum Publish Share). Dialihkan ke Dev Preview (${resolution.baseUrl}): hanya terbuka di HP/Chrome yang login akun Google pemilik AI Studio. Untuk HP lain: klik Share → Publish Web di AI Studio, isi 'URL web kustom?', atau daftar SHA-1 APK di Firebase."
+                                "Dev Preview (${resolution.baseUrl}) dibuka khusus pemilik. Pastikan Chrome memakai akun Google pemilik (${FirestoreConvoyRepository.ADMIN_EMAIL}), lalu salin link/tokennya setelah login."
                             } else {
                                 "Browser dibuka ke Dev Preview (${resolution.baseUrl}). Pastikan Chrome memakai akun Google pemilik AI Studio, lalu selesaikan login & ketuk 'Buka Aplikasi KonvoiKu' atau salin link/tokennya."
                             }

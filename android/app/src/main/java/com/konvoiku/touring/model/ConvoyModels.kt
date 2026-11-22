@@ -611,6 +611,7 @@ data class ConvoyUiState(
     val authError: String? = null,
     val authInfoMessage: String? = null,
     val showGoogleBrowserFallback: Boolean = false,
+    val showOwnerDevPreviewFallback: Boolean = false,
     val isVerifiedAdmin: Boolean = false,
     val isSavingProfile: Boolean = false,
     val profileSyncMessage: String? = null,

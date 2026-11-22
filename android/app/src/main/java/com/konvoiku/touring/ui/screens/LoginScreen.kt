@@ -103,11 +103,13 @@ fun LoginScreen(
     authError: String? = null,
     authInfoMessage: String? = null,
     showGoogleBrowserFallback: Boolean = false,
+    showOwnerDevPreviewFallback: Boolean = false,
     globalConfig: GlobalAppConfig = GlobalAppConfig(),
     onClearAuthError: () -> Unit = {},
     onGoogleSignIn: (Activity?) -> Unit = {},
     onOpenGoogleBrowserSync: () -> Unit = {},
     onOpenCustomGoogleBrowserSync: (String) -> Unit = {},
+    onOpenOwnerDevPreviewSync: () -> Unit = {},
     onSubmitGoogleSyncToken: (String) -> Unit = {},
     onFacebookSignIn: (Activity?) -> Unit = {},
     onForgotPassword: (String) -> Unit = {},
@@ -410,7 +412,7 @@ fun LoginScreen(
                             }
 
                             Text(
-                                text = "Info HP lain: Dev Preview hanya bisa diakses akun Google pemilik AI Studio. Agar HP lain bisa login via browser, klik Share → Publish Web di AI Studio, isi 'URL web kustom?', atau daftarkan SHA-1 APK & aktifkan Email/Password di Firebase Console.",
+                                text = "Info HP lain: Browser sync hanya berjalan jika Web Share AI Studio sudah di-Publish, URL web publik diisi di 'URL web kustom?', atau Email/Password & SHA-1 APK diaktifkan di Firebase Console.",
                                 style = MaterialTheme.typography.bodySmall,
                                 fontSize = 11.sp,
                                 lineHeight = 15.sp,
@@ -693,6 +695,36 @@ fun LoginScreen(
                                     color = Color(0xFFB91C1C),
                                     style = MaterialTheme.typography.bodyMedium,
                                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                                )
+                            }
+                        }
+
+                        if (showOwnerDevPreviewFallback) {
+                            OutlinedButton(
+                                onClick = {
+                                    localError = null
+                                    onClearAuthError()
+                                    onOpenOwnerDevPreviewSync()
+                                },
+                                enabled = !isAuthLoading,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(44.dp),
+                                shape = RoundedCornerShape(12.dp),
+                                border = BorderStroke(1.dp, Color(0xFFD97706))
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.OpenInBrowser,
+                                    contentDescription = null,
+                                    tint = Color(0xFFB45309),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "Khusus Pemilik (${FirestoreConvoyRepository.ADMIN_EMAIL}): Buka Dev Preview",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color(0xFFB45309)
                                 )
                             }
                         }

@@ -212,7 +212,10 @@ class FirestoreConvoyRepository {
         }
     }.getOrDefault(WebEndpointStatus.UNREACHABLE)
 
-    suspend fun resolveWebBridgeUrl(customBaseUrl: String? = null): WebBridgeResolution = withContext(Dispatchers.IO) {
+    suspend fun resolveWebBridgeUrl(
+        customBaseUrl: String? = null,
+        allowDevProxyFallback: Boolean = false
+    ): WebBridgeResolution = withContext(Dispatchers.IO) {
         val customClean = customBaseUrl?.let { normalizeHttpBaseUrl(it) }
         if (!customBaseUrl.isNullOrBlank() && customClean == null) {
             return@withContext WebBridgeResolution(
@@ -223,23 +226,37 @@ class FirestoreConvoyRepository {
             )
         }
         if (customClean != null) {
-            val customStatus = probeWebEndpoint(customClean)
-            return@withContext when (customStatus) {
+            return@withContext when (probeWebEndpoint(customClean)) {
                 WebEndpointStatus.NOT_FOUND -> WebBridgeResolution(
                     baseUrl = "",
                     isPublishedLive = false,
                     isDevProxy = false,
                     errorMessage = "URL kustom ($customClean) mengembalikan 404 Page Not Found. Pastikan URL Web KonvoiKu sudah aktif/dipublikasikan."
                 )
-                WebEndpointStatus.DEV_PROXY_AUTH -> WebBridgeResolution(
-                    baseUrl = customClean,
-                    isPublishedLive = false,
-                    isDevProxy = true
-                )
-                else -> WebBridgeResolution(
+                WebEndpointStatus.DEV_PROXY_AUTH -> if (allowDevProxyFallback) {
+                    WebBridgeResolution(
+                        baseUrl = customClean,
+                        isPublishedLive = false,
+                        isDevProxy = true
+                    )
+                } else {
+                    WebBridgeResolution(
+                        baseUrl = "",
+                        isPublishedLive = false,
+                        isDevProxy = true,
+                        errorMessage = "URL ($customClean) mengarah ke Dev Preview AI Studio yang terkunci khusus akun pemilik ($ADMIN_EMAIL) dan akan error Google 403 di HP lain. Gunakan URL Web publik atau tombol khusus pemilik di bawah."
+                    )
+                }
+                WebEndpointStatus.LIVE_DIRECT -> WebBridgeResolution(
                     baseUrl = customClean,
                     isPublishedLive = true,
                     isDevProxy = false
+                )
+                WebEndpointStatus.UNREACHABLE -> WebBridgeResolution(
+                    baseUrl = "",
+                    isPublishedLive = false,
+                    isDevProxy = false,
+                    errorMessage = "URL kustom ($customClean) tidak dapat dijangkau. Periksa alamat URL dan koneksi internet Anda."
                 )
             }
         }
@@ -263,20 +280,23 @@ class FirestoreConvoyRepository {
                 isSharedUnpublished = sharedStatus == WebEndpointStatus.NOT_FOUND
             )
         }
-        if (devStatus == WebEndpointStatus.DEV_PROXY_AUTH) {
+        if (devStatus == WebEndpointStatus.DEV_PROXY_AUTH || sharedStatus == WebEndpointStatus.DEV_PROXY_AUTH) {
+            val targetProxyBase = if (devStatus == WebEndpointStatus.DEV_PROXY_AUTH) DEV_BASE_URL else SHARED_BASE_URL
+            val sharedUnpublished = sharedStatus == WebEndpointStatus.NOT_FOUND
+            if (allowDevProxyFallback) {
+                return@withContext WebBridgeResolution(
+                    baseUrl = targetProxyBase,
+                    isPublishedLive = false,
+                    isDevProxy = true,
+                    isSharedUnpublished = sharedUnpublished
+                )
+            }
             return@withContext WebBridgeResolution(
-                baseUrl = DEV_BASE_URL,
+                baseUrl = "",
                 isPublishedLive = false,
                 isDevProxy = true,
-                isSharedUnpublished = sharedStatus == WebEndpointStatus.NOT_FOUND
-            )
-        }
-        if (sharedStatus == WebEndpointStatus.DEV_PROXY_AUTH) {
-            return@withContext WebBridgeResolution(
-                baseUrl = SHARED_BASE_URL,
-                isPublishedLive = false,
-                isDevProxy = true,
-                isSharedUnpublished = false
+                isSharedUnpublished = sharedUnpublished,
+                errorMessage = "Login Google via browser belum bisa dibuka di HP lain: halaman Web Share publik (ais-pre) masih 404 (belum Publish Share) dan Dev Preview (ais-dev) diblokir Google 403 untuk selain akun pemilik ($ADMIN_EMAIL).\n\nCara mengatasi:\n1. Di AI Studio Web, klik Share → Publish Web agar halaman publik aktif, atau\n2. Di Firebase Console ($FIREBASE_PROJECT_ID) → Authentication → Sign-in method, aktifkan Email/Password & Anonymous (plus SHA-1 APK untuk Google langsung), atau\n3. Deploy Web KonvoiKu ke hosting HTTPS publik lalu isi di 'URL web kustom?'."
             )
         }
 
@@ -290,8 +310,8 @@ class FirestoreConvoyRepository {
     }
 
     suspend fun resolveActiveWebBaseUrl(customBaseUrl: String? = null): String {
-        val resolution = resolveWebBridgeUrl(customBaseUrl)
-        return resolution.baseUrl.ifBlank { DEV_BASE_URL }
+        val resolution = resolveWebBridgeUrl(customBaseUrl, allowDevProxyFallback = false)
+        return resolution.baseUrl.ifBlank { SHARED_BASE_URL }
     }
 
     suspend fun resolveActiveGoogleBridgeUrl(customBaseUrl: String? = null): String {

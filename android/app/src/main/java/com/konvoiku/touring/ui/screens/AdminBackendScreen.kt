@@ -108,6 +108,7 @@ fun AdminBackendScreen(
     isAuthLoading: Boolean = false,
     authError: String? = null,
     authInfoMessage: String? = null,
+    showOwnerDevPreviewFallback: Boolean = false,
     isMonitoringLoading: Boolean = false,
     globalConfig: GlobalAppConfig,
     presenceList: List<UserPresenceInfo>,
@@ -119,6 +120,7 @@ fun AdminBackendScreen(
     onGoogleSignIn: (Activity?) -> Unit = {},
     onOpenGoogleBrowserSync: () -> Unit = {},
     onOpenCustomGoogleBrowserSync: (String) -> Unit = {},
+    onOpenOwnerDevPreviewSync: () -> Unit = {},
     onSubmitGoogleSyncToken: (String) -> Unit = {},
     onStartMonitoring: () -> Unit,
     onStopMonitoring: () -> Unit,
@@ -415,6 +417,32 @@ fun AdminBackendScreen(
                                     fontSize = 11.sp,
                                     color = Color(0xFF991B1B),
                                     modifier = Modifier.padding(10.dp)
+                                )
+                            }
+                        }
+
+                        if (showOwnerDevPreviewFallback) {
+                            OutlinedButton(
+                                onClick = onOpenOwnerDevPreviewSync,
+                                enabled = !isAuthLoading,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(44.dp),
+                                shape = RoundedCornerShape(12.dp),
+                                border = BorderStroke(1.dp, Color(0xFFD97706))
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.OpenInBrowser,
+                                    contentDescription = null,
+                                    tint = Color(0xFFB45309),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "Khusus Pemilik (${FirestoreConvoyRepository.ADMIN_EMAIL}): Buka Dev Preview",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color(0xFFB45309)
                                 )
                             }
                         }

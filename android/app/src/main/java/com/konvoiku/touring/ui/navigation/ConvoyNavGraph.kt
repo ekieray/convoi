@@ -102,6 +102,7 @@ fun ConvoyNavGraph(
                 authError = uiState.authError,
                 authInfoMessage = uiState.authInfoMessage,
                 showGoogleBrowserFallback = uiState.showGoogleBrowserFallback,
+                showOwnerDevPreviewFallback = uiState.showOwnerDevPreviewFallback,
                 globalConfig = uiState.globalConfig,
                 onClearAuthError = viewModel::clearAuthError,
                 onGoogleSignIn = { activity ->
@@ -116,6 +117,9 @@ fun ConvoyNavGraph(
                 },
                 onOpenCustomGoogleBrowserSync = { customUrl ->
                     viewModel.openGoogleBrowserSync(appContext, customUrl)
+                },
+                onOpenOwnerDevPreviewSync = {
+                    viewModel.openGoogleBrowserSync(appContext, allowDevProxyFallback = true)
                 },
                 onSubmitGoogleSyncToken = { raw ->
                     viewModel.importGoogleSyncInput(raw) {
@@ -226,6 +230,7 @@ fun ConvoyNavGraph(
                 isAuthLoading = uiState.isAuthLoading,
                 authError = uiState.authError,
                 authInfoMessage = uiState.authInfoMessage,
+                showOwnerDevPreviewFallback = uiState.showOwnerDevPreviewFallback,
                 isMonitoringLoading = uiState.isAdminMonitoringLoading,
                 globalConfig = uiState.globalConfig,
                 presenceList = uiState.adminPresenceList,
@@ -238,6 +243,9 @@ fun ConvoyNavGraph(
                 onOpenGoogleBrowserSync = { viewModel.openGoogleBrowserSync(appContext) },
                 onOpenCustomGoogleBrowserSync = { customUrl ->
                     viewModel.openGoogleBrowserSync(appContext, customUrl)
+                },
+                onOpenOwnerDevPreviewSync = {
+                    viewModel.openGoogleBrowserSync(appContext, allowDevProxyFallback = true)
                 },
                 onSubmitGoogleSyncToken = { raw -> viewModel.importGoogleSyncInput(raw) },
                 onStartMonitoring = viewModel::startAdminMonitoring,
