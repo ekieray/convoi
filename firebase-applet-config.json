@@ -1,12 +1,12 @@
 {
-  "projectId": "excellent-victor-7v0ns",
-  "appId": "1:886997766185:web:4ebbd54ea87a38cf350c38",
-  "apiKey": "AIzaSyAjMt4190SzciFuyVrkGunLf-mPmHQ9rxk",
-  "authDomain": "excellent-victor-7v0ns.firebaseapp.com",
+  "projectId": "konvoi-touring",
+  "appId": "1:492281165480:web:118d7d76703a006501749d",
+  "apiKey": "AIzaSyBs2ZFMhE9UeOXP1xmVfEXFw8hKapCQQX0",
+  "authDomain": "konvoi-touring.firebaseapp.com",
   "firestoreDatabaseId": "ai-studio-konvoikutouringc-4b128c6d-2347-4d6f-afba-25201f26dbcb",
-  "storageBucket": "excellent-victor-7v0ns.firebasestorage.app",
-  "messagingSenderId": "886997766185",
+  "storageBucket": "konvoi-touring.firebasestorage.app",
+  "messagingSenderId": "492281165480",
   "measurementId": "",
-  "oAuthClientId": "886997766185-el6l61i6ojer58i9c7toig28kfu6j7e0.apps.googleusercontent.com",
+  "oAuthClientId": "492281165480-7c606nn9gmnnbe5eor6rjdo8ak14shme.apps.googleusercontent.com",
   "recaptchaSiteKey": ""
 }

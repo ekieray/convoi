@@ -508,7 +508,7 @@ async function startServer() {
   app.get(['/auth/callback', '/auth/callback/'], handleInstagramCallback);
 
   // Proxy Firebase Auth & Hosting helper endpoints if hit on this origin
-  const firebaseAuthDomain = 'excellent-victor-7v0ns.firebaseapp.com';
+  const firebaseAuthDomain = 'konvoi-touring.firebaseapp.com';
   app.all(['/__/auth/*', '/__/firebase/*'], async (req: Request, res: Response) => {
     const targetUrl = `https://${firebaseAuthDomain}${req.originalUrl}`;
     try {

@@ -414,7 +414,7 @@ fun LoginScreen(
                             }
 
                             Text(
-                                text = "Info HP lain: Browser sync memerlukan Web KonvoiKu versi terbaru yang sudah di-Deploy/Publish. Tanpa deploy web, aktifkan Email/Password atau SHA-1 APK di Firebase Console.",
+                                text = "Sinkronkan Google via Browser berjalan langsung lewat halaman login Google lokal di browser HP tanpa perlu deploy web.",
                                 style = MaterialTheme.typography.bodySmall,
                                 fontSize = 11.sp,
                                 lineHeight = 15.sp,

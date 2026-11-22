@@ -12,6 +12,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import com.google.firebase.auth.FirebaseUser
 import com.konvoiku.touring.data.FirestoreConvoyRepository
+import com.konvoiku.touring.data.LocalBrowserGoogleAuthServer
 import com.konvoiku.touring.location.GpsLocationTracker
 import com.konvoiku.touring.model.AuthProviderType
 import com.konvoiku.touring.model.AvatarPreset
@@ -66,6 +67,7 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
 
     private val gpsTracker = GpsLocationTracker(application.applicationContext)
     private val syncRepo = FirestoreConvoyRepository()
+    private val localBrowserAuthServer = LocalBrowserGoogleAuthServer()
     private val profilePrefs = application.applicationContext
         .getSharedPreferences("konvoiku_profiles", Context.MODE_PRIVATE)
 
@@ -196,6 +198,7 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
 
     override fun onCleared() {
         super.onCleared()
+        localBrowserAuthServer.stop()
         authUnsubscribe?.invoke()
         roomUnsubscribe?.invoke()
         configUnsubscribe?.invoke()
@@ -746,45 +749,98 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
                 it.copy(
                     authError = null,
                     showOwnerDevPreviewFallback = false,
-                    authInfoMessage = "Memeriksa halaman sinkronisasi Google yang aktif..."
+                    authInfoMessage = "Menyiapkan halaman login Google di browser..."
                 )
             }
             val savedCustomUrl = profilePrefs.getString("custom_web_base_url", null)
                 ?.trim()
                 ?.takeIf { it.isNotEmpty() }
             val explicitCustom = customBaseUrl?.trim()?.takeIf { it.isNotEmpty() }
-            val resolution = syncRepo.resolveWebBridgeUrl(
-                customBaseUrl = explicitCustom ?: savedCustomUrl,
-                allowDevProxyFallback = allowDevProxyFallback
-            )
 
-            if (resolution.baseUrl.isBlank()) {
-                _uiState.update {
-                    it.copy(
-                        authInfoMessage = null,
-                        showGoogleBrowserFallback = true,
-                        showOwnerDevPreviewFallback = resolution.isDevProxy && !allowDevProxyFallback,
-                        authError = resolution.errorMessage
-                            ?: "Halaman web login browser tidak tersedia (404 Page Not Found). Isi 'URL web kustom?' dengan alamat Web KonvoiKu yang aktif."
-                    )
-                }
-                return@launch
-            }
+            var targetUrl: String? = null
+            var isDevProxy = false
+            var isSharedUnpublished = false
+            var isLocalLoopback = false
+            var resolvedBase = ""
 
-            if (explicitCustom != null) {
-                profilePrefs.edit().putString("custom_web_base_url", resolution.baseUrl).apply()
-            }
-            _uiState.update {
-                it.copy(
-                    activeWebBaseUrl = resolution.baseUrl,
-                    showOwnerDevPreviewFallback = false
+            if (explicitCustom != null || savedCustomUrl != null || allowDevProxyFallback) {
+                val resolution = syncRepo.resolveWebBridgeUrl(
+                    customBaseUrl = explicitCustom ?: savedCustomUrl,
+                    allowDevProxyFallback = allowDevProxyFallback
                 )
+                if (resolution.baseUrl.isNotBlank()) {
+                    resolvedBase = resolution.baseUrl
+                    isDevProxy = resolution.isDevProxy
+                    isSharedUnpublished = resolution.isSharedUnpublished
+                    targetUrl = "${resolution.baseUrl}/?mobile_auth=google"
+                    if (explicitCustom != null) {
+                        profilePrefs.edit().putString("custom_web_base_url", resolution.baseUrl).apply()
+                    }
+                    _uiState.update { it.copy(activeWebBaseUrl = resolution.baseUrl) }
+                } else if (explicitCustom != null) {
+                    _uiState.update {
+                        it.copy(
+                            authInfoMessage = null,
+                            showGoogleBrowserFallback = true,
+                            showOwnerDevPreviewFallback = resolution.isDevProxy && !allowDevProxyFallback,
+                            authError = resolution.errorMessage
+                                ?: "URL web kustom tidak dapat digunakan untuk login Google."
+                        )
+                    }
+                    return@launch
+                }
+            } else {
+                val liveWeb = syncRepo.resolveWebBridgeUrl(allowDevProxyFallback = false)
+                if (liveWeb.baseUrl.isNotBlank() && liveWeb.isPublishedLive) {
+                    resolvedBase = liveWeb.baseUrl
+                    targetUrl = "${liveWeb.baseUrl}/?mobile_auth=google"
+                    _uiState.update { it.copy(activeWebBaseUrl = liveWeb.baseUrl) }
+                }
             }
-            val targetUrl = "${resolution.baseUrl}/?mobile_auth=google"
 
+            if (targetUrl == null) {
+                val portResult = withContext(Dispatchers.IO) {
+                    runCatching {
+                        localBrowserAuthServer.start(
+                            onIdTokenReceived = { idToken ->
+                                viewModelScope.launch(Dispatchers.Main) {
+                                    completeGoogleIdTokenSignIn(idToken)
+                                }
+                            },
+                            onErrorReceived = { errMsg ->
+                                viewModelScope.launch(Dispatchers.Main) {
+                                    _uiState.update {
+                                        it.copy(
+                                            isAuthLoading = false,
+                                            showGoogleBrowserFallback = true,
+                                            authError = errMsg
+                                        )
+                                    }
+                                }
+                            }
+                        )
+                    }
+                }
+                val port = portResult.getOrNull()
+                if (port == null) {
+                    _uiState.update {
+                        it.copy(
+                            authInfoMessage = null,
+                            showGoogleBrowserFallback = true,
+                            authError = "Gagal menyiapkan server login browser lokal di perangkat."
+                        )
+                    }
+                    return@launch
+                }
+                isLocalLoopback = true
+                resolvedBase = "http://localhost:$port"
+                targetUrl = "$resolvedBase/auth"
+            }
+
+            val finalUrl = targetUrl
             runCatching {
                 withContext(Dispatchers.Main) {
-                    val targetUri = Uri.parse(targetUrl)
+                    val targetUri = Uri.parse(finalUrl)
                     val baseIntent = Intent(Intent.ACTION_VIEW, targetUri).apply {
                         addCategory(Intent.CATEGORY_BROWSABLE)
                         if (context !is Activity) {
@@ -816,18 +872,24 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
             }.onSuccess {
                 _uiState.update {
                     it.copy(
-                        authInfoMessage = if (resolution.isDevProxy) {
-                            if (resolution.isSharedUnpublished) {
-                                "Dev Preview (${resolution.baseUrl}) dibuka khusus pemilik. Pastikan Chrome memakai akun Google pemilik (${FirestoreConvoyRepository.ADMIN_EMAIL}), lalu salin link/tokennya setelah login."
-                            } else {
-                                "Browser dibuka ke Dev Preview (${resolution.baseUrl}). Pastikan Chrome memakai akun Google pemilik AI Studio, lalu selesaikan login & ketuk 'Buka Aplikasi KonvoiKu' atau salin link/tokennya."
-                            }
-                        } else {
-                            "Browser dibuka (${resolution.baseUrl}). Setelah login Google selesai, ketuk 'Buka Aplikasi KonvoiKu' atau salin link/tokennya ke kolom di bawah."
+                        showGoogleBrowserFallback = true,
+                        showOwnerDevPreviewFallback = false,
+                        authInfoMessage = when {
+                            isLocalLoopback ->
+                                "Browser dibuka ke halaman login Google ($resolvedBase). Ketuk 'Pilih Akun Google' di browser, lalu tunggu otomatis kembali ke KonvoiKu."
+                            isDevProxy && isSharedUnpublished ->
+                                "Dev Preview ($resolvedBase) dibuka khusus pemilik. Pastikan Chrome memakai akun Google pemilik (${FirestoreConvoyRepository.ADMIN_EMAIL}), lalu salin link/tokennya setelah login."
+                            isDevProxy ->
+                                "Browser dibuka ke Dev Preview ($resolvedBase). Pastikan Chrome memakai akun Google pemilik AI Studio, lalu selesaikan login & ketuk 'Buka Aplikasi KonvoiKu' atau salin link/tokennya."
+                            else ->
+                                "Browser dibuka ($resolvedBase). Setelah login Google selesai, ketuk 'Buka Aplikasi KonvoiKu' atau salin link/tokennya ke kolom di bawah."
                         }
                     )
                 }
             }.onFailure {
+                if (isLocalLoopback) {
+                    localBrowserAuthServer.stop()
+                }
                 _uiState.update {
                     it.copy(
                         authInfoMessage = null,

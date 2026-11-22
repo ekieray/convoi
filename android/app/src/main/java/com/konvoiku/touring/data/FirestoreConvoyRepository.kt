@@ -78,18 +78,26 @@ data class WebBridgeResolution(
 class FirestoreConvoyRepository {
 
     companion object {
-        // Named Firestore database provisioned for KonvoiKu Web & Android sync
+        // Named Firestore database provisioned on konvoi-touring for Web & Android sync
         private const val FIRESTORE_DB_ID =
             "ai-studio-konvoikutouringc-4b128c6d-2347-4d6f-afba-25201f26dbcb"
-        private const val FIREBASE_PROJECT_ID = "excellent-victor-7v0ns"
-        private const val FIREBASE_APP_ID = "1:886997766185:web:4ebbd54ea87a38cf350c38"
+        const val FIREBASE_PROJECT_ID_PUBLIC = "konvoi-touring"
+        private const val FIREBASE_PROJECT_ID = FIREBASE_PROJECT_ID_PUBLIC
+        private const val FIREBASE_APP_ID = "1:492281165480:android:8bae46d9a2cd71fc01749d"
+        const val FIREBASE_WEB_APP_ID = "1:492281165480:web:118d7d76703a006501749d"
+        const val FIREBASE_AUTH_DOMAIN = "konvoi-touring.firebaseapp.com"
         private val FIREBASE_API_KEY = listOf(
-            "AIzaSyAjMt4190",
-            "SzciFuyVrkGunL",
-            "f-mPmHQ9rxk"
+            "AIzaSyDdno",
+            "sett6pyI8ku8",
+            "F05izCmSQ2g3hE1_M"
         ).joinToString("")
-        private const val FIREBASE_STORAGE_BUCKET = "excellent-victor-7v0ns.firebasestorage.app"
-        private const val FIREBASE_SENDER_ID = "886997766185"
+        val FIREBASE_WEB_API_KEY: String = listOf(
+            "AIzaSyBs2Z",
+            "FMhE9UeOXP1x",
+            "mVfEXFw8hKapCQQX0"
+        ).joinToString("")
+        private const val FIREBASE_STORAGE_BUCKET = "konvoi-touring.firebasestorage.app"
+        private const val FIREBASE_SENDER_ID = "492281165480"
         private const val SHARED_BASE_URL =
             "https://ais-pre-mbwxrxf647cphhl5i4ggug-588877716211.asia-southeast1.run.app"
         private const val DEPLOYED_AI_STUDIO_URL =

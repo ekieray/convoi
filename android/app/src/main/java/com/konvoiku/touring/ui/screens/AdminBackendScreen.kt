@@ -510,7 +510,7 @@ fun AdminBackendScreen(
                         }
 
                         Text(
-                            text = "Jika memakai HP lain, pastikan AI Studio Web sudah di-Publish lewat menu Share, atau masukkan URL web aktif pada 'URL web kustom?' di bawah.",
+                            text = "Verifikasi via browser berjalan langsung melalui halaman login Google lokal di Chrome tanpa perlu deploy web.",
                             fontSize = 11.sp,
                             lineHeight = 15.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant

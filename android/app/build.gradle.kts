@@ -6,6 +6,7 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+val targetAppId = "com.kangekie.konvoitouring"
 val googleServicesFile = file("google-services.json")
 if (googleServicesFile.exists()) {
     val content = runCatching { googleServicesFile.readText() }.getOrDefault("")
@@ -13,13 +14,13 @@ if (googleServicesFile.exists()) {
         .findAll(content)
         .map { it.groupValues[1].trim() }
         .toList()
-    if (packageMatches.any { it == "com.konvoiku.touring" }) {
+    if (packageMatches.any { it == targetAppId }) {
         apply(plugin = "com.google.gms.google-services")
     } else {
         val foundDesc = if (packageMatches.isEmpty()) "none" else packageMatches.joinToString(", ")
         logger.warn(
             "[KonvoiKu] Skipping com.google.gms.google-services because google-services.json " +
-                "has no client matching 'com.konvoiku.touring' (found package_name: $foundDesc). " +
+                "has no client matching '$targetAppId' (found package_name: $foundDesc). " +
                 "Using programmatic FirebaseOptions fallback."
         )
     }
@@ -43,7 +44,7 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.konvoiku.touring"
+        applicationId = "com.kangekie.konvoitouring"
         minSdk = 26
         targetSdk = 35
         versionCode = 1

@@ -3523,7 +3523,7 @@ export default function App() {
                 Buka Aplikasi KonvoiKu
               </a>
               <a
-                href={`intent://auth${mobileBridgeDeepLink.slice('konvoiku://auth'.length)}#Intent;scheme=konvoiku;package=com.konvoiku.touring;S.browser_fallback_url=${encodeURIComponent(typeof window !== 'undefined' ? window.location.href : '')};end`}
+                href={`intent://auth${mobileBridgeDeepLink.slice('konvoiku://auth'.length)}#Intent;scheme=konvoiku;package=com.kangekie.konvoitouring;S.browser_fallback_url=${encodeURIComponent(typeof window !== 'undefined' ? window.location.href : '')};end`}
                 className="w-full min-h-[42px] px-4 py-2 rounded-xl bg-[#EFF6FF] dark:bg-[#1E3A8A]/40 border border-[#BFDBFE] dark:border-[#1E40AF] text-[#1D4ED8] dark:text-[#93C5FD] font-semibold text-xs flex items-center justify-center transition-colors"
               >
                 Jika Tidak Terbuka, Coba Alternatif Chrome Intent
