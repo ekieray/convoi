@@ -6,8 +6,23 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
-if (file("google-services.json").exists()) {
-    apply(plugin = "com.google.gms.google-services")
+val googleServicesFile = file("google-services.json")
+if (googleServicesFile.exists()) {
+    val content = runCatching { googleServicesFile.readText() }.getOrDefault("")
+    val packageMatches = Regex(""""package_name"\s*:\s*"([^"]+)"""")
+        .findAll(content)
+        .map { it.groupValues[1].trim() }
+        .toList()
+    if (packageMatches.any { it == "com.konvoiku.touring" }) {
+        apply(plugin = "com.google.gms.google-services")
+    } else {
+        val foundDesc = if (packageMatches.isEmpty()) "none" else packageMatches.joinToString(", ")
+        logger.warn(
+            "[KonvoiKu] Skipping com.google.gms.google-services because google-services.json " +
+                "has no client matching 'com.konvoiku.touring' (found package_name: $foundDesc). " +
+                "Using programmatic FirebaseOptions fallback."
+        )
+    }
 }
 
 val localProps = Properties().apply {
@@ -42,8 +57,21 @@ android {
         buildConfigField("String", "TOMTOM_API_KEY", "\"$tomtomApiKey\"")
     }
 
+    val fixedDebugKeystore = file("debug.keystore")
+    signingConfigs {
+        getByName("debug") {
+            if (fixedDebugKeystore.exists()) {
+                storeFile = fixedDebugKeystore
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
+    }
+
     buildTypes {
         debug {
+            signingConfig = signingConfigs.getByName("debug")
             isMinifyEnabled = false
         }
         release {
