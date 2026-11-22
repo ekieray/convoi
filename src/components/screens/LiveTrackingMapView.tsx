@@ -35,7 +35,6 @@ import {
   Share2,
   Shield,
   Square,
-  Trash2,
   Volume2,
   Wrench,
   X,
@@ -386,12 +385,6 @@ export function LiveTrackingMapView({
   const [showSosConfirm, setShowSosConfirm] = useState(false);
   const [showFinishTripConfirm, setShowFinishTripConfirm] = useState(false);
   const [chatText, setChatText] = useState('');
-  const [checkpointNameInput, setCheckpointNameInput] = useState('');
-  const [pendingTapLatLng, setPendingTapLatLng] = useState<{
-    lat: number;
-    lng: number;
-  } | null>(null);
-  const [tapCheckpointNameInput, setTapCheckpointNameInput] = useState('');
 
   useEffect(() => {
     if (!showLeaderSettings) return;
@@ -593,14 +586,7 @@ export function LiveTrackingMapView({
   }, [messages.length, showChatSheet]);
 
   const handlePickCoordinateOnMap = (lat: number, lng: number) => {
-    if (isPickingCheckpointOnMap) {
-      if (pendingCheckpointName.trim()) {
-        onConfirmAddCheckpointLatLng(pendingCheckpointName.trim(), lat, lng);
-      } else {
-        setPendingTapLatLng({ lat, lng });
-        setTapCheckpointNameInput('');
-      }
-    } else if (isPickingDestinationOnMap) {
+    if (isPickingDestinationOnMap) {
       onPickDestinationLatLng(lat, lng);
     }
   };
@@ -616,8 +602,7 @@ export function LiveTrackingMapView({
     0.5,
     Math.min(5.0, routeConfig.maxStragglerDistanceMeters / 1000)
   );
-  const activeNavMode =
-    isNavigationMode && !isPickingDestinationOnMap && !isPickingCheckpointOnMap;
+  const activeNavMode = isNavigationMode && !isPickingDestinationOnMap;
   const isCleanNavHud = activeNavMode && isNavInfoHidden;
 
   return (
@@ -641,7 +626,7 @@ export function LiveTrackingMapView({
               {activeRoom?.roomId || 'KNV-8492'} · Konvoi Live
             </h2>
             <p className="text-[11px] text-[#64748B] dark:text-[#94A3B8] truncate">
-              Tujuan: {routeConfig.destinationName} · {routeConfig.checkpoints.length} Rest Area
+              Tujuan: {routeConfig.destinationName}
             </p>
           </div>
         </div>
@@ -1074,7 +1059,7 @@ export function LiveTrackingMapView({
             etaInfo={etaInfo}
             darkMode={darkMode}
             isPickingDestination={isPickingDestinationOnMap}
-            isPickingCheckpoint={isPickingCheckpointOnMap}
+            isPickingCheckpoint={false}
             isNavigationMode={isNavigationMode}
             cleanNavMode={isCleanNavHud}
             canPingTomTomRouting={canPingTomTomRouting}
@@ -1228,9 +1213,7 @@ export function LiveTrackingMapView({
         ) : null}
 
         {/* Left-Edge Handle for Auto-Hiding Side Info Drawer */}
-        {!showSideInfoDrawer &&
-          !isPickingDestinationOnMap &&
-          !isPickingCheckpointOnMap && (
+        {!showSideInfoDrawer && !isPickingDestinationOnMap && (
             <button
               type="button"
               onClick={openSideDrawer}
@@ -1685,22 +1668,15 @@ export function LiveTrackingMapView({
           </div>
         </aside>
 
-        {/* Custom Destination / Checkpoint Placement Hint */}
-        {(isPickingDestinationOnMap || isPickingCheckpointOnMap) && (
+        {/* Custom Destination Placement Hint */}
+        {isPickingDestinationOnMap && (
           <div className="absolute bottom-24 left-3 right-3 z-30 rounded-xl bg-[#0F172A] text-white px-3.5 py-2.5 flex items-center justify-between gap-2 shadow-lg">
             <span className="text-xs">
-              {isPickingCheckpointOnMap
-                ? pendingCheckpointName
-                  ? `Ketuk di peta untuk menempatkan "${pendingCheckpointName}"`
-                  : 'Ketuk di peta untuk lokasi Titik Istirahat baru'
-                : 'Ketuk di peta untuk menetapkan Titik Tujuan baru'}
+              Ketuk di peta untuk menetapkan Titik Tujuan baru
             </span>
             <button
               type="button"
-              onClick={() => {
-                if (isPickingCheckpointOnMap) onCancelPickCheckpoint();
-                else onTogglePickMode(false);
-              }}
+              onClick={() => onTogglePickMode(false)}
               className="text-xs font-semibold text-[#F59E0B] cursor-pointer shrink-0"
             >
               Batal
@@ -2478,71 +2454,6 @@ export function LiveTrackingMapView({
 
             <div className="h-px bg-[#E2E8F0] dark:bg-[#334155]" />
 
-            {/* Titik Istirahat (Checkpoint / Rest Area) */}
-            <div className="space-y-2.5">
-              <div className="flex items-center gap-1.5">
-                <Coffee className="w-4 h-4 text-[#0F766E]" />
-                <p className="text-xs font-semibold text-[#334155] dark:text-[#CBD5E1]">
-                  Titik Istirahat (Checkpoint / Rest Area)
-                </p>
-              </div>
-
-              {routeConfig.checkpoints.length > 0 && (
-                <div className="space-y-1.5">
-                  {routeConfig.checkpoints.map((cp) => (
-                    <div
-                      key={cp.id}
-                      className="rounded-xl bg-[#F0FDFA] dark:bg-[#042F2E]/40 border border-[#99F6E4] dark:border-[#115E59] px-3 py-2 flex items-center justify-between gap-2"
-                    >
-                      <div className="flex items-center gap-2 min-w-0">
-                        <Coffee className="w-3.5 h-3.5 text-[#0F766E] shrink-0" />
-                        <div className="min-w-0">
-                          <p className="text-xs font-semibold truncate">
-                            {cp.name}
-                          </p>
-                          <p className="text-[10px] font-mono text-[#64748B] dark:text-[#94A3B8]">
-                            {cp.latitude.toFixed(4)}, {cp.longitude.toFixed(4)}
-                          </p>
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => onRemoveCheckpoint(cp.id)}
-                        aria-label={`Hapus ${cp.name}`}
-                        className="w-7 h-7 rounded-lg flex items-center justify-center text-[#DC2626] hover:bg-[#FEE2E2] cursor-pointer shrink-0"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              <input
-                type="text"
-                value={checkpointNameInput}
-                onChange={(e) => setCheckpointNameInput(e.target.value)}
-                placeholder="Nama titik (mis. Rest Area KM 57)"
-                className="w-full min-h-[40px] px-3 rounded-xl bg-[#F8FAFC] dark:bg-[#0B1117] border border-[#CBD5E1] dark:border-[#334155] text-xs outline-none focus:border-[#0F766E]"
-              />
-
-              <button
-                type="button"
-                onClick={() => {
-                  const chosen = checkpointNameInput.trim();
-                  setCheckpointNameInput('');
-                  setShowLeaderSettings(false);
-                  onStartPickCheckpoint(chosen);
-                }}
-                className="w-full min-h-[42px] px-3 py-2 rounded-xl bg-[#0F766E] hover:bg-[#0D9488] text-white text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer transition-colors"
-              >
-                <Coffee className="w-4 h-4" />
-                <span>Tambah Titik Istirahat (Pilih di Peta)</span>
-              </button>
-            </div>
-
-            <div className="h-px bg-[#E2E8F0] dark:bg-[#334155]" />
-
             {/* Interactive Slider for Max Straggler Distance */}
             <div className="space-y-1.5">
               <p className="text-xs font-semibold text-[#334155] dark:text-[#CBD5E1]">
@@ -2637,70 +2548,6 @@ export function LiveTrackingMapView({
             >
               Terapkan ke Room
             </button>
-          </div>
-        </div>
-      )}
-
-      {/* Fallback Dialog if Leader Tapped Map Without Entering Checkpoint Name */}
-      {pendingTapLatLng && (
-        <div className="absolute inset-0 z-50 bg-black/55 backdrop-blur-[2px] flex items-center justify-center p-5">
-          <div className="w-full max-w-[320px] rounded-[24px] bg-white dark:bg-[#141C24] border border-[#E2E8F0] dark:border-[#334155] p-5 space-y-3.5 shadow-xl">
-            <div className="flex items-center gap-2 text-[#0F766E]">
-              <Coffee className="w-5 h-5" />
-              <h3 className="text-sm font-bold text-[#0F172A] dark:text-[#F1F5F9]">
-                Beri Nama Titik Istirahat
-              </h3>
-            </div>
-            <p className="text-[10px] font-mono text-[#64748B] dark:text-[#94A3B8]">
-              {pendingTapLatLng.lat.toFixed(5)}, {pendingTapLatLng.lng.toFixed(5)}
-            </p>
-            <input
-              type="text"
-              value={tapCheckpointNameInput}
-              onChange={(e) => setTapCheckpointNameInput(e.target.value)}
-              placeholder="Contoh: Rest Area KM 57"
-              autoFocus
-              className="w-full min-h-[40px] px-3 rounded-xl bg-[#F8FAFC] dark:bg-[#0B1117] border border-[#CBD5E1] dark:border-[#334155] text-xs outline-none focus:border-[#0F766E]"
-            />
-            <div className="flex flex-wrap gap-1.5">
-              {['Rest Area KM 57', 'SPBU Cisarua'].map((sample) => (
-                <button
-                  key={sample}
-                  type="button"
-                  onClick={() => setTapCheckpointNameInput(sample)}
-                  className="px-2.5 py-1 rounded-lg bg-[#F1F5F9] dark:bg-[#1E293B] text-[11px] font-medium text-[#334155] dark:text-[#CBD5E1] cursor-pointer"
-                >
-                  {sample}
-                </button>
-              ))}
-            </div>
-            <div className="grid grid-cols-2 gap-2.5 pt-1">
-              <button
-                type="button"
-                onClick={() => {
-                  setPendingTapLatLng(null);
-                  onCancelPickCheckpoint();
-                }}
-                className="min-h-[42px] rounded-xl border border-[#CBD5E1] dark:border-[#334155] text-xs font-semibold cursor-pointer"
-              >
-                Batal
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  onConfirmAddCheckpointLatLng(
-                    tapCheckpointNameInput.trim() || 'Rest Area Konvoi',
-                    pendingTapLatLng.lat,
-                    pendingTapLatLng.lng
-                  );
-                  setPendingTapLatLng(null);
-                  setTapCheckpointNameInput('');
-                }}
-                className="min-h-[42px] rounded-xl bg-[#0F766E] hover:bg-[#0D9488] text-white text-xs font-semibold cursor-pointer"
-              >
-                Simpan
-              </button>
-            </div>
           </div>
         </div>
       )}

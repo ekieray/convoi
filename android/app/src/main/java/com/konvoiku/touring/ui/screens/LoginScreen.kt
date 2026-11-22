@@ -409,6 +409,14 @@ fun LoginScreen(
                                 )
                             }
 
+                            Text(
+                                text = "Info HP lain: Dev Preview hanya bisa diakses akun Google pemilik AI Studio. Agar HP lain bisa login via browser, klik Share → Publish Web di AI Studio, isi 'URL web kustom?', atau daftarkan SHA-1 APK & aktifkan Email/Password di Firebase Console.",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontSize = 11.sp,
+                                lineHeight = 15.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,

@@ -324,6 +324,7 @@ export function mapFirebaseAuthError(error: unknown, providerLabel = 'Akun'): st
       ? String((error as { code?: unknown }).code || '')
       : '';
   const msg = error instanceof Error ? error.message : String(error || '');
+  const upperMsg = msg.toUpperCase();
 
   if (code === 'auth/unauthorized-domain') {
     return `Domain browser saat ini (${typeof window !== 'undefined' ? window.location.hostname : 'host'}) belum ditambahkan ke Firebase Console → Authentication → Settings → Authorized domains.`;
@@ -331,14 +332,17 @@ export function mapFirebaseAuthError(error: unknown, providerLabel = 'Akun'): st
   if (code === 'auth/popup-blocked') {
     return 'Jendela popup Google diblokir oleh browser. Izinkan pop-up untuk situs ini atau buka di tab browser utama.';
   }
-  if (code === 'auth/operation-not-allowed') {
-    return `Provider ${providerLabel} belum diaktifkan di Firebase Console (Authentication → Sign-in method).`;
+  if (
+    code === 'auth/operation-not-allowed' ||
+    code === 'auth/admin-restricted-operation' ||
+    upperMsg.includes('OPERATION_NOT_ALLOWED') ||
+    upperMsg.includes('ADMIN_ONLY_OPERATION') ||
+    upperMsg.includes('PASSWORD_LOGIN_DISABLED')
+  ) {
+    return `Metode ${providerLabel} / Tamu Cloud belum diaktifkan di Firebase Console (Authentication → Sign-in method). Saat ini hanya Google Sign-In yang aktif, atau aktifkan Email/Password & Anonymous di Firebase Console.`;
   }
   if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
     return `Jendela login ${providerLabel} ditutup sebelum selesai. Silakan coba lagi.`;
-  }
-  if (code === 'auth/popup-blocked') {
-    return `Popup browser diblokir saat membuka login ${providerLabel}. Izinkan popup lalu coba lagi.`;
   }
   if (code === 'auth/account-exists-with-different-credential') {
     return 'Email ini sudah terdaftar menggunakan metode login lain (mis. Google atau Email). Masuk dengan metode tersebut lalu sinkronkan profil.';

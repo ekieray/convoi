@@ -37,7 +37,6 @@ import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.DirectionsCar
 import androidx.compose.material.icons.rounded.Flag
 import androidx.compose.material.icons.rounded.Link
-import androidx.compose.material.icons.rounded.LocalCafe
 import androidx.compose.material.icons.rounded.LocationOn
 import androidx.compose.material.icons.rounded.Map
 import androidx.compose.material.icons.rounded.MyLocation
@@ -145,6 +144,7 @@ fun TourLeaderScreen(
     onUpdateMaxStragglerDistance: (Int) -> Unit,
     onToggleSoundAlert: () -> Unit,
     onCreateRoom: (String) -> Unit,
+    onCreateLocalRoom: (String) -> Unit = {},
     onSimulateJoin: () -> Unit,
     onRemoveMember: (String) -> Unit,
     onEnterMapPlaceholder: () -> Unit,
@@ -159,7 +159,6 @@ fun TourLeaderScreen(
     var showSetupStepper by remember(activeRoom) { mutableStateOf(activeRoom == null) }
     var mapPickerMode by remember { mutableStateOf<String?>(null) } // "origin" | "destination" | null
     var tourNameDraft by remember { mutableStateOf(activeRoom?.roomTitle ?: "Konvoi Puncak Pass Weekend") }
-    var checkpointDraft by remember { mutableStateOf("") }
     var viaPoints by remember { mutableStateOf<List<RoutePoint>>(emptyList()) }
     var isComputingPreviewRoute by remember { mutableStateOf(false) }
     var previewDurationMin by remember { mutableStateOf<Int?>(null) }
@@ -198,7 +197,7 @@ fun TourLeaderScreen(
         isSearchingDest = false
     }
 
-    val stepTitles = listOf("Start", "Tujuan", "Rute", "Istirahat", "Jarak")
+    val stepTitles = listOf("Start", "Tujuan", "Rute", "Jarak")
 
     Box(modifier = Modifier.fillMaxSize()) {
     Scaffold(
@@ -213,7 +212,7 @@ fun TourLeaderScreen(
                             style = MaterialTheme.typography.titleMedium
                         )
                         Text(
-                            text = if (showSetupStepper) "Langkah ${currentStep + 1} dari 5 · ${stepTitles[currentStep]}" else "Room ID & Peserta Konvoi",
+                            text = if (showSetupStepper) "Langkah ${currentStep + 1} dari 4 · ${stepTitles.getOrElse(currentStep) { "Jarak" }}" else "Room ID & Peserta Konvoi",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -982,91 +981,14 @@ fun TourLeaderScreen(
                                     )
                                 }
 
-                                // Step 4: Menambahkan Titik Istirahat (Checkpoint)
+                                // Step 4: Mengatur Batas Jarak & Konfirmasi Konvoi
                                 3 -> {
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                                     ) {
-                                        Icon(Icons.Rounded.LocalCafe, contentDescription = null, tint = Color(0xFF0F766E))
-                                        Text("4. Titik Istirahat (Checkpoint)", style = MaterialTheme.typography.titleLarge)
-                                    }
-
-                                    OutlinedTextField(
-                                        value = checkpointDraft,
-                                        onValueChange = { checkpointDraft = it },
-                                        label = { Text("Nama Checkpoint / Rest Area") },
-                                        placeholder = { Text("Misal: Rest Area KM 57") },
-                                        singleLine = true,
-                                        shape = RoundedCornerShape(14.dp),
-                                        modifier = Modifier.fillMaxWidth()
-                                    )
-
-                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        listOf("SPBU Cisarua", "RM Sate Pak Budi").forEach { suggestion ->
-                                            FilterChip(
-                                                selected = checkpointDraft == suggestion,
-                                                onClick = { checkpointDraft = suggestion },
-                                                label = { Text(suggestion, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                                                modifier = Modifier.weight(1f)
-                                            )
-                                        }
-                                    }
-
-                                    Button(
-                                        onClick = {
-                                            val name = checkpointDraft.ifBlank { "Rest Area KM 57" }
-                                            val factor = (0.35f + routeConfig.checkpoints.size * 0.14f).coerceIn(0.25f, 0.78f)
-                                            onAddCheckpointAtPoint(name, factor, 1f - factor)
-                                            checkpointDraft = ""
-                                        },
-                                        modifier = Modifier.fillMaxWidth().height(46.dp),
-                                        shape = RoundedCornerShape(12.dp),
-                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F766E))
-                                    ) {
-                                        Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Tambah Titik Istirahat ke Rute")
-                                    }
-
-                                    routeConfig.checkpoints.forEach { cp ->
-                                        Surface(
-                                            shape = RoundedCornerShape(12.dp),
-                                            color = MaterialTheme.colorScheme.background,
-                                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                                            modifier = Modifier.fillMaxWidth()
-                                        ) {
-                                            Row(
-                                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                            ) {
-                                                Icon(Icons.Rounded.LocalCafe, contentDescription = null, tint = Color(0xFF0F766E), modifier = Modifier.size(18.dp))
-                                                Column(modifier = Modifier.weight(1f)) {
-                                                    Text(cp.name, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                                                    Text(
-                                                        text = String.format(Locale.US, "%.4f, %.4f", cp.latitude, cp.longitude),
-                                                        fontFamily = FontFamily.Monospace,
-                                                        fontSize = 11.sp,
-                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                    )
-                                                }
-                                                IconButton(onClick = { onRemoveCheckpoint(cp.id) }) {
-                                                    Icon(Icons.Rounded.DeleteOutline, contentDescription = "Hapus Checkpoint")
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-
-                                // Step 5: Mengatur Batas Jarak & Konfirmasi Konvoi
-                                4 -> {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                    ) {
                                         Icon(Icons.Rounded.Speed, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                                        Text("5. Batas Jarak & Konfirmasi", style = MaterialTheme.typography.titleLarge)
+                                        Text("4. Batas Jarak & Konfirmasi", style = MaterialTheme.typography.titleLarge)
                                     }
 
                                     val kmValue = (routeConfig.maxStragglerDistanceMeters / 1000f).coerceIn(0.5f, 5.0f)
@@ -1171,7 +1093,7 @@ fun TourLeaderScreen(
                                                 )
                                             }
                                             Text(
-                                                text = "Rute ${routeConfig.routePreference.label} · ${String.format(Locale.US, "%.1f km", routeConfig.totalRouteMeters / 1000.0)} · ${routeConfig.checkpoints.size} Rest Area",
+                                                text = "Rute ${routeConfig.routePreference.label} · ${String.format(Locale.US, "%.1f km", routeConfig.totalRouteMeters / 1000.0)}",
                                                 fontSize = 11.sp,
                                                 color = MaterialTheme.colorScheme.primary,
                                                 fontFamily = FontFamily.Monospace
@@ -1213,7 +1135,7 @@ fun TourLeaderScreen(
                                         Text("Sebelumnya")
                                     }
                                 }
-                                if (currentStep < 4) {
+                                if (currentStep < 3) {
                                     Button(
                                         onClick = { currentStep++ },
                                         modifier = Modifier.weight(1f).height(48.dp),
@@ -1251,6 +1173,22 @@ fun TourLeaderScreen(
                                             Text("Buat Room & Mulai", fontWeight = FontWeight.SemiBold)
                                         }
                                     }
+                                }
+                            }
+
+                            if (currentStep == 3) {
+                                OutlinedButton(
+                                    onClick = {
+                                        onCreateLocalRoom(tourNameDraft.ifBlank { "Konvoi Touring Akhir Pekan" })
+                                    },
+                                    enabled = !isCreatingRoom,
+                                    modifier = Modifier.fillMaxWidth().height(44.dp),
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Text(
+                                        text = "Atau Buat Room Lokal (Offline)",
+                                        fontWeight = FontWeight.SemiBold
+                                    )
                                 }
                             }
                         }

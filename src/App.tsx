@@ -150,16 +150,7 @@ const INITIAL_ROUTE_CONFIG: ConvoyRouteConfig = {
     { xFraction: 0.86, yFraction: 0.14, latitude: -6.7003, longitude: 106.996 },
   ],
   routeInstructions: [],
-  checkpoints: [
-    {
-      id: 'cp-default-1',
-      name: 'Rest Area Ciawi KM 45',
-      xFraction: 0.44,
-      yFraction: 0.56,
-      latitude: -6.668,
-      longitude: 106.895,
-    },
-  ],
+  checkpoints: [],
   totalRouteMeters: 16500,
   offRouteToleranceMeters: 75,
   maxStragglerDistanceMeters: 1000,
@@ -1977,14 +1968,136 @@ export default function App() {
       navigateTo('live_map', 1);
     } catch (err) {
       console.error('Gagal membuat synced room:', err);
+      const rawMsg = err instanceof Error ? err.message : String(err || '');
+      const upperMsg = rawMsg.toUpperCase();
+      const isAuthDisabled =
+        upperMsg.includes('OPERATION_NOT_ALLOWED') ||
+        upperMsg.includes('ADMIN_ONLY_OPERATION') ||
+        upperMsg.includes('ADMIN-RESTRICTED-OPERATION') ||
+        upperMsg.includes('PASSWORD_LOGIN_DISABLED');
       setCreateRoomError(
-        err instanceof Error
-          ? `Gagal membuat room cloud: ${err.message}`
-          : 'Gagal terhubung ke Firebase Firestore. Periksa koneksi internet dan coba lagi.'
+        isAuthDisabled
+          ? 'Mode Tamu Cloud belum diaktifkan di Firebase Console. Silakan Masuk Google untuk Room Cloud Live, atau klik "Buat Room Lokal (Offline / Demo)" di bawah.'
+          : err instanceof Error
+            ? `Gagal membuat room cloud: ${err.message}`
+            : 'Gagal terhubung ke Firebase Firestore. Periksa koneksi internet dan coba lagi.'
       );
     } finally {
       setIsCreatingRoom(false);
     }
+  };
+
+  const handleCreateLocalDemoRoom = (
+    customTitle = 'Konvoi Touring Akhir Pekan',
+    routeOverride?: ConvoyRouteConfig
+  ) => {
+    const effectiveConfig = routeOverride ?? routeConfig;
+    const roomId = generateUniqueRoomId();
+    const title = customTitle.trim() || 'Konvoi Touring Akhir Pekan';
+    const startLat =
+      effectiveConfig.originLockedByLeader || effectiveConfig.waypoints.length >= 2
+        ? (effectiveConfig.waypoints[0]?.latitude ?? gps.lastFix?.latitude ?? -6.648)
+        : (gps.lastFix?.latitude ?? effectiveConfig.waypoints[0]?.latitude ?? -6.648);
+    const startLng =
+      effectiveConfig.originLockedByLeader || effectiveConfig.waypoints.length >= 2
+        ? (effectiveConfig.waypoints[0]?.longitude ?? gps.lastFix?.longitude ?? 106.845)
+        : (gps.lastFix?.longitude ?? effectiveConfig.waypoints[0]?.longitude ?? 106.845);
+    const initialLat = gps.lastFix?.latitude ?? startLat;
+    const initialLng = gps.lastFix?.longitude ?? startLng;
+
+    const selfMember: ConvoyMember = {
+      id: 'self-local-leader',
+      fullName: vehicleProfile.fullName.trim() || localUserName || 'Tour Leader',
+      vehicleType: vehicleProfile.vehicleType,
+      vehicleDetail:
+        vehicleProfile.vehicleDetail.trim() ||
+        (vehicleProfile.vehicleType === 'MOBIL' ? 'Mobil' : 'Motor'),
+      licensePlate: vehicleProfile.licensePlate.trim() || 'B 1945 KNV',
+      emergencyContact: vehicleProfile.emergencyContact.trim() || '0812-3456-7890',
+      role: 'TOUR_LEADER',
+      joinedAtLabel: 'Baru saja',
+      isCurrentUser: true,
+      isSweeper: false,
+      avatarPreset: vehicleProfile.avatarPreset,
+      avatarPhotoUrl: vehicleProfile.avatarPhotoUrl,
+      conditionStatus: 'AMAN',
+      connectionStatus: 'CONNECTED',
+      lastLocationText: gps.lastFix ? 'GPS Live (Lokal)' : 'Titik Start',
+      lastUpdatedLabel: 'Baru saja',
+      routeDistanceMeters: 0,
+      offRouteMeters: 0,
+      convoyOrderRank: 1,
+      mapPosition: gps.lastFix
+        ? {
+            routeProgress: 0.05,
+            xFraction: 0.14,
+            yFraction: 0.86,
+            latitude: initialLat,
+            longitude: initialLng,
+            speedKmh: gps.lastFix.speedKmh,
+            heading: gps.lastFix.heading,
+            accuracyMeters: gps.lastFix.accuracyMeters,
+          }
+        : interpolateAlongPolyline(0.08, effectiveConfig.waypoints, 0, 45),
+    };
+
+    const simulatedPeers: ConvoyMember[] = DEFAULT_CONVOY_TEMPLATES.slice(0, 3).map(
+      (tpl, idx) => ({
+        id: `peer-local-${idx}`,
+        fullName: tpl.fullName,
+        vehicleType: tpl.vehicleType,
+        vehicleDetail: tpl.vehicleDetail,
+        licensePlate: tpl.licensePlate,
+        emergencyContact: tpl.emergencyContact,
+        role: 'MEMBER',
+        joinedAtLabel: 'Aktif di room',
+        isCurrentUser: false,
+        isSweeper: idx === 1,
+        avatarPreset: tpl.avatarPreset,
+        conditionStatus: tpl.conditionStatus,
+        connectionStatus: tpl.connectionStatus,
+        lastLocationText: tpl.lastLocationText,
+        lastUpdatedLabel:
+          tpl.connectionStatus === 'WEAK_SIGNAL' ? '4 dtk lalu' : 'Baru saja',
+        routeDistanceMeters: Math.round(
+          tpl.baseProgress * effectiveConfig.totalRouteMeters
+        ),
+        offRouteMeters: 0,
+        convoyOrderRank: idx + 2,
+        mapPosition: interpolateAlongPolyline(
+          tpl.baseProgress,
+          effectiveConfig.waypoints,
+          0,
+          tpl.baseSpeed
+        ),
+      })
+    );
+
+    const localRoom: TourRoom = {
+      roomId,
+      roomTitle: title,
+      inviteLink: `https://konvoiku.id/join/${roomId}`,
+      createdAtLabel: 'Mode Lokal / Offline',
+      isSyncedRoom: false,
+      leaderUid: selfMember.id,
+      actingLeaderUid: selfMember.id,
+      leaderTroubleActive: false,
+      members: [selfMember, ...simulatedPeers],
+    };
+
+    setCreateRoomError(null);
+    setSelectedRole('TOUR_LEADER');
+    setSelectedMemberId(selfMember.id);
+    recordedTrackRef.current = gps.lastFix
+      ? [{ lat: gps.lastFix.latitude, lng: gps.lastFix.longitude }]
+      : [];
+    setLastCompletedTrip(null);
+    setIsOffRouteSimActive(false);
+    setIsStragglerSimActive(false);
+    setIsLeaderTroubleSimActive(false);
+    setMessages(createInitialMessages(roomId));
+    commitRoomMembers(localRoom.members, effectiveConfig, localRoom);
+    navigateTo('live_map', 1);
   };
 
   const handleSimulateJoin = () => {
@@ -2073,7 +2186,11 @@ export default function App() {
       navigateTo('live_map', 1);
     } catch (err) {
       setJoinError(
-        err instanceof Error ? err.message : 'Gagal terhubung ke Firestore.'
+        !authUser
+          ? mapFirebaseAuthError(err, 'Tamu Cloud')
+          : err instanceof Error
+            ? err.message
+            : 'Gagal terhubung ke Firestore.'
       );
     } finally {
       setIsJoiningRoom(false);
@@ -3825,6 +3942,7 @@ export default function App() {
                         onUpdateMaxStragglerDistance={handleUpdateMaxStraggler}
                         onToggleSoundAlert={handleToggleSoundAlert}
                         onCreateRoom={handleCreateRoom}
+                        onCreateLocalRoom={handleCreateLocalDemoRoom}
                         onSimulateJoin={handleSimulateJoin}
                         onRemoveMember={handleRemoveMember}
                         onEnterMapPlaceholder={() =>

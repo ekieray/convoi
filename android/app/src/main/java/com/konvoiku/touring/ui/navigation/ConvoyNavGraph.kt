@@ -326,6 +326,11 @@ fun ConvoyNavGraph(
                         navController.navigate(ConvoyRoute.LiveMap.route)
                     }
                 },
+                onCreateLocalRoom = { title ->
+                    viewModel.createLocalTourRoom(title) {
+                        navController.navigate(ConvoyRoute.LiveMap.route)
+                    }
+                },
                 onSimulateJoin = { viewModel.simulateMemberJoin() },
                 onRemoveMember = viewModel::removeMember,
                 onEnterMapPlaceholder = {

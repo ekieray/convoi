@@ -298,8 +298,11 @@ export async function createSyncedRoom(params: {
       actingLeaderUid: leaderUid,
       leaderTroubleActive: false,
       leaderTroubleReason: '',
-      destinationName: routeConfig.destinationName.slice(0, 120),
-      destinationAddress: routeConfig.destinationAddress.slice(0, 240),
+      destinationName: (routeConfig.destinationName.trim() || 'Titik Tujuan').slice(0, 120),
+      destinationAddress: (
+        routeConfig.destinationAddress.trim() ||
+        `${dest.latitude.toFixed(4)}, ${dest.longitude.toFixed(4)}`
+      ).slice(0, 240),
       destLat: dest.latitude,
       destLng: dest.longitude,
       originName: (routeConfig.originName || 'Titik Keberangkatan').slice(0, 120),

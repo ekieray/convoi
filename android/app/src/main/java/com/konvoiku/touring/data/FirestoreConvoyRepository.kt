@@ -70,6 +70,7 @@ data class WebBridgeResolution(
     val baseUrl: String,
     val isPublishedLive: Boolean,
     val isDevProxy: Boolean,
+    val isSharedUnpublished: Boolean = false,
     val errorMessage: String? = null
 )
 
@@ -248,7 +249,8 @@ class FirestoreConvoyRepository {
             return@withContext WebBridgeResolution(
                 baseUrl = SHARED_BASE_URL,
                 isPublishedLive = true,
-                isDevProxy = false
+                isDevProxy = false,
+                isSharedUnpublished = false
             )
         }
 
@@ -257,21 +259,24 @@ class FirestoreConvoyRepository {
             return@withContext WebBridgeResolution(
                 baseUrl = DEV_BASE_URL,
                 isPublishedLive = true,
-                isDevProxy = false
+                isDevProxy = false,
+                isSharedUnpublished = sharedStatus == WebEndpointStatus.NOT_FOUND
             )
         }
         if (devStatus == WebEndpointStatus.DEV_PROXY_AUTH) {
             return@withContext WebBridgeResolution(
                 baseUrl = DEV_BASE_URL,
                 isPublishedLive = false,
-                isDevProxy = true
+                isDevProxy = true,
+                isSharedUnpublished = sharedStatus == WebEndpointStatus.NOT_FOUND
             )
         }
         if (sharedStatus == WebEndpointStatus.DEV_PROXY_AUTH) {
             return@withContext WebBridgeResolution(
                 baseUrl = SHARED_BASE_URL,
                 isPublishedLive = false,
-                isDevProxy = true
+                isDevProxy = true,
+                isSharedUnpublished = false
             )
         }
 
@@ -279,7 +284,8 @@ class FirestoreConvoyRepository {
             baseUrl = "",
             isPublishedLive = false,
             isDevProxy = false,
-            errorMessage = "Server Web Share (ais-pre) belum dipublikasikan (404 Page Not Found) dan server Dev AI Studio tidak dapat diakses. Publikasikan web lewat tombol Share di AI Studio, isi 'URL web kustom?', atau masuk dengan Email & Kata Sandi."
+            isSharedUnpublished = sharedStatus == WebEndpointStatus.NOT_FOUND,
+            errorMessage = "Server Web Share (ais-pre) belum dipublikasikan (404 Page Not Found) dan Dev Preview tidak bisa dibuka dari HP lain. Klik Share → Publish di AI Studio, isi 'URL web kustom?', atau aktifkan Email/Password & SHA-1 di Firebase Console."
         )
     }
 
@@ -307,6 +313,15 @@ class FirestoreConvoyRepository {
 
     fun isDeviceCloudGuestUser(user: FirebaseUser?): Boolean =
         isDeviceCloudGuestEmail(user?.email)
+
+    fun isOperationNotAllowedError(err: Throwable?): Boolean {
+        val raw = err?.message.orEmpty().uppercase(Locale.ROOT)
+        return raw.contains("OPERATION_NOT_ALLOWED") ||
+            raw.contains("OPERATION-NOT-ALLOWED") ||
+            raw.contains("ADMIN_ONLY_OPERATION") ||
+            raw.contains("ADMIN-RESTRICTED-OPERATION") ||
+            raw.contains("PASSWORD_LOGIN_DISABLED")
+    }
 
     suspend fun ensureSignedInUidResult(): Result<String> {
         val auth = getAuth()

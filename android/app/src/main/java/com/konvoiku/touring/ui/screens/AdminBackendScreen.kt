@@ -476,6 +476,13 @@ fun AdminBackendScreen(
                             )
                         }
 
+                        Text(
+                            text = "Jika memakai HP lain, pastikan AI Studio Web sudah di-Publish lewat menu Share, atau masukkan URL web aktif pada 'URL web kustom?' di bawah.",
+                            fontSize = 11.sp,
+                            lineHeight = 15.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,

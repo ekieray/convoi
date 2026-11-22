@@ -383,27 +383,7 @@ export function LiveTomTomConvoyMap({
 
     const counterRotate = activeNavMode ? ` rotate(${navHeadingDeg}deg)` : '';
 
-    // Rest Area Checkpoints
-    routeConfig.checkpoints.forEach((cp) => {
-      const icon = L.divIcon({
-        className: '',
-        iconSize: [0, 0],
-        iconAnchor: [0, 0],
-        html: `
-          <div style="transform:translate(-50%,-100%)${counterRotate};display:flex;flex-direction:column;align-items:center;pointer-events:none;">
-            <span style="padding:2px 8px;border-radius:8px;background:#0F766E;color:#fff;font-size:10px;font-weight:600;white-space:nowrap;max-width:160px;overflow:hidden;text-overflow:ellipsis;box-shadow:0 2px 6px rgba(0,0,0,0.28);border:1px solid rgba(255,255,255,0.45);">
-              ☕ ${escapeHtml(cp.name)}
-            </span>
-            <span style="margin-top:3px;width:24px;height:24px;border-radius:9999px;background:#0F766E;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.3);display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:700;">
-              R
-            </span>
-          </div>
-        `,
-      });
-      L.marker([cp.latitude, cp.longitude], { icon, interactive: false }).addTo(
-        group
-      );
-    });
+    // Rest Area Checkpoints dinonaktifkan sementara
 
     // Final Destination Flag Marker
     if (destPoint) {

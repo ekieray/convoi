@@ -778,7 +778,11 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
                 _uiState.update {
                     it.copy(
                         authInfoMessage = if (resolution.isDevProxy) {
-                            "Browser dibuka ke Dev Preview (${resolution.baseUrl}). Pastikan Chrome memakai akun Google pemilik AI Studio, lalu selesaikan login & ketuk 'Buka Aplikasi KonvoiKu' atau salin link/tokennya."
+                            if (resolution.isSharedUnpublished) {
+                                "Web Share publik (ais-pre) masih 404 (belum Publish Share). Dialihkan ke Dev Preview (${resolution.baseUrl}): hanya terbuka di HP/Chrome yang login akun Google pemilik AI Studio. Untuk HP lain: klik Share → Publish Web di AI Studio, isi 'URL web kustom?', atau daftar SHA-1 APK di Firebase."
+                            } else {
+                                "Browser dibuka ke Dev Preview (${resolution.baseUrl}). Pastikan Chrome memakai akun Google pemilik AI Studio, lalu selesaikan login & ketuk 'Buka Aplikasi KonvoiKu' atau salin link/tokennya."
+                            }
                         } else {
                             "Browser dibuka (${resolution.baseUrl}). Setelah login Google selesai, ketuk 'Buka Aplikasi KonvoiKu' atau salin link/tokennya ke kolom di bawah."
                         }
@@ -1183,6 +1187,8 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
     private fun mapAuthError(err: Throwable?): String {
         val msg = err?.message.orEmpty().lowercase(Locale.ROOT)
         return when {
+            syncRepo.isOperationNotAllowedError(err) ->
+                "Metode Email/Tamu Cloud belum diaktifkan di Firebase Console (Authentication → Sign-in method). Saat ini hanya Google Sign-In yang aktif."
             msg.contains("already in use") || msg.contains("email_exists") ->
                 "Email sudah terdaftar. Silakan pindah ke tab Masuk."
             msg.contains("wrong password") || msg.contains("invalid_login_credentials") || msg.contains("invalid credential") ->
@@ -1330,14 +1336,20 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
                 val authResult = syncRepo.ensureSignedInUidResult()
                 val uid = authResult.getOrNull()
                 if (uid == null) {
-                    val reason = authResult.exceptionOrNull()?.localizedMessage
+                    val authErr = authResult.exceptionOrNull()
+                    val reason = authErr?.localizedMessage
                         ?.takeIf { it.isNotBlank() }
                         ?.let { " ($it)" }
                         .orEmpty()
+                    val friendlyError = if (syncRepo.isOperationNotAllowedError(authErr)) {
+                        "Mode Tamu Cloud belum diaktifkan di Firebase Console. Masuk Google di halaman Login untuk Room Cloud Live, aktifkan Anonymous/Email Auth di Firebase Console, atau ketuk 'Atau Buat Room Lokal (Offline)' di bawah."
+                    } else {
+                        "Autentikasi cloud belum terhubung$reason. Pastikan internet aktif atau ketuk 'Atau Buat Room Lokal (Offline)' di bawah."
+                    }
                     _uiState.update {
                         it.copy(
                             isCreatingRoom = false,
-                            roomSetupError = "Autentikasi cloud belum terhubung$reason. Pastikan internet aktif lalu coba lagi."
+                            roomSetupError = friendlyError
                         )
                     }
                     return@launch
@@ -1397,6 +1409,32 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
             pushPresenceSnapshotNow()
             onSuccess()
         }
+    }
+
+    fun createLocalTourRoom(
+        customTitle: String = "Konvoi Touring Akhir Pekan",
+        onSuccess: () -> Unit = {}
+    ) {
+        val state = _uiState.value
+        val routeConfig = state.routeConfig
+        val roomCode = generateUniqueRoomId()
+        val mockLink = "https://konvoiku.id/join/$roomCode"
+        val firstWp = routeConfig.waypoints.firstOrNull()
+        val startLat = if (routeConfig.originLockedByLeader && firstWp != null) {
+            firstWp.latitude
+        } else {
+            state.userGpsLat ?: firstWp?.latitude ?: -6.648
+        }
+        val startLng = if (routeConfig.originLockedByLeader && firstWp != null) {
+            firstWp.longitude
+        } else {
+            state.userGpsLng ?: firstWp?.longitude ?: 106.845
+        }
+        lastComputedRouteSig = ""
+        seedRecordedTrackFromStart(startLat, startLng)
+        _uiState.update { it.copy(isCreatingRoom = false, roomSetupError = null) }
+        createLocalDemoRoom(roomCode, customTitle, mockLink, startLat, startLng)
+        onSuccess()
     }
 
     private fun createLocalDemoRoom(
@@ -1611,14 +1649,20 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
                 val authResult = syncRepo.ensureSignedInUidResult()
                 val uid = authResult.getOrNull()
                 if (uid == null) {
-                    val reason = authResult.exceptionOrNull()?.localizedMessage
+                    val authErr = authResult.exceptionOrNull()
+                    val reason = authErr?.localizedMessage
                         ?.takeIf { it.isNotBlank() }
                         ?.let { " ($it)" }
                         .orEmpty()
+                    val friendlyError = if (syncRepo.isOperationNotAllowedError(authErr)) {
+                        "Mode Tamu Cloud belum aktif di Firebase Console. Masuk Google terlebih dahulu untuk bergabung ke Room Cloud, atau gunakan Demo Offline."
+                    } else {
+                        "Gagal menghubungkan autentikasi cloud$reason. Periksa koneksi internet Anda."
+                    }
                     _uiState.update {
                         it.copy(
                             isJoiningRoom = false,
-                            joinError = "Gagal menghubungkan autentikasi cloud$reason. Periksa koneksi internet Anda."
+                            joinError = friendlyError
                         )
                     }
                     return@launch

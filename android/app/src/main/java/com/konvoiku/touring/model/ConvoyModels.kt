@@ -160,16 +160,7 @@ data class ConvoyRouteConfig(
             RoutePoint(0.86f, 0.14f, -6.6450, 106.9900)
         )
 
-        fun defaultCheckpoints(): List<RestCheckpoint> = listOf(
-            RestCheckpoint(
-                id = "cp-default-1",
-                name = "Rest Area KM 57",
-                xFraction = 0.44f,
-                yFraction = 0.56f,
-                latitude = -6.6830,
-                longitude = 106.9050
-            )
-        )
+        fun defaultCheckpoints(): List<RestCheckpoint> = emptyList()
     }
 }
 

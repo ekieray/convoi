@@ -54,14 +54,12 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.automirrored.rounded.Chat
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.AddLocationAlt
 import androidx.compose.material.icons.rounded.Build
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CloudDone
 import androidx.compose.material.icons.rounded.Coffee
 import androidx.compose.material.icons.rounded.ContentCopy
-import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.DirectionsCar
 import androidx.compose.material.icons.rounded.EditLocationAlt
 import androidx.compose.material.icons.rounded.ExpandLess
@@ -71,7 +69,6 @@ import androidx.compose.material.icons.rounded.GpsFixed
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Layers
 import androidx.compose.material.icons.rounded.Link
-import androidx.compose.material.icons.rounded.LocalCafe
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.MyLocation
 import androidx.compose.material.icons.rounded.NotificationsActive
@@ -159,7 +156,6 @@ import com.konvoiku.touring.model.DestinationEtaInfo
 import com.konvoiku.touring.model.GpsTrackingStatus
 import com.konvoiku.touring.model.MemberConditionStatus
 import com.konvoiku.touring.model.OffRouteAlertState
-import com.konvoiku.touring.model.RestCheckpoint
 import com.konvoiku.touring.model.RoomMessage
 import com.konvoiku.touring.model.RouteInstruction
 import com.konvoiku.touring.model.RoutePoint
@@ -287,9 +283,6 @@ fun LiveTrackingMapScreen(
         showSideInfoDrawer = false
     }
 
-    var checkpointDraftName by remember { mutableStateOf("") }
-    var tappedCheckpointLatLng by remember { mutableStateOf<LatLngGeo?>(null) }
-
     val clipboardManager = LocalClipboardManager.current
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -378,7 +371,7 @@ fun LiveTrackingMapScreen(
     val initialLng = trackedMember?.mapPosition?.longitude ?: 106.925
     val mapController = rememberTomTomMapController()
     var isAutoFollowing by remember { mutableStateOf(true) }
-    val activeNavMode = isNavigationMode && !isPickingDestinationOnMap && !isPickingCheckpointOnMap
+    val activeNavMode = isNavigationMode && !isPickingDestinationOnMap
     val isCleanNavHud = activeNavMode && isNavInfoHidden
 
     val navSubject = currentUser ?: trackedMember
@@ -879,9 +872,6 @@ fun LiveTrackingMapScreen(
                     stragglerAlert.trailingMember?.id
                 ) {
                     buildList<TomTomMapPin> {
-                        routeConfig.checkpoints.forEach { cp ->
-                            add(TomTomMapPin.CheckpointPin(cp))
-                        }
                         if (destPoint != null) {
                             add(
                                 TomTomMapPin.DestinationPin(
@@ -927,13 +917,6 @@ fun LiveTrackingMapScreen(
                     onMapTap = { lat, lng ->
                         if (isPickingDestinationOnMap) {
                             onPickCustomDestinationLatLng(lat, lng, null, null)
-                        } else if (isPickingCheckpointOnMap) {
-                            if (pendingCheckpointName.isNotBlank()) {
-                                onConfirmAddCheckpointLatLng(pendingCheckpointName, lat, lng)
-                                checkpointDraftName = ""
-                            } else {
-                                tappedCheckpointLatLng = LatLngGeo(lat, lng)
-                            }
                         }
                     }
                 )
@@ -1004,13 +987,13 @@ fun LiveTrackingMapScreen(
                 }
 
                 // Map Tap Picking Hint
-                if (isPickingDestinationOnMap || isPickingCheckpointOnMap) {
+                if (isPickingDestinationOnMap) {
                     Surface(
                         modifier = Modifier
                             .align(Alignment.BottomStart)
                             .padding(start = 12.dp, bottom = 92.dp, end = 12.dp),
                         shape = RoundedCornerShape(14.dp),
-                        color = if (isPickingCheckpointOnMap) Color(0xFF0F766E) else Color(0xFF0F172A)
+                        color = Color(0xFF0F172A)
                     ) {
                         Row(
                             modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
@@ -1018,21 +1001,13 @@ fun LiveTrackingMapScreen(
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             Text(
-                                text = if (isPickingCheckpointOnMap) {
-                                    if (pendingCheckpointName.isNotBlank()) "Ketuk peta untuk menaruh: $pendingCheckpointName"
-                                    else "Ketuk Peta TomTom untuk lokasi Titik Istirahat"
-                                } else {
-                                    "Ketuk Peta TomTom untuk menetapkan Titik Tujuan baru"
-                                },
+                                text = "Ketuk Peta TomTom untuk menetapkan Titik Tujuan baru",
                                 color = Color.White,
                                 style = MaterialTheme.typography.bodyMedium,
                                 modifier = Modifier.weight(1f)
                             )
                             TextButton(
-                                onClick = {
-                                    if (isPickingCheckpointOnMap) onCancelPickCheckpoint()
-                                    else onTogglePickMode(false)
-                                }
+                                onClick = { onTogglePickMode(false) }
                             ) {
                                 Text("Batal", color = Color(0xFFFFEDD5), fontWeight = FontWeight.Bold)
                             }
@@ -1391,7 +1366,7 @@ fun LiveTrackingMapScreen(
                 }
 
                 // Left-Edge Trigger Handle for Auto-Hiding Side Info Drawer
-                if (!showSideInfoDrawer && !isPickingDestinationOnMap && !isPickingCheckpointOnMap) {
+                if (!showSideInfoDrawer && !isPickingDestinationOnMap) {
                     Surface(
                         onClick = openSideDrawer,
                         shape = RoundedCornerShape(topEnd = 16.dp, bottomEnd = 16.dp),
@@ -2136,65 +2111,6 @@ fun LiveTrackingMapScreen(
         }
     }
 
-    // Dialog naming a tapped Checkpoint if Leader tapped map without pre-entering name
-    if (tappedCheckpointLatLng != null) {
-        val latLng = tappedCheckpointLatLng!!
-        var dialogName by remember { mutableStateOf("") }
-        AlertDialog(
-            onDismissRequest = {
-                tappedCheckpointLatLng = null
-                onCancelPickCheckpoint()
-            },
-            icon = { Icon(Icons.Rounded.LocalCafe, contentDescription = null, tint = Color(0xFF0F766E)) },
-            title = { Text("Nama Titik Istirahat", fontWeight = FontWeight.Bold) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    OutlinedTextField(
-                        value = dialogName,
-                        onValueChange = { dialogName = it },
-                        label = { Text("Nama Checkpoint / Rest Area") },
-                        placeholder = { Text("Misal: Rest Area KM 57") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        listOf("Rest Area KM 57", "SPBU Cisarua").forEach { suggestion ->
-                            FilterChip(
-                                selected = dialogName == suggestion,
-                                onClick = { dialogName = suggestion },
-                                label = { Text(suggestion, fontSize = 11.sp) }
-                            )
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        onConfirmAddCheckpointLatLng(
-                            dialogName.ifBlank { "Rest Area Konvoi" },
-                            latLng.lat,
-                            latLng.lng
-                        )
-                        tappedCheckpointLatLng = null
-                    }
-                ) {
-                    Text("Simpan & Broadcast")
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = {
-                        tappedCheckpointLatLng = null
-                        onCancelPickCheckpoint()
-                    }
-                ) {
-                    Text("Batal")
-                }
-            }
-        )
-    }
-
     // Finish & Save Trip to History Dialog
     if (showFinishTripDialog) {
         AlertDialog(
@@ -2202,7 +2118,7 @@ fun LiveTrackingMapScreen(
             icon = { Icon(Icons.Rounded.Flag, contentDescription = null, tint = Color(0xFF16A34A), modifier = Modifier.size(30.dp)) },
             title = { Text("Akhiri & Simpan Perjalanan?", fontWeight = FontWeight.Bold) },
             text = {
-                Text("Rekam jejak rute menuju ${routeConfig.destinationName}, titik istirahat, dan daftar peserta akan disimpan ke Riwayat Tour untuk ekspor GPX.")
+                Text("Rekam jejak rute menuju ${routeConfig.destinationName} dan daftar peserta akan disimpan ke Riwayat Tour untuk ekspor GPX.")
             },
             confirmButton = {
                 Button(
@@ -2493,64 +2409,6 @@ fun LiveTrackingMapScreen(
                         Icon(Icons.Rounded.EditLocationAlt, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(8.dp))
                         Text("Ketuk Peta untuk Tujuan Kustom")
-                    }
-                }
-
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline)
-
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("Titik Istirahat (Checkpoint / Rest Area)", style = MaterialTheme.typography.labelLarge)
-                    routeConfig.checkpoints.forEach { cp ->
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.background,
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                Icon(Icons.Rounded.LocalCafe, contentDescription = null, tint = Color(0xFF0F766E), modifier = Modifier.size(18.dp))
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(cp.name, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                                    Text(
-                                        text = String.format(Locale.US, "%.4f, %.4f", cp.latitude, cp.longitude),
-                                        fontSize = 11.sp,
-                                        fontFamily = FontFamily.Monospace,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                                IconButton(onClick = { onRemoveCheckpoint(cp.id) }) {
-                                    Icon(Icons.Rounded.DeleteOutline, contentDescription = "Hapus Checkpoint")
-                                }
-                            }
-                        }
-                    }
-
-                    OutlinedTextField(
-                        value = checkpointDraftName,
-                        onValueChange = { checkpointDraftName = it },
-                        label = { Text("Nama Titik Istirahat Baru") },
-                        placeholder = { Text("Contoh: Rumah Makan Sate Pak Budi") },
-                        singleLine = true,
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    Button(
-                        onClick = {
-                            onStartPickCheckpoint(checkpointDraftName)
-                            showLeaderSettingsSheet = false
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F766E))
-                    ) {
-                        Icon(Icons.Rounded.AddLocationAlt, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Tambah Titik Istirahat (Pilih di Peta)")
                     }
                 }
 
@@ -3215,44 +3073,6 @@ private fun MessengerChatBubble(
                         borderColor = MaterialTheme.colorScheme.secondary
                     )
                 }
-            }
-        }
-    }
-}
-
-@Composable
-private fun RestCheckpointMapMarker(
-    checkpoint: RestCheckpoint,
-    modifier: Modifier = Modifier
-) {
-    Column(
-        modifier = modifier.width(168.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Surface(
-            shape = RoundedCornerShape(10.dp),
-            color = Color(0xFF0F766E),
-            shadowElevation = 4.dp
-        ) {
-            Text(
-                text = checkpoint.name,
-                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 11.sp, fontWeight = FontWeight.SemiBold),
-                color = Color.White,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-            )
-        }
-        Spacer(modifier = Modifier.height(3.dp))
-        Surface(
-            shape = CircleShape,
-            color = Color(0xFF0F766E),
-            border = BorderStroke(2.dp, Color.White),
-            shadowElevation = 6.dp,
-            modifier = Modifier.size(30.dp)
-        ) {
-            Box(contentAlignment = Alignment.Center) {
-                Icon(Icons.Rounded.LocalCafe, contentDescription = checkpoint.name, tint = Color.White, modifier = Modifier.size(16.dp))
             }
         }
     }

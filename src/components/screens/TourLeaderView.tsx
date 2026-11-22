@@ -8,7 +8,6 @@ import {
   Car,
   Check,
   Cloud,
-  Coffee,
   Copy,
   Flag,
   Gauge,
@@ -16,7 +15,6 @@ import {
   LocateFixed,
   Map as MapIcon,
   MapPin,
-  Plus,
   RotateCcw,
   Route,
   Search,
@@ -118,6 +116,7 @@ interface TourLeaderViewProps {
   onUpdateMaxStragglerDistance: (meters: number) => void;
   onToggleSoundAlert: () => void;
   onCreateRoom: (customTitle?: string) => void;
+  onCreateLocalRoom?: (customTitle?: string) => void;
   onSimulateJoin: () => void;
   onRemoveMember: (memberId: string) => void;
   onEnterMapPlaceholder: () => void;
@@ -128,8 +127,7 @@ const STEP_LABELS = [
   { num: 1, label: 'Start' },
   { num: 2, label: 'Tujuan' },
   { num: 3, label: 'Rute' },
-  { num: 4, label: 'Istirahat' },
-  { num: 5, label: 'Jarak' },
+  { num: 4, label: 'Jarak' },
 ];
 
 function TomTomStepRouteMap({
@@ -318,11 +316,10 @@ export function TourLeaderView({
   onUpdateWaypoints,
   onResetDefaultWaypoints,
   onRouteComputed,
-  onAddCheckpoint,
-  onRemoveCheckpoint,
   onUpdateMaxStragglerDistance,
   onToggleSoundAlert,
   onCreateRoom,
+  onCreateLocalRoom,
   onSimulateJoin,
   onRemoveMember,
   onEnterMapPlaceholder,
@@ -336,7 +333,6 @@ export function TourLeaderView({
   const [tourNameDraft, setTourNameDraft] = useState(
     activeRoom?.roomTitle || 'Konvoi Puncak Pass Weekend'
   );
-  const [checkpointDraft, setCheckpointDraft] = useState('');
   const [copiedType, setCopiedType] = useState<'id' | 'link' | 'web' | null>(null);
   const [previewStats, setPreviewStats] = useState<{
     distanceMeters: number;
@@ -482,7 +478,7 @@ export function TourLeaderView({
             </h2>
             <p className="text-[11px] text-[#64748B] dark:text-[#94A3B8] truncate">
               {showSetupStepper
-                ? `Langkah ${currentStep + 1} dari 5 · ${STEP_LABELS[currentStep].label}`
+                ? `Langkah ${currentStep + 1} dari 4 · ${STEP_LABELS[currentStep]?.label ?? ''}`
                 : 'Room ID & Peserta Konvoi'}
             </p>
           </div>
@@ -503,8 +499,8 @@ export function TourLeaderView({
       <div className="flex-1 px-4 py-4 space-y-4">
         {showSetupStepper ? (
           <>
-            {/* Stepper Header (5 Steps) */}
-            <div className="rounded-[18px] bg-white dark:bg-[#141C24] border border-[#E2E8F0] dark:border-[#334155] p-1.5 grid grid-cols-5 gap-1">
+            {/* Stepper Header (4 Steps) */}
+            <div className="rounded-[18px] bg-white dark:bg-[#141C24] border border-[#E2E8F0] dark:border-[#334155] p-1.5 grid grid-cols-4 gap-1">
               {STEP_LABELS.map((step, idx) => {
                 const isActive = idx === currentStep;
                 const isDone = idx < currentStep;
@@ -994,98 +990,9 @@ export function TourLeaderView({
               {currentStep === 3 && (
                 <>
                   <div className="flex items-center gap-2">
-                    <Coffee className="w-5 h-5 text-[#0F766E]" />
-                    <h3 className="text-base font-bold">
-                      4. Titik Istirahat (Checkpoint)
-                    </h3>
-                  </div>
-
-                  <div>
-                    <label
-                      htmlFor="stepCheckpointInput"
-                      className="block text-xs font-semibold text-[#334155] dark:text-[#CBD5E1] mb-1.5"
-                    >
-                      Nama Checkpoint / Rest Area
-                    </label>
-                    <input
-                      id="stepCheckpointInput"
-                      type="text"
-                      value={checkpointDraft}
-                      onChange={(e) => setCheckpointDraft(e.target.value)}
-                      placeholder="Misal: Rest Area KM 57"
-                      className="w-full min-h-[42px] px-3 rounded-[12px] bg-[#F8FAFC] dark:bg-[#0B1117] border border-[#CBD5E1] dark:border-[#334155] focus:border-[#0F766E] text-xs outline-none"
-                    />
-                  </div>
-
-                  <div className="flex flex-wrap gap-1.5">
-                    {['SPBU Cisarua', 'Rumah Makan Sate Pak Budi'].map((sample) => (
-                      <button
-                        key={sample}
-                        type="button"
-                        onClick={() => setCheckpointDraft(sample)}
-                        className="px-2.5 py-1 rounded-lg bg-[#F1F5F9] dark:bg-[#1E293B] text-[11px] font-medium text-[#334155] dark:text-[#CBD5E1] cursor-pointer"
-                      >
-                        {sample}
-                      </button>
-                    ))}
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const label = checkpointDraft.trim() || 'Rest Area KM 57';
-                      const factor = Math.max(
-                        0.25,
-                        Math.min(0.78, 0.35 + routeConfig.checkpoints.length * 0.14)
-                      );
-                      onAddCheckpoint(label, factor, 1 - factor);
-                      setCheckpointDraft('');
-                    }}
-                    className="w-full min-h-[44px] px-3 rounded-[12px] bg-[#0F766E] hover:bg-[#0D9488] text-white text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
-                  >
-                    <Plus className="w-4 h-4" />
-                    <span>Tambah Titik Istirahat ke Rute</span>
-                  </button>
-
-                  {routeConfig.checkpoints.length > 0 && (
-                    <div className="space-y-1.5">
-                      {routeConfig.checkpoints.map((cp) => (
-                        <div
-                          key={cp.id}
-                          className="rounded-xl bg-[#F0FDFA] dark:bg-[#042F2E]/40 border border-[#99F6E4] dark:border-[#115E59] px-3 py-2 flex items-center justify-between gap-2"
-                        >
-                          <div className="flex items-center gap-2 min-w-0">
-                            <Coffee className="w-3.5 h-3.5 text-[#0F766E] shrink-0" />
-                            <div className="min-w-0">
-                              <p className="text-xs font-semibold truncate">
-                                {cp.name}
-                              </p>
-                              <p className="text-[10px] font-mono text-[#64748B] dark:text-[#94A3B8]">
-                                {cp.latitude.toFixed(4)}, {cp.longitude.toFixed(4)}
-                              </p>
-                            </div>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => onRemoveCheckpoint(cp.id)}
-                            aria-label={`Hapus ${cp.name}`}
-                            className="w-7 h-7 rounded-lg flex items-center justify-center text-[#DC2626] hover:bg-[#FEE2E2] cursor-pointer shrink-0"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </>
-              )}
-
-              {currentStep === 4 && (
-                <>
-                  <div className="flex items-center gap-2">
                     <Gauge className="w-5 h-5 text-[#1D4ED8] dark:text-[#60A5FA]" />
                     <h3 className="text-base font-bold">
-                      5. Batas Jarak & Konfirmasi
+                      4. Batas Jarak & Konfirmasi
                     </h3>
                   </div>
 
@@ -1172,8 +1079,7 @@ export function TourLeaderView({
                         : routeConfig.routePreference === 'no_toll'
                           ? 'Bebas Tol'
                           : 'Tercepat'}{' '}
-                      · {(routeConfig.totalRouteMeters / 1000).toFixed(1)} km ·{' '}
-                      {routeConfig.checkpoints.length} Rest Area
+                      · {(routeConfig.totalRouteMeters / 1000).toFixed(1)} km
                     </p>
                   </div>
                 </>
@@ -1182,50 +1088,76 @@ export function TourLeaderView({
               <div className="h-px bg-[#E2E8F0] dark:bg-[#334155]" />
 
               {createRoomError && (
-                <div className="rounded-xl bg-[#FEF2F2] dark:bg-[#450A0A]/40 border border-[#FECACA] dark:border-[#991B1B] px-3 py-2.5 text-xs text-[#B91C1C] dark:text-[#FCA5A5]">
-                  {createRoomError}
+                <div className="rounded-xl bg-[#FEF2F2] dark:bg-[#450A0A]/40 border border-[#FECACA] dark:border-[#991B1B] px-3 py-2.5 text-xs text-[#B91C1C] dark:text-[#FCA5A5] space-y-2">
+                  <p>{createRoomError}</p>
+                  {onGoogleSignIn && !isAuthenticated && (
+                    <button
+                      type="button"
+                      onClick={onGoogleSignIn}
+                      className="w-full min-h-[38px] rounded-lg bg-[#1D4ED8] hover:bg-[#1E40AF] text-white text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      <Cloud className="w-3.5 h-3.5" />
+                      <span>Masuk dengan Google (Room Cloud Live)</span>
+                    </button>
+                  )}
                 </div>
               )}
 
               {/* Stepper Footer Actions */}
-              <div className="flex items-center gap-2.5">
-                {currentStep > 0 && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2.5">
+                  {currentStep > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setCurrentStep((s) => s - 1)}
+                      className="flex-1 min-h-[46px] rounded-[14px] border border-[#CBD5E1] dark:border-[#334155] text-xs font-semibold cursor-pointer"
+                    >
+                      Sebelumnya
+                    </button>
+                  )}
+                  {currentStep < 3 ? (
+                    <button
+                      type="button"
+                      onClick={() => setCurrentStep((s) => s + 1)}
+                      className="flex-1 min-h-[46px] rounded-[14px] bg-[#1D4ED8] hover:bg-[#1E40AF] text-white text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      <span>Berikutnya</span>
+                      <ArrowRight className="w-4 h-4" />
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={isCreatingRoom}
+                      onClick={() =>
+                        onCreateRoom(
+                          tourNameDraft.trim() || 'Konvoi Touring Akhir Pekan'
+                        )
+                      }
+                      className="flex-1 min-h-[46px] rounded-[14px] bg-[#EA580C] hover:bg-[#C2410C] disabled:opacity-60 text-white text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      <Check className="w-4 h-4" />
+                      <span>
+                        {isCreatingRoom
+                          ? 'Membuat Room...'
+                          : isAuthenticated
+                            ? 'Buat Room Cloud & Mulai'
+                            : 'Buat Room Cloud & Mulai'}
+                      </span>
+                    </button>
+                  )}
+                </div>
+
+                {currentStep === 3 && onCreateLocalRoom && !isAuthenticated && (
                   <button
                     type="button"
-                    onClick={() => setCurrentStep((s) => s - 1)}
-                    className="flex-1 min-h-[46px] rounded-[14px] border border-[#CBD5E1] dark:border-[#334155] text-xs font-semibold cursor-pointer"
-                  >
-                    Sebelumnya
-                  </button>
-                )}
-                {currentStep < 4 ? (
-                  <button
-                    type="button"
-                    onClick={() => setCurrentStep((s) => s + 1)}
-                    className="flex-1 min-h-[46px] rounded-[14px] bg-[#1D4ED8] hover:bg-[#1E40AF] text-white text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
-                  >
-                    <span>Berikutnya</span>
-                    <ArrowRight className="w-4 h-4" />
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    disabled={isCreatingRoom}
                     onClick={() =>
-                      onCreateRoom(
+                      onCreateLocalRoom(
                         tourNameDraft.trim() || 'Konvoi Touring Akhir Pekan'
                       )
                     }
-                    className="flex-1 min-h-[46px] rounded-[14px] bg-[#EA580C] hover:bg-[#C2410C] disabled:opacity-60 text-white text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
+                    className="w-full min-h-[42px] rounded-[12px] border border-[#CBD5E1] dark:border-[#334155] bg-[#F8FAFC] dark:bg-[#0B1117] hover:bg-[#F1F5F9] dark:hover:bg-[#1E293B] text-xs font-semibold text-[#334155] dark:text-[#CBD5E1] cursor-pointer transition-colors"
                   >
-                    <Check className="w-4 h-4" />
-                    <span>
-                      {isCreatingRoom
-                        ? 'Membuat Room...'
-                        : isAuthenticated
-                          ? 'Buat Room Cloud & Mulai'
-                          : 'Buat Room Demo & Mulai'}
-                    </span>
+                    Atau Buat Room Lokal (Offline / Demo)
                   </button>
                 )}
               </div>
