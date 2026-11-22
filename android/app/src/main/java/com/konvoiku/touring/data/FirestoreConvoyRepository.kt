@@ -61,6 +61,7 @@ data class SyncedRoomHeader(
 
 enum class WebEndpointStatus {
     LIVE_DIRECT,
+    OUTDATED_BUILD,
     DEV_PROXY_AUTH,
     NOT_FOUND,
     UNREACHABLE
@@ -91,6 +92,10 @@ class FirestoreConvoyRepository {
         private const val FIREBASE_SENDER_ID = "886997766185"
         private const val SHARED_BASE_URL =
             "https://ais-pre-mbwxrxf647cphhl5i4ggug-588877716211.asia-southeast1.run.app"
+        private const val DEPLOYED_AI_STUDIO_URL =
+            "https://konvoiku-touring-convoy-kotlin-jetpack-compose.ai.studio"
+        private const val DEPLOYED_CLOUD_RUN_URL =
+            "https://konvoiku-touring-convoy-kotlin-jetpack-compo-pdqf-886997766185.asia-east1.run.app"
         private const val DEV_BASE_URL =
             "https://ais-dev-mbwxrxf647cphhl5i4ggug-588877716211.asia-southeast1.run.app"
         const val SHARED_GOOGLE_BRIDGE_URL = "$SHARED_BASE_URL/?mobile_auth=google"
@@ -195,15 +200,17 @@ class FirestoreConvoyRepository {
                 if (body.contains("\"service\"") && body.contains("konvoiku")) {
                     return@runCatching WebEndpointStatus.LIVE_DIRECT
                 }
+                if (body.contains("mobile_auth_v1")) {
+                    return@runCatching WebEndpointStatus.LIVE_DIRECT
+                }
                 if (body.contains("__cookie_check") ||
                     body.contains("_aistudio-iframe") ||
                     body.contains("Cookie check")
                 ) {
                     return@runCatching WebEndpointStatus.DEV_PROXY_AUTH
                 }
-                // Static/SPA hosting custom domains might return index.html on unknown routes
                 if (body.contains("KonvoiKu", ignoreCase = true)) {
-                    return@runCatching WebEndpointStatus.LIVE_DIRECT
+                    return@runCatching WebEndpointStatus.OUTDATED_BUILD
                 }
             }
             WebEndpointStatus.UNREACHABLE
@@ -244,9 +251,15 @@ class FirestoreConvoyRepository {
                         baseUrl = "",
                         isPublishedLive = false,
                         isDevProxy = true,
-                        errorMessage = "URL ($customClean) mengarah ke Dev Preview AI Studio yang terkunci khusus akun pemilik ($ADMIN_EMAIL) dan akan error Google 403 di HP lain. Gunakan URL Web publik atau tombol khusus pemilik di bawah."
+                        errorMessage = "URL ($customClean) mengarah ke Dev Preview AI Studio yang terkunci khusus akun pemilik ($ADMIN_EMAIL) dan akan error Google 403 di HP lain."
                     )
                 }
+                WebEndpointStatus.OUTDATED_BUILD -> WebBridgeResolution(
+                    baseUrl = "",
+                    isPublishedLive = false,
+                    isDevProxy = false,
+                    errorMessage = "Web di $customClean masih versi lama (belum mendukung sinkronisasi login APK). Deploy ulang versi terbaru jika ingin memakai login browser."
+                )
                 WebEndpointStatus.LIVE_DIRECT -> WebBridgeResolution(
                     baseUrl = customClean,
                     isPublishedLive = true,
@@ -271,6 +284,26 @@ class FirestoreConvoyRepository {
             )
         }
 
+        val deployedAiStudioStatus = probeWebEndpoint(DEPLOYED_AI_STUDIO_URL)
+        if (deployedAiStudioStatus == WebEndpointStatus.LIVE_DIRECT) {
+            return@withContext WebBridgeResolution(
+                baseUrl = DEPLOYED_AI_STUDIO_URL,
+                isPublishedLive = true,
+                isDevProxy = false,
+                isSharedUnpublished = false
+            )
+        }
+
+        val deployedCloudRunStatus = probeWebEndpoint(DEPLOYED_CLOUD_RUN_URL)
+        if (deployedCloudRunStatus == WebEndpointStatus.LIVE_DIRECT) {
+            return@withContext WebBridgeResolution(
+                baseUrl = DEPLOYED_CLOUD_RUN_URL,
+                isPublishedLive = true,
+                isDevProxy = false,
+                isSharedUnpublished = false
+            )
+        }
+
         val devStatus = probeWebEndpoint(DEV_BASE_URL)
         if (devStatus == WebEndpointStatus.LIVE_DIRECT) {
             return@withContext WebBridgeResolution(
@@ -280,6 +313,10 @@ class FirestoreConvoyRepository {
                 isSharedUnpublished = sharedStatus == WebEndpointStatus.NOT_FOUND
             )
         }
+        val hasOutdatedDeployed =
+            deployedAiStudioStatus == WebEndpointStatus.OUTDATED_BUILD ||
+                deployedCloudRunStatus == WebEndpointStatus.OUTDATED_BUILD
+
         if (devStatus == WebEndpointStatus.DEV_PROXY_AUTH || sharedStatus == WebEndpointStatus.DEV_PROXY_AUTH) {
             val targetProxyBase = if (devStatus == WebEndpointStatus.DEV_PROXY_AUTH) DEV_BASE_URL else SHARED_BASE_URL
             val sharedUnpublished = sharedStatus == WebEndpointStatus.NOT_FOUND
@@ -291,12 +328,17 @@ class FirestoreConvoyRepository {
                     isSharedUnpublished = sharedUnpublished
                 )
             }
+            val webStatusText = if (hasOutdatedDeployed) {
+                "Web publik yang ada masih versi lama & Web Share (ais-pre) masih 404, sedangkan Dev Preview terkunci khusus pemilik ($ADMIN_EMAIL)."
+            } else {
+                "Halaman Web Share publik (ais-pre) belum aktif (404) dan Dev Preview terkunci khusus pemilik ($ADMIN_EMAIL)."
+            }
             return@withContext WebBridgeResolution(
                 baseUrl = "",
                 isPublishedLive = false,
                 isDevProxy = true,
                 isSharedUnpublished = sharedUnpublished,
-                errorMessage = "Login Google via browser belum bisa dibuka di HP lain: halaman Web Share publik (ais-pre) masih 404 (belum Publish Share) dan Dev Preview (ais-dev) diblokir Google 403 untuk selain akun pemilik ($ADMIN_EMAIL).\n\nCara mengatasi:\n1. Di AI Studio Web, klik Share → Publish Web agar halaman publik aktif, atau\n2. Di Firebase Console ($FIREBASE_PROJECT_ID) → Authentication → Sign-in method, aktifkan Email/Password & Anonymous (plus SHA-1 APK untuk Google langsung), atau\n3. Deploy Web KonvoiKu ke hosting HTTPS publik lalu isi di 'URL web kustom?'."
+                errorMessage = "Login Google via browser belum bisa dipakai di HP lain. $webStatusText\n\nPilih salah satu (1x setup saja):\n• Tanpa deploy web: di Firebase Console ($FIREBASE_PROJECT_ID) → Authentication → Sign-in method, aktifkan Email/Password & Anonymous, atau tambah SHA-1 APK untuk tombol Google langsung.\n• Atau klik Deploy / Share → Publish 1x di AI Studio agar login browser aktif."
             )
         }
 
@@ -305,7 +347,7 @@ class FirestoreConvoyRepository {
             isPublishedLive = false,
             isDevProxy = false,
             isSharedUnpublished = sharedStatus == WebEndpointStatus.NOT_FOUND,
-            errorMessage = "Server Web Share (ais-pre) belum dipublikasikan (404 Page Not Found) dan Dev Preview tidak bisa dibuka dari HP lain. Klik Share → Publish di AI Studio, isi 'URL web kustom?', atau aktifkan Email/Password & SHA-1 di Firebase Console."
+            errorMessage = "Halaman login browser publik belum aktif. Aktifkan Email/Password & Anonymous (atau SHA-1 APK) di Firebase Console agar semua HP bisa login tanpa deploy web, atau klik Deploy / Share → Publish di AI Studio."
         )
     }
 

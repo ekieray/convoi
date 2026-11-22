@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -393,7 +394,7 @@ fun LoginScreen(
                                 enabled = !isAuthLoading,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(46.dp),
+                                    .defaultMinSize(minHeight = 46.dp),
                                 shape = RoundedCornerShape(14.dp),
                                 border = BorderStroke(1.dp, Color(0xFF2563EB))
                             ) {
@@ -407,12 +408,13 @@ fun LoginScreen(
                                 Text(
                                     text = "Sinkronkan Google via Browser",
                                     fontWeight = FontWeight.SemiBold,
-                                    color = Color(0xFF2563EB)
+                                    color = Color(0xFF2563EB),
+                                    textAlign = TextAlign.Center
                                 )
                             }
 
                             Text(
-                                text = "Info HP lain: Browser sync hanya berjalan jika Web Share AI Studio sudah di-Publish, URL web publik diisi di 'URL web kustom?', atau Email/Password & SHA-1 APK diaktifkan di Firebase Console.",
+                                text = "Info HP lain: Browser sync memerlukan Web KonvoiKu versi terbaru yang sudah di-Deploy/Publish. Tanpa deploy web, aktifkan Email/Password atau SHA-1 APK di Firebase Console.",
                                 style = MaterialTheme.typography.bodySmall,
                                 fontSize = 11.sp,
                                 lineHeight = 15.sp,
@@ -709,7 +711,7 @@ fun LoginScreen(
                                 enabled = !isAuthLoading,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(44.dp),
+                                    .defaultMinSize(minHeight = 46.dp),
                                 shape = RoundedCornerShape(12.dp),
                                 border = BorderStroke(1.dp, Color(0xFFD97706))
                             ) {
@@ -721,10 +723,11 @@ fun LoginScreen(
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text(
-                                    text = "Khusus Pemilik (${FirestoreConvoyRepository.ADMIN_EMAIL}): Buka Dev Preview",
+                                    text = "Buka Dev Preview (Khusus Pemilik)",
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.SemiBold,
-                                    color = Color(0xFFB45309)
+                                    color = Color(0xFFB45309),
+                                    textAlign = TextAlign.Center
                                 )
                             }
                         }
@@ -760,7 +763,7 @@ fun LoginScreen(
                             enabled = !isAuthLoading,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(50.dp),
+                                .defaultMinSize(minHeight = 50.dp),
                             shape = RoundedCornerShape(14.dp),
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = MaterialTheme.colorScheme.secondary,
@@ -778,7 +781,8 @@ fun LoginScreen(
                             } else {
                                 Text(
                                     text = if (isSignUpMode) "Daftar & Sinkronkan Profil" else "Masuk dengan Email",
-                                    fontWeight = FontWeight.SemiBold
+                                    fontWeight = FontWeight.SemiBold,
+                                    textAlign = TextAlign.Center
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Icon(
@@ -798,14 +802,15 @@ fun LoginScreen(
                                 },
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(46.dp),
+                                    .defaultMinSize(minHeight = 46.dp),
                                 shape = RoundedCornerShape(14.dp),
                                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
                             ) {
                                 Text(
                                     text = "Masuk Cepat sebagai Tamu (Mode Lokal)",
                                     fontWeight = FontWeight.SemiBold,
-                                    color = MaterialTheme.colorScheme.primary
+                                    color = MaterialTheme.colorScheme.primary,
+                                    textAlign = TextAlign.Center
                                 )
                             }
                         } else {

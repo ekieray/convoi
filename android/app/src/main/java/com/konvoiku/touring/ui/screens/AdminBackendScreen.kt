@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -83,6 +84,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -427,7 +429,7 @@ fun AdminBackendScreen(
                                 enabled = !isAuthLoading,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(44.dp),
+                                    .defaultMinSize(minHeight = 46.dp),
                                 shape = RoundedCornerShape(12.dp),
                                 border = BorderStroke(1.dp, Color(0xFFD97706))
                             ) {
@@ -439,10 +441,11 @@ fun AdminBackendScreen(
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text(
-                                    text = "Khusus Pemilik (${FirestoreConvoyRepository.ADMIN_EMAIL}): Buka Dev Preview",
-                                    fontSize = 11.sp,
+                                    text = "Buka Dev Preview (Khusus Pemilik)",
+                                    fontSize = 12.sp,
                                     fontWeight = FontWeight.SemiBold,
-                                    color = Color(0xFFB45309)
+                                    color = Color(0xFFB45309),
+                                    textAlign = TextAlign.Center
                                 )
                             }
                         }
@@ -452,7 +455,7 @@ fun AdminBackendScreen(
                             enabled = !isAuthLoading,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(48.dp),
+                                .defaultMinSize(minHeight = 48.dp),
                             shape = RoundedCornerShape(12.dp),
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = MaterialTheme.colorScheme.secondary,
@@ -470,7 +473,8 @@ fun AdminBackendScreen(
                             } else {
                                 Text(
                                     text = "Masuk Admin dengan Google",
-                                    fontWeight = FontWeight.SemiBold
+                                    fontWeight = FontWeight.SemiBold,
+                                    textAlign = TextAlign.Center
                                 )
                             }
                         }
@@ -486,7 +490,7 @@ fun AdminBackendScreen(
                             enabled = !isAuthLoading,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(46.dp),
+                                .defaultMinSize(minHeight = 46.dp),
                             shape = RoundedCornerShape(12.dp),
                             border = BorderStroke(1.dp, Color(0xFF2563EB))
                         ) {
@@ -500,7 +504,8 @@ fun AdminBackendScreen(
                             Text(
                                 text = "Verifikasi Google via Browser",
                                 fontWeight = FontWeight.SemiBold,
-                                color = Color(0xFF2563EB)
+                                color = Color(0xFF2563EB),
+                                textAlign = TextAlign.Center
                             )
                         }
 
