@@ -789,13 +789,6 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
                     }
                     return@launch
                 }
-            } else {
-                val liveWeb = syncRepo.resolveWebBridgeUrl(allowDevProxyFallback = false)
-                if (liveWeb.baseUrl.isNotBlank() && liveWeb.isPublishedLive) {
-                    resolvedBase = liveWeb.baseUrl
-                    targetUrl = "${liveWeb.baseUrl}/?mobile_auth=google"
-                    _uiState.update { it.copy(activeWebBaseUrl = liveWeb.baseUrl) }
-                }
             }
 
             if (targetUrl == null) {

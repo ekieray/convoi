@@ -314,7 +314,7 @@ class LocalBrowserGoogleAuthServer {
 
                 async function deliverToken(result) {
                   const cred = firebase.auth.GoogleAuthProvider.credentialFromResult(result);
-                  const idToken = cred && cred.idToken ? cred.idToken : '';
+                  const idToken = (cred && cred.idToken) || (result && result.credential && result.credential.idToken) || '';
                   const email = result && result.user && result.user.email ? result.user.email : '';
                   if (!idToken) {
                     setStatus('err', 'Token Google tidak tersedia dari hasil login. Coba pilih ulang akun.');
@@ -345,6 +345,10 @@ class LocalBrowserGoogleAuthServer {
                     await deliverToken(result);
                   } catch (err) {
                     const code = err && err.code ? err.code : '';
+                    if (code === 'auth/popup-blocked' || code === 'auth/operation-not-supported-in-this-environment') {
+                      startGoogleRedirect();
+                      return;
+                    }
                     const msg = err && err.message ? err.message : String(err);
                     setStatus('err', 'Login Google gagal (' + code + '): ' + msg + ' — Coba tombol "Mode Redirect Penuh" di bawah.');
                   }
