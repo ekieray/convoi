@@ -31,6 +31,7 @@ import com.konvoiku.touring.model.RouteInstruction
 import com.konvoiku.touring.model.RoutePreference
 import com.konvoiku.touring.model.SosEmergencyState
 import com.konvoiku.touring.model.TripHistoryRecord
+import com.konvoiku.touring.model.TripParticipantSummary
 import com.konvoiku.touring.model.UserPresenceInfo
 import com.konvoiku.touring.model.UserRole
 import com.konvoiku.touring.model.VehicleProfile
