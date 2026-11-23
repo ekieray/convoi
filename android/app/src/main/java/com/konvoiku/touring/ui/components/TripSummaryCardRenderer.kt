@@ -88,6 +88,9 @@ fun StravaStyleTripShareCard(
     trip: TripHistoryRecord,
     theme: TripCardTheme,
     customPhotoUri: String?,
+    currentUserName: String? = null,
+    currentUserAvatarPreset: AvatarPreset? = null,
+    currentUserAvatarPhotoUri: String? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -117,6 +120,25 @@ fun StravaStyleTripShareCard(
 
     val leader = trip.participants.firstOrNull { it.role == UserRole.TOUR_LEADER }
         ?: trip.participants.firstOrNull()
+    val trimmedLoginName = currentUserName?.trim().orEmpty()
+    val matchedSelf = if (trimmedLoginName.isNotEmpty()) {
+        trip.participants.firstOrNull {
+            it.fullName.trim().equals(trimmedLoginName, ignoreCase = true)
+        }
+    } else null
+    val headerDisplayName = trimmedLoginName.ifBlank { leader?.fullName ?: "Rider KonvoiKu" }
+    val headerAvatarPreset = currentUserAvatarPreset
+        ?: matchedSelf?.avatarPreset
+        ?: leader?.avatarPreset
+        ?: AvatarPreset.HELMET_TOURING
+    val headerAvatarPhotoUri = currentUserAvatarPhotoUri
+        ?: matchedSelf?.avatarPhotoUri
+        ?: if (trimmedLoginName.isNotEmpty()) null else leader?.avatarPhotoUri
+    val headerRoleLabel = when {
+        trip.userRole == UserRole.TOUR_LEADER -> "Tour Leader"
+        matchedSelf?.isSweeper == true -> "Sweeper"
+        else -> "Anggota Konvoi"
+    }
 
     Surface(
         modifier = modifier
@@ -314,36 +336,34 @@ fun StravaStyleTripShareCard(
                         }
                     }
 
-                    if (leader != null) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Column(horizontalAlignment = Alignment.End) {
-                                Text(
-                                    text = leader.fullName,
-                                    color = primaryText,
-                                    fontWeight = FontWeight.SemiBold,
-                                    fontSize = 11.sp,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Text(
-                                    text = "Tour Leader",
-                                    color = if (isLight) Color(0xFF1D4ED8) else Color(0xFFFDBA74),
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Medium
-                                )
-                            }
-                            ConvoyAvatar(
-                                preset = leader.avatarPreset,
-                                photoUri = leader.avatarPhotoUri,
-                                displayName = leader.fullName,
-                                size = 34.dp,
-                                borderColor = Color(0xFFEA580C),
-                                borderWidth = 2.dp
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Column(horizontalAlignment = Alignment.End) {
+                            Text(
+                                text = headerDisplayName,
+                                color = primaryText,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 11.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = headerRoleLabel,
+                                color = if (isLight) Color(0xFF1D4ED8) else Color(0xFFFDBA74),
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Medium
                             )
                         }
+                        ConvoyAvatar(
+                            preset = headerAvatarPreset,
+                            photoUri = headerAvatarPhotoUri,
+                            displayName = headerDisplayName,
+                            size = 34.dp,
+                            borderColor = Color(0xFFEA580C),
+                            borderWidth = 2.dp
+                        )
                     }
                 }
 
@@ -548,10 +568,15 @@ fun StravaStyleTripShareCard(
                     )
 
                     Text(
-                        text = "${trip.participants.size} Peserta · ${trip.participants.take(4).joinToString(", ") { it.fullName }}",
+                        text = if (trip.participants.isNotEmpty()) {
+                            "Anggota Konvoi (${trip.participants.size}): ${trip.participants.joinToString(", ") { it.fullName }}"
+                        } else {
+                            "Peserta konvoi belum tercatat"
+                        },
                         color = secondaryText,
                         fontSize = 10.sp,
-                        maxLines = 1,
+                        lineHeight = 13.sp,
+                        maxLines = 3,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
@@ -587,7 +612,10 @@ suspend fun renderTripCardBitmapToFile(
     context: Context,
     trip: TripHistoryRecord,
     theme: TripCardTheme,
-    customPhotoUri: String?
+    customPhotoUri: String?,
+    currentUserName: String? = null,
+    currentUserAvatarPreset: AvatarPreset? = null,
+    currentUserAvatarPhotoUri: String? = null
 ): File = withContext(Dispatchers.IO) {
     val width = 1080
     val height = 1350
@@ -754,15 +782,35 @@ suspend fun renderTripCardBitmapToFile(
     }
     canvas.drawText(trip.roomId, pad + 92f, pad + 68f, monoPaint)
 
-    // Tour Leader Avatar (Right Side)
+    // Logged-in User Avatar & Role (Right Side)
     val leader = trip.participants.firstOrNull { it.role == UserRole.TOUR_LEADER }
         ?: trip.participants.firstOrNull()
-    if (leader != null) {
+    val trimmedLoginName = currentUserName?.trim().orEmpty()
+    val matchedSelf = if (trimmedLoginName.isNotEmpty()) {
+        trip.participants.firstOrNull {
+            it.fullName.trim().equals(trimmedLoginName, ignoreCase = true)
+        }
+    } else null
+    val headerName = trimmedLoginName.ifBlank { leader?.fullName ?: "Rider KonvoiKu" }
+    val headerPreset = currentUserAvatarPreset
+        ?: matchedSelf?.avatarPreset
+        ?: leader?.avatarPreset
+        ?: AvatarPreset.HELMET_TOURING
+    val headerPhotoUri = currentUserAvatarPhotoUri
+        ?: matchedSelf?.avatarPhotoUri
+        ?: if (trimmedLoginName.isNotEmpty()) null else leader?.avatarPhotoUri
+    val headerRoleLabel = when {
+        trip.userRole == UserRole.TOUR_LEADER -> "Tour Leader"
+        matchedSelf?.isSweeper == true -> "Sweeper"
+        else -> "Anggota Konvoi"
+    }
+
+    run {
         val avRadius = 42f
         val avCx = width - pad - avRadius
         val avCy = pad + 36f
 
-        val leaderBmp = leader.avatarPhotoUri?.let { uriStr ->
+        val userBmp = headerPhotoUri?.let { uriStr ->
             runCatching {
                 context.contentResolver.openInputStream(Uri.parse(uriStr))?.use {
                     BitmapFactory.decodeStream(it)
@@ -770,8 +818,8 @@ suspend fun renderTripCardBitmapToFile(
             }.getOrNull()
         }
 
-        if (leaderBmp != null) {
-            val scaled = Bitmap.createScaledBitmap(leaderBmp, (avRadius * 2).toInt(), (avRadius * 2).toInt(), true)
+        if (userBmp != null) {
+            val scaled = Bitmap.createScaledBitmap(userBmp, (avRadius * 2).toInt(), (avRadius * 2).toInt(), true)
             val circlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 shader = BitmapShader(scaled, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
             }
@@ -781,7 +829,7 @@ suspend fun renderTripCardBitmapToFile(
             canvas.restore()
         } else {
             val avBg = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = when (leader.avatarPreset) {
+                color = when (headerPreset) {
                     AvatarPreset.HELMET_SPORT -> AndroidColor.parseColor("#1D4ED8")
                     AvatarPreset.PILOT_CLASSIC -> AndroidColor.parseColor("#0F766E")
                     else -> AndroidColor.parseColor("#EA580C")
@@ -794,7 +842,7 @@ suspend fun renderTripCardBitmapToFile(
                 textAlign = Paint.Align.CENTER
                 typeface = Typeface.DEFAULT_BOLD
             }
-            val initial = leader.fullName.firstOrNull()?.uppercaseChar()?.toString() ?: "L"
+            val initial = headerName.firstOrNull()?.uppercaseChar()?.toString() ?: "R"
             canvas.drawText(initial, avCx, avCy + 11f, initPaint)
         }
 
@@ -805,20 +853,20 @@ suspend fun renderTripCardBitmapToFile(
         }
         canvas.drawCircle(avCx, avCy, avRadius, avBorder)
 
-        val leaderNamePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        val userNamePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = primaryColor
             textSize = 28f
             textAlign = Paint.Align.RIGHT
             typeface = Typeface.DEFAULT_BOLD
         }
-        canvas.drawText(leader.fullName, avCx - avRadius - 20f, pad + 32f, leaderNamePaint)
-        val leaderRolePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        canvas.drawText(headerName.take(26), avCx - avRadius - 20f, pad + 32f, userNamePaint)
+        val userRolePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = if (isLight) AndroidColor.parseColor("#1D4ED8") else AndroidColor.parseColor("#FDBA74")
             textSize = 22f
             textAlign = Paint.Align.RIGHT
             typeface = Typeface.DEFAULT_BOLD
         }
-        canvas.drawText("Tour Leader", avCx - avRadius - 20f, pad + 64f, leaderRolePaint)
+        canvas.drawText(headerRoleLabel, avCx - avRadius - 20f, pad + 64f, userRolePaint)
     }
 
     // 3. Tour Title & Date
@@ -964,8 +1012,8 @@ suspend fun renderTripCardBitmapToFile(
     )
     stats.forEachIndexed { idx, (label, valStr) ->
         val x = pad + colWidth * idx
-        canvas.drawText(label, x, 1085f, statsLabelPaint)
-        canvas.drawText(valStr, x, 1140f, statsValuePaint)
+        canvas.drawText(label, x, 1062f, statsLabelPaint)
+        canvas.drawText(valStr, x, 1116f, statsValuePaint)
     }
 
     // Divider & Participant Footer
@@ -973,14 +1021,27 @@ suspend fun renderTripCardBitmapToFile(
         color = borderColor
         strokeWidth = 2f
     }
-    canvas.drawLine(pad, 1190f, width - pad, 1190f, divPaint)
+    canvas.drawLine(pad, 1166f, width - pad, 1166f, divPaint)
 
     val footerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = secondaryColor
-        textSize = 26f
+        textSize = 24f
     }
-    val membersText = "${trip.participants.size} Peserta Konvoi · ${trip.participants.take(4).joinToString(", ") { it.fullName }}"
-    canvas.drawText(membersText, pad, 1248f, footerPaint)
+    val membersText = if (trip.participants.isNotEmpty()) {
+        "Anggota Konvoi (${trip.participants.size}): ${trip.participants.joinToString(", ") { it.fullName }}"
+    } else {
+        "Peserta konvoi belum tercatat"
+    }
+    drawWrappedCanvasText(
+        canvas = canvas,
+        text = membersText,
+        x = pad,
+        startY = 1212f,
+        maxWidth = width - pad * 2f,
+        lineHeight = 34f,
+        maxLines = 3,
+        paint = footerPaint
+    )
 
     val folder = File(context.cacheDir, "shared_cards").apply { mkdirs() }
     val outFile = File(folder, "konvoiku-card-${trip.roomId.lowercase()}.png")
@@ -988,6 +1049,43 @@ suspend fun renderTripCardBitmapToFile(
         bitmap.compress(Bitmap.CompressFormat.PNG, 100, fos)
     }
     outFile
+}
+
+private fun drawWrappedCanvasText(
+    canvas: Canvas,
+    text: String,
+    x: Float,
+    startY: Float,
+    maxWidth: Float,
+    lineHeight: Float,
+    maxLines: Int,
+    paint: Paint
+) {
+    val words = text.split(" ")
+    val lines = mutableListOf<String>()
+    var current = ""
+    for (word in words) {
+        val candidate = if (current.isEmpty()) word else "$current $word"
+        if (paint.measureText(candidate) <= maxWidth) {
+            current = candidate
+        } else {
+            if (current.isNotEmpty()) lines.add(current)
+            current = word
+        }
+    }
+    if (current.isNotEmpty()) lines.add(current)
+
+    val visible = lines.take(maxLines).toMutableList()
+    if (lines.size > maxLines && visible.isNotEmpty()) {
+        var last = visible.last()
+        while (last.length > 3 && paint.measureText("$last...") > maxWidth) {
+            last = last.dropLast(1)
+        }
+        visible[visible.lastIndex] = "$last..."
+    }
+    visible.forEachIndexed { idx, line ->
+        canvas.drawText(line, x, startY + idx * lineHeight, paint)
+    }
 }
 
 fun shareTripCardImage(

@@ -388,13 +388,41 @@ function evaluateRoomSafety(
         ? coLeaderUid
         : '';
 
-  const rankedMembers = enriched.map((m) => ({
-    ...m,
-    convoyOrderRank: rankMap.get(m.id) ?? 1,
-    distanceToLeaderMeters: closestResult.distanceByMemberId.get(m.id) ?? 0,
-    isCoLeader: Boolean(coLeaderUid && m.id === coLeaderUid),
-    isActingLeader: Boolean(troubleActive && effectiveActingUid && m.id === effectiveActingUid),
-  }));
+  const hasManualSweeper = enriched.some((m) => m.isSweeper && !m.isAutoSweeper);
+  let autoSweeperId = '';
+  if (!hasManualSweeper && sorted.length >= 2) {
+    const nonLeaderRearmost = [...sorted]
+      .reverse()
+      .find(
+        (m) =>
+          m.id !== origLeaderId &&
+          m.id !== effectiveActingUid &&
+          m.role !== 'TOUR_LEADER'
+      );
+    autoSweeperId = (nonLeaderRearmost ?? sorted[sorted.length - 1])?.id ?? '';
+  }
+
+  const rankedMembers = enriched.map((m) => {
+    const isManualSweeper = Boolean(m.isSweeper && !m.isAutoSweeper);
+    const isAutoSweeper = Boolean(
+      !hasManualSweeper && autoSweeperId && m.id === autoSweeperId
+    );
+    return {
+      ...m,
+      convoyOrderRank: rankMap.get(m.id) ?? 1,
+      distanceToLeaderMeters: closestResult.distanceByMemberId.get(m.id) ?? 0,
+      isCoLeader: Boolean(coLeaderUid && m.id === coLeaderUid),
+      isActingLeader: Boolean(
+        troubleActive && effectiveActingUid && m.id === effectiveActingUid
+      ),
+      isSweeper: isManualSweeper || isAutoSweeper,
+      isAutoSweeper,
+    };
+  });
+
+  const sortedRanked = [...rankedMembers].sort(
+    (a, b) => b.routeDistanceMeters - a.routeDistanceMeters
+  );
 
   const self = rankedMembers.find((m) => m.isCurrentUser);
   const selfDeviation = self?.offRouteMeters ?? 0;
@@ -412,12 +440,12 @@ function evaluateRoomSafety(
     maxAllowedMeters: routeConfig.maxStragglerDistanceMeters,
   };
 
-  if (sorted.length >= 2) {
-    const designatedSweeper = sorted.find(
-      (m) => m.isSweeper && m.id !== sorted[sorted.length - 1].id
+  if (sortedRanked.length >= 2) {
+    const designatedSweeper = sortedRanked.find(
+      (m) => m.isSweeper && m.id !== sortedRanked[sortedRanked.length - 1].id
     );
-    const aheadMember = designatedSweeper ?? sorted[sorted.length - 2];
-    const trailingMember = sorted[sorted.length - 1];
+    const aheadMember = designatedSweeper ?? sortedRanked[sortedRanked.length - 2];
+    const trailingMember = sortedRanked[sortedRanked.length - 1];
     const gapMeters = Math.max(
       0,
       aheadMember.routeDistanceMeters - trailingMember.routeDistanceMeters
@@ -753,6 +781,7 @@ export default function App() {
   const [isRecordingVoice, setIsRecordingVoice] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [playingMessageId, setPlayingMessageId] = useState<string | null>(null);
+  const [voiceStatusMessage, setVoiceStatusMessage] = useState<string | null>(null);
 
   const [isPickingDestinationOnMap, setIsPickingDestinationOnMap] = useState(false);
   const [isPickingCheckpointOnMap, setIsPickingCheckpointOnMap] = useState(false);
@@ -772,8 +801,11 @@ export default function App() {
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<BlobPart[]>([]);
+  const recordedMimeTypeRef = useRef<string>('audio/webm');
+  const voiceStartMsRef = useRef<number>(0);
   const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
   const playbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const voiceErrorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastTelemetrySentMsRef = useRef<number>(0);
   const lastTelemetryFixRef = useRef<LatLngPoint | null>(null);
   const lastSyncedRouteSigRef = useRef<string>('');
@@ -2491,47 +2523,170 @@ export default function App() {
     ]);
   };
 
+  const showVoiceStatus = (msg: string) => {
+    setVoiceStatusMessage(msg);
+    if (voiceErrorTimerRef.current) {
+      clearTimeout(voiceErrorTimerRef.current);
+    }
+    voiceErrorTimerRef.current = setTimeout(() => {
+      setVoiceStatusMessage((prev) => (prev === msg ? null : prev));
+    }, 4500);
+  };
+
+  useEffect(() => {
+    if (!isRecordingVoice) return;
+    const id = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - voiceStartMsRef.current) / 1000);
+      setRecordingSeconds(elapsed);
+      if (elapsed >= 28) {
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+          mediaRecorderRef.current.stop();
+        }
+      }
+    }, 500);
+    return () => clearInterval(id);
+  }, [isRecordingVoice]);
+
+  const blobToAudioDataUrl = (blob: Blob): Promise<string | undefined> =>
+    new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const res = typeof reader.result === 'string' ? reader.result : '';
+        resolve(res.startsWith('data:audio/') ? res : undefined);
+      };
+      reader.onerror = () => resolve(undefined);
+      reader.readAsDataURL(blob);
+    });
+
   const handleStartVoiceRecord = async () => {
     if (isRecordingVoice) return;
+    setVoiceStatusMessage(null);
     setRecordingSeconds(0);
-    setIsRecordingVoice(true);
     audioChunksRef.current = [];
+
+    if (
+      typeof navigator === 'undefined' ||
+      !navigator.mediaDevices?.getUserMedia ||
+      typeof MediaRecorder === 'undefined'
+    ) {
+      showVoiceStatus('Browser/perangkat tidak mendukung rekaman audio mikrofon.');
+      return;
+    }
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const recorder = new MediaRecorder(stream);
+      const preferredTypes = [
+        'audio/mp4',
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/ogg;codecs=opus',
+      ];
+      const chosenMime =
+        preferredTypes.find(
+          (t) =>
+            typeof MediaRecorder.isTypeSupported === 'function' &&
+            MediaRecorder.isTypeSupported(t)
+        ) ?? '';
+      recordedMimeTypeRef.current = chosenMime || 'audio/webm';
+
+      const recorderOptions: MediaRecorderOptions = {
+        audioBitsPerSecond: 24000,
+      };
+      if (chosenMime) {
+        recorderOptions.mimeType = chosenMime;
+      }
+
+      const recorder = new MediaRecorder(stream, recorderOptions);
+      recordedMimeTypeRef.current =
+        recorder.mimeType || recordedMimeTypeRef.current;
+
       recorder.ondataavailable = (ev) => {
-        if (ev.data.size > 0) audioChunksRef.current.push(ev.data);
+        if (ev.data && ev.data.size > 0) {
+          audioChunksRef.current.push(ev.data);
+        }
       };
-      recorder.onstop = () => {
+      recorder.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop());
-        const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-        const url = blob.size > 0 ? URL.createObjectURL(blob) : undefined;
-        finalizeVoiceMessage(url);
+        const elapsedSec = Math.max(
+          1,
+          Math.round((Date.now() - voiceStartMsRef.current) / 1000)
+        );
+        const rawMime =
+          recordedMimeTypeRef.current.split(';')[0] || 'audio/webm';
+        const blob = new Blob(audioChunksRef.current, { type: rawMime });
+        audioChunksRef.current = [];
+        mediaRecorderRef.current = null;
+
+        if (blob.size < 400) {
+          setIsRecordingVoice(false);
+          setRecordingSeconds(0);
+          showVoiceStatus(
+            'Rekaman suara terlalu singkat atau kosong. Tahan tombol lebih lama.'
+          );
+          return;
+        }
+
+        const dataUrl = await blobToAudioDataUrl(blob);
+        if (dataUrl && dataUrl.length > 345_000) {
+          setIsRecordingVoice(false);
+          setRecordingSeconds(0);
+          showVoiceStatus(
+            'Rekaman terlalu panjang (maks 28 detik). Ulangi dengan pesan lebih singkat.'
+          );
+          return;
+        }
+
+        const localObjectUrl = URL.createObjectURL(blob);
+        finalizeVoiceMessage(localObjectUrl, dataUrl, elapsedSec);
       };
+
+      voiceStartMsRef.current = Date.now();
+      setIsRecordingVoice(true);
       mediaRecorderRef.current = recorder;
-      recorder.start();
+      recorder.start(250);
     } catch {
       mediaRecorderRef.current = null;
+      setIsRecordingVoice(false);
+      setRecordingSeconds(0);
+      showVoiceStatus(
+        'Izin mikrofon ditolak atau tidak tersedia. Aktifkan izin mikrofon di browser.'
+      );
     }
   };
 
-  const finalizeVoiceMessage = (audioUrl?: string) => {
+  const finalizeVoiceMessage = (
+    localAudioUrl?: string,
+    audioDataUrl?: string,
+    durationSec?: number
+  ) => {
     const self = activeRoom?.members.find((m) => m.isCurrentUser);
-    const dur = Math.max(1, recordingSeconds);
+    const dur = Math.max(1, durationSec ?? recordingSeconds);
     setIsRecordingVoice(false);
     setRecordingSeconds(0);
 
     if (activeRoom?.isSyncedRoom && authUser) {
+      if (!audioDataUrl) {
+        showVoiceStatus('Audio rekaman kosong sehingga tidak dikirim.');
+        return;
+      }
       sendRoomMessage(activeRoom.roomId, {
         id: `voice-${Date.now()}`,
         senderUid: authUser.uid,
         senderName: self?.fullName ?? vehicleProfile.fullName ?? 'Rider',
-        senderVehicle: self?.vehicleDetail ?? vehicleProfile.vehicleDetail ?? 'Kendaraan',
+        senderVehicle:
+          self?.vehicleDetail ?? vehicleProfile.vehicleDetail ?? 'Kendaraan',
         senderAvatarPreset: self?.avatarPreset ?? vehicleProfile.avatarPreset,
         type: 'VOICE',
         textContent: `Pesan Suara PTT (${dur} detik)`,
         voiceDurationSec: dur,
+        voiceAudioDataUrl: audioDataUrl,
       });
+      return;
+    }
+
+    const playableUrl = localAudioUrl ?? audioDataUrl;
+    if (!playableUrl) {
+      showVoiceStatus('Audio rekaman kosong sehingga tidak dikirim.');
       return;
     }
 
@@ -2546,20 +2701,30 @@ export default function App() {
         textContent: 'Pesan Suara Walkie-Talkie',
         timestampLabel: currentClock(),
         voiceDurationSec: dur,
-        voiceAudioUrl: audioUrl,
+        voiceAudioUrl: playableUrl,
         isFromCurrentUser: true,
         senderAvatarPreset: self?.avatarPreset ?? vehicleProfile.avatarPreset,
-        senderAvatarPhotoUrl: self?.avatarPhotoUrl ?? vehicleProfile.avatarPhotoUrl,
+        senderAvatarPhotoUrl:
+          self?.avatarPhotoUrl ?? vehicleProfile.avatarPhotoUrl,
       },
     ]);
   };
 
   const handleStopVoiceRecord = () => {
     if (!isRecordingVoice) return;
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop();
+    if (
+      mediaRecorderRef.current &&
+      mediaRecorderRef.current.state !== 'inactive'
+    ) {
+      try {
+        mediaRecorderRef.current.stop();
+      } catch {
+        setIsRecordingVoice(false);
+        setRecordingSeconds(0);
+      }
     } else {
-      finalizeVoiceMessage(undefined);
+      setIsRecordingVoice(false);
+      setRecordingSeconds(0);
     }
   };
 
@@ -2578,38 +2743,24 @@ export default function App() {
       return;
     }
 
-    setPlayingMessageId(msg.id);
-    if (msg.voiceAudioUrl) {
-      const audio = new Audio(msg.voiceAudioUrl);
-      audioPlayerRef.current = audio;
-      audio.onended = () => setPlayingMessageId(null);
-      audio.play().catch(() => setPlayingMessageId(null));
-    } else {
-      try {
-        const AudioCtx =
-          window.AudioContext ||
-          (window as unknown as { webkitAudioContext: typeof AudioContext })
-            .webkitAudioContext;
-        if (AudioCtx) {
-          const ctx = new AudioCtx();
-          const osc = ctx.createOscillator();
-          const gain = ctx.createGain();
-          osc.type = 'sine';
-          osc.frequency.setValueAtTime(520, ctx.currentTime);
-          gain.gain.setValueAtTime(0.05, ctx.currentTime);
-          gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.18);
-          osc.connect(gain);
-          gain.connect(ctx.destination);
-          osc.start();
-          osc.stop(ctx.currentTime + 0.18);
-        }
-      } catch {
-        // Ignore AudioContext restriction
-      }
-      playbackTimeoutRef.current = setTimeout(() => {
-        setPlayingMessageId(null);
-      }, (msg.voiceDurationSec || 2) * 1000);
+    if (!msg.voiceAudioUrl) {
+      showVoiceStatus('File audio untuk pesan suara ini tidak tersedia.');
+      setPlayingMessageId(null);
+      return;
     }
+
+    setPlayingMessageId(msg.id);
+    const audio = new Audio(msg.voiceAudioUrl);
+    audioPlayerRef.current = audio;
+    audio.onended = () => setPlayingMessageId(null);
+    audio.onerror = () => {
+      setPlayingMessageId(null);
+      showVoiceStatus('Gagal memutar rekaman suara. Format audio tidak didukung browser.');
+    };
+    audio.play().catch(() => {
+      setPlayingMessageId(null);
+      showVoiceStatus('Browser memblokir pemutaran audio otomatis. Ketuk tombol putar lagi.');
+    });
   };
 
   const handleUpdateOwnCondition = (status: MemberConditionStatus) => {
@@ -2682,6 +2833,7 @@ export default function App() {
     const updated = activeRoom.members.map((m) => ({
       ...m,
       isSweeper: m.id === memberId,
+      isAutoSweeper: false,
     }));
     setMessages((prev) => [
       ...prev,
@@ -4023,6 +4175,7 @@ export default function App() {
                         isRecordingVoice={isRecordingVoice}
                         recordingSeconds={recordingSeconds}
                         playingMessageId={playingMessageId}
+                        voiceStatusMessage={voiceStatusMessage}
                         isPickingDestinationOnMap={isPickingDestinationOnMap}
                         isPickingCheckpointOnMap={isPickingCheckpointOnMap}
                         pendingCheckpointName={pendingCheckpointName}
@@ -4107,6 +4260,14 @@ export default function App() {
                           tripHistory[0] ??
                           null
                         }
+                        currentUserName={
+                          vehicleProfile.fullName.trim() ||
+                          authUser?.displayName?.trim() ||
+                          localUserName?.trim() ||
+                          undefined
+                        }
+                        currentUserAvatarPreset={vehicleProfile.avatarPreset}
+                        currentUserAvatarPhotoUrl={vehicleProfile.avatarPhotoUrl}
                         autoFinishNotice={autoFinishNotice}
                         onDismissAutoFinishNotice={() => setAutoFinishNotice(null)}
                         onBack={() => {

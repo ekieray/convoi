@@ -1,5 +1,5 @@
 import { getTomTomTileUrl } from '../services/tomtomMapService';
-import { TripCardTheme, TripHistoryRecord } from '../types/convoy';
+import { AvatarPreset, TripCardTheme, TripHistoryRecord } from '../types/convoy';
 import { projectTripMapViewport } from './geo';
 
 interface RenderTripCardOptions {
@@ -7,6 +7,9 @@ interface RenderTripCardOptions {
   theme: TripCardTheme;
   customPhotoUrl?: string;
   defaultScenicPhotoUrl: string;
+  currentUserName?: string;
+  currentUserAvatarPreset?: AvatarPreset;
+  currentUserAvatarPhotoUrl?: string;
 }
 
 function loadImageElement(src: string): Promise<HTMLImageElement | null> {
@@ -40,11 +43,55 @@ function drawRoundedRectPath(
   ctx.closePath();
 }
 
+function drawWrappedText(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  startY: number,
+  maxWidth: number,
+  lineHeight: number,
+  maxLines: number
+) {
+  const words = text.split(' ');
+  const lines: string[] = [];
+  let current = '';
+
+  for (const word of words) {
+    const testLine = current ? `${current} ${word}` : word;
+    if (ctx.measureText(testLine).width <= maxWidth) {
+      current = testLine;
+    } else {
+      if (current) lines.push(current);
+      current = word;
+      if (lines.length === maxLines - 1) break;
+    }
+  }
+  if (current && lines.length < maxLines) {
+    lines.push(current);
+  }
+  if (lines.length === maxLines) {
+    let last = lines[maxLines - 1];
+    while (last.length > 3 && ctx.measureText(`${last}...`).width > maxWidth) {
+      last = last.slice(0, -1);
+    }
+    if (text.length > lines.join(' ').length) {
+      lines[maxLines - 1] = `${last}...`;
+    }
+  }
+
+  lines.forEach((line, idx) => {
+    ctx.fillText(line, x, startY + idx * lineHeight, maxWidth);
+  });
+}
+
 export async function renderTripCardPngBlob({
   trip,
   theme,
   customPhotoUrl,
   defaultScenicPhotoUrl,
+  currentUserName,
+  currentUserAvatarPreset,
+  currentUserAvatarPhotoUrl,
 }: RenderTripCardOptions): Promise<Blob> {
   const width = 1080;
   const height = 1350;
@@ -254,23 +301,45 @@ export async function renderTripCardPngBlob({
   const leader =
     trip.participants.find((p) => p.role === 'TOUR_LEADER') ??
     trip.participants[0];
+  const trimmedLoginName = currentUserName?.trim();
+  const matchedSelf = trimmedLoginName
+    ? trip.participants.find(
+        (p) => p.fullName.trim().toLowerCase() === trimmedLoginName.toLowerCase()
+      )
+    : undefined;
+  const headerDisplayName = trimmedLoginName || leader?.fullName || 'Rider KonvoiKu';
+  const headerAvatarPreset =
+    currentUserAvatarPreset ??
+    matchedSelf?.avatarPreset ??
+    leader?.avatarPreset ??
+    'HELMET_TOURING';
+  const headerAvatarPhotoUrl =
+    currentUserAvatarPhotoUrl ??
+    matchedSelf?.avatarPhotoUrl ??
+    (trimmedLoginName ? undefined : leader?.avatarPhotoUrl);
+  const headerRoleLabel =
+    trip.userRole === 'TOUR_LEADER'
+      ? 'Tour Leader'
+      : matchedSelf?.isSweeper
+        ? 'Sweeper'
+        : 'Anggota Konvoi';
 
-  if (leader) {
+  {
     const avRadius = 40;
     const avCx = width - pad - avRadius;
     const avCy = pad + 36;
 
-    const leaderImg = leader.avatarPhotoUrl
-      ? await loadImageElement(leader.avatarPhotoUrl)
+    const avatarImg = headerAvatarPhotoUrl
+      ? await loadImageElement(headerAvatarPhotoUrl)
       : null;
 
     ctx.save();
     ctx.beginPath();
     ctx.arc(avCx, avCy, avRadius, 0, Math.PI * 2);
     ctx.clip();
-    if (leaderImg) {
+    if (avatarImg) {
       ctx.drawImage(
-        leaderImg,
+        avatarImg,
         avCx - avRadius,
         avCy - avRadius,
         avRadius * 2,
@@ -278,9 +347,9 @@ export async function renderTripCardPngBlob({
       );
     } else {
       ctx.fillStyle =
-        leader.avatarPreset === 'HELMET_SPORT'
+        headerAvatarPreset === 'HELMET_SPORT'
           ? '#1D4ED8'
-          : leader.avatarPreset === 'PILOT_CLASSIC'
+          : headerAvatarPreset === 'PILOT_CLASSIC'
             ? '#0F766E'
             : '#EA580C';
       ctx.fillRect(avCx - avRadius, avCy - avRadius, avRadius * 2, avRadius * 2);
@@ -289,7 +358,7 @@ export async function renderTripCardPngBlob({
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(
-        (leader.fullName[0] || 'L').toUpperCase(),
+        (headerDisplayName[0] || 'R').toUpperCase(),
         avCx,
         avCy + 2
       );
@@ -306,11 +375,11 @@ export async function renderTripCardPngBlob({
     ctx.textBaseline = 'alphabetic';
     ctx.fillStyle = primaryColor;
     ctx.font = '700 28px "Plus Jakarta Sans", system-ui, sans-serif';
-    ctx.fillText(leader.fullName, avCx - avRadius - 20, pad + 32);
+    ctx.fillText(headerDisplayName, avCx - avRadius - 20, pad + 32, width - pad * 2 - 360);
 
     ctx.fillStyle = isLight ? '#1D4ED8' : '#FDBA74';
     ctx.font = '600 22px "Plus Jakarta Sans", system-ui, sans-serif';
-    ctx.fillText('Tour Leader', avCx - avRadius - 20, pad + 64);
+    ctx.fillText(headerRoleLabel, avCx - avRadius - 20, pad + 64);
     ctx.textAlign = 'left';
   }
 
@@ -424,33 +493,30 @@ export async function renderTripCardPngBlob({
     const x = pad + colWidth * idx;
     ctx.fillStyle = secondaryColor;
     ctx.font = '500 25px "Plus Jakarta Sans", system-ui, sans-serif';
-    ctx.fillText(item.label, x, 1085);
+    ctx.fillText(item.label, x, 1062);
 
     ctx.fillStyle = primaryColor;
     ctx.font = '700 40px "JetBrains Mono", monospace';
-    ctx.fillText(item.value, x, 1140);
+    ctx.fillText(item.value, x, 1116);
   });
 
   // Divider & Footer
   ctx.strokeStyle = borderColor;
   ctx.lineWidth = 2;
   ctx.beginPath();
-  ctx.moveTo(pad, 1190);
-  ctx.lineTo(width - pad, 1190);
+  ctx.moveTo(pad, 1166);
+  ctx.lineTo(width - pad, 1166);
   ctx.stroke();
 
   ctx.fillStyle = secondaryColor;
-  ctx.font = '500 26px "Plus Jakarta Sans", system-ui, sans-serif';
-  const names = trip.participants
-    .slice(0, 4)
-    .map((p) => p.fullName)
-    .join(', ');
-  ctx.fillText(
-    `${trip.participants.length} Peserta Konvoi · ${names}`,
-    pad,
-    1248,
-    width - pad * 2
-  );
+  ctx.font = '500 25px "Plus Jakarta Sans", system-ui, sans-serif';
+  const participantNames = trip.participants
+    .map((p) => p.fullName.trim())
+    .filter(Boolean);
+  const membersText = `${Math.max(1, participantNames.length)} Anggota Ikut: ${
+    participantNames.length > 0 ? participantNames.join(', ') : headerDisplayName
+  }`;
+  drawWrappedText(ctx, membersText, pad, 1214, width - pad * 2, 34, 3);
 
   return new Promise((resolve, reject) => {
     canvas.toBlob(

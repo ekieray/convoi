@@ -978,6 +978,8 @@ class FirestoreConvoyRepository {
                         textContent = doc.getString("textContent") ?: "",
                         timestampLabel = doc.getString("timestampLabel") ?: "Baru saja",
                         voiceDurationSec = (doc.getLong("voiceDurationSec") ?: 0L).toInt(),
+                        voiceAudioDataUrl = doc.getString("voiceAudioDataUrl")
+                            ?.takeIf { it.startsWith("data:audio/") && it.length <= 350_000 },
                         isFromCurrentUser = senderUid == currentUid,
                         senderAvatarPreset = runCatching {
                             AvatarPreset.valueOf(doc.getString("senderAvatarPreset") ?: "HELMET_TOURING")
@@ -1082,23 +1084,26 @@ class FirestoreConvoyRepository {
 
     fun sendMessage(roomId: String, senderUid: String, msg: RoomMessage) {
         val db = getFirestore() ?: return
+        val payload = hashMapOf<String, Any>(
+            "id" to msg.id,
+            "roomId" to roomId,
+            "senderUid" to senderUid,
+            "senderName" to msg.senderName.take(80),
+            "senderVehicle" to msg.senderVehicle.take(80),
+            "senderAvatarPreset" to msg.senderAvatarPreset.name,
+            "type" to msg.type.name,
+            "textContent" to msg.textContent.take(500),
+            "voiceDurationSec" to msg.voiceDurationSec.coerceIn(0, 600),
+            "timestampLabel" to msg.timestampLabel.take(32),
+            "createdAt" to FieldValue.serverTimestamp()
+        )
+        val audioData = msg.voiceAudioDataUrl
+        if (!audioData.isNullOrBlank() && audioData.startsWith("data:audio/") && audioData.length <= 345_000) {
+            payload["voiceAudioDataUrl"] = audioData
+        }
         db.collection("rooms").document(roomId)
             .collection("messages").document(msg.id)
-            .set(
-                mapOf(
-                    "id" to msg.id,
-                    "roomId" to roomId,
-                    "senderUid" to senderUid,
-                    "senderName" to msg.senderName.take(80),
-                    "senderVehicle" to msg.senderVehicle.take(80),
-                    "senderAvatarPreset" to msg.senderAvatarPreset.name,
-                    "type" to msg.type.name,
-                    "textContent" to msg.textContent.take(500),
-                    "voiceDurationSec" to msg.voiceDurationSec.coerceIn(0, 600),
-                    "timestampLabel" to msg.timestampLabel.take(32),
-                    "createdAt" to FieldValue.serverTimestamp()
-                )
-            )
+            .set(payload)
     }
 
     fun triggerSos(roomId: String, sos: SosEmergencyState, uid: String) {
@@ -1244,6 +1249,19 @@ class FirestoreConvoyRepository {
             ""
         }
 
+        val compactParticipants = record.participants.take(40).map { p ->
+            hashMapOf<String, Any>(
+                "id" to p.id.take(128),
+                "fullName" to p.fullName.trim().ifBlank { "Rider" }.take(80),
+                "vehicleType" to p.vehicleType.name,
+                "vehicleDetail" to p.vehicleDetail.take(80),
+                "licensePlate" to p.licensePlate.take(32),
+                "role" to p.role.name,
+                "isSweeper" to p.isSweeper,
+                "avatarPreset" to p.avatarPreset.name
+            )
+        }
+
         runCatching {
             val data = hashMapOf<String, Any>(
                 "id" to safeId,
@@ -1261,6 +1279,7 @@ class FirestoreConvoyRepository {
                 "destinationName" to record.destinationName.take(120),
                 "destinationAddress" to record.destinationAddress.take(240),
                 "encodedPolyline" to encodedPolyline,
+                "participants" to compactParticipants,
                 "createdAt" to FieldValue.serverTimestamp()
             )
             db.collection("users").document(uid)
@@ -1289,6 +1308,28 @@ class FirestoreConvoyRepository {
                     } else {
                         emptyList()
                     }
+                    val rawParticipants = doc.get("participants") as? List<*>
+                    val restoredParticipants = rawParticipants.orEmpty().mapIndexedNotNull { idx, item ->
+                        val m = item as? Map<*, *> ?: return@mapIndexedNotNull null
+                        val name = (m["fullName"] as? String)?.trim().orEmpty()
+                        if (name.isEmpty()) return@mapIndexedNotNull null
+                        TripParticipantSummary(
+                            id = (m["id"] as? String).orEmpty().ifBlank { "p-$idx" },
+                            fullName = name,
+                            vehicleType = runCatching {
+                                VehicleType.valueOf((m["vehicleType"] as? String) ?: "MOTOR")
+                            }.getOrDefault(VehicleType.MOTOR),
+                            vehicleDetail = (m["vehicleDetail"] as? String).orEmpty(),
+                            licensePlate = (m["licensePlate"] as? String).orEmpty(),
+                            role = runCatching {
+                                UserRole.valueOf((m["role"] as? String) ?: "MEMBER")
+                            }.getOrDefault(UserRole.MEMBER),
+                            isSweeper = (m["isSweeper"] as? Boolean) == true,
+                            avatarPreset = runCatching {
+                                AvatarPreset.valueOf((m["avatarPreset"] as? String) ?: "HELMET_TOURING")
+                            }.getOrDefault(AvatarPreset.HELMET_TOURING)
+                        )
+                    }
                     val record = TripHistoryRecord(
                         id = doc.getString("id") ?: doc.id,
                         roomId = doc.getString("roomId") ?: "KNV-0000",
@@ -1307,7 +1348,7 @@ class FirestoreConvoyRepository {
                         destinationAddress = doc.getString("destinationAddress") ?: "",
                         waypoints = waypoints,
                         visitedCheckpoints = emptyList(),
-                        participants = emptyList()
+                        participants = restoredParticipants
                     )
                     createdMs to record
                 }

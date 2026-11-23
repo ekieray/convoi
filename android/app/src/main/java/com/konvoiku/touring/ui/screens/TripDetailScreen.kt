@@ -90,6 +90,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.konvoiku.touring.data.TomTomApiService
+import com.konvoiku.touring.model.AvatarPreset
 import com.konvoiku.touring.model.TripCardTheme
 import com.konvoiku.touring.model.TripHistoryRecord
 import com.konvoiku.touring.model.UserRole
@@ -114,6 +115,9 @@ import kotlin.math.roundToInt
 @Composable
 fun TripDetailScreen(
     trip: TripHistoryRecord?,
+    currentUserName: String? = null,
+    currentUserAvatarPreset: AvatarPreset? = null,
+    currentUserAvatarPhotoUri: String? = null,
     autoFinishNotice: String? = null,
     onDismissAutoFinishNotice: () -> Unit = {},
     onBack: () -> Unit
@@ -148,7 +152,15 @@ fun TripDetailScreen(
             coroutineScope.launch {
                 isRenderingCard = true
                 runCatching {
-                    val file = renderTripCardBitmapToFile(context, activeTrip, cardTheme, customPhotoUri)
+                    val file = renderTripCardBitmapToFile(
+                        context = context,
+                        trip = activeTrip,
+                        theme = cardTheme,
+                        customPhotoUri = customPhotoUri,
+                        currentUserName = currentUserName,
+                        currentUserAvatarPreset = currentUserAvatarPreset,
+                        currentUserAvatarPhotoUri = currentUserAvatarPhotoUri
+                    )
                     context.contentResolver.openOutputStream(uri)?.use { out ->
                         file.inputStream().use { input -> input.copyTo(out) }
                     }
@@ -313,7 +325,10 @@ fun TripDetailScreen(
                         StravaStyleTripShareCard(
                             trip = trip,
                             theme = cardTheme,
-                            customPhotoUri = customPhotoUri
+                            customPhotoUri = customPhotoUri,
+                            currentUserName = currentUserName,
+                            currentUserAvatarPreset = currentUserAvatarPreset,
+                            currentUserAvatarPhotoUri = currentUserAvatarPhotoUri
                         )
 
                         // Theme Customization Chips
@@ -391,7 +406,10 @@ fun TripDetailScreen(
                                             context = context,
                                             trip = trip,
                                             theme = cardTheme,
-                                            customPhotoUri = customPhotoUri
+                                            customPhotoUri = customPhotoUri,
+                                            currentUserName = currentUserName,
+                                            currentUserAvatarPreset = currentUserAvatarPreset,
+                                            currentUserAvatarPhotoUri = currentUserAvatarPhotoUri
                                         )
                                         shareTripCardImage(context, pngFile, trip)
                                     }.onFailure {
@@ -835,7 +853,16 @@ fun TripDetailScreen(
                 )
             }
 
-            items(trip.participants, key = { it.id }) { participant ->
+            if (trip.participants.isEmpty()) {
+                item {
+                    Text(
+                        text = "Daftar anggota peserta tidak tercatat pada riwayat ini.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            } else {
+                items(trip.participants, key = { it.id }) { participant ->
                 Surface(
                     shape = RoundedCornerShape(14.dp),
                     color = MaterialTheme.colorScheme.surface,
@@ -874,6 +901,7 @@ fun TripDetailScreen(
                         )
                     }
                 }
+            }
             }
 
             item { Spacer(modifier = Modifier.height(24.dp)) }

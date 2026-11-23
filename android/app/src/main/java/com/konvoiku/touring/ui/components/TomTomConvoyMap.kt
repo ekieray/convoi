@@ -530,8 +530,9 @@ private fun createMemberDrawable(
     val prefix = when {
         pin.isSosBeacon -> "SOS · "
         member.isActingLeader && member.role != UserRole.TOUR_LEADER -> "Plt.Ldr · "
+        member.isCoLeader && member.isSweeper -> if (member.isAutoSweeper) "Co/Swp* · " else "Co/Swp · "
         member.isCoLeader -> "Co-Ldr · "
-        member.isSweeper -> "Swp · "
+        member.isSweeper -> if (member.isAutoSweeper) "Swp(Auto) · " else "Swp · "
         else -> ""
     }
     val suffix = if (member.isCurrentUser) " (Anda)" else ""
@@ -541,7 +542,7 @@ private fun createMemberDrawable(
     val pillBg = when {
         pin.isSosBeacon -> 0xFF991B1B.toInt()
         pin.isOffRoute -> 0xFFDC2626.toInt()
-        pin.isStraggler -> 0xFFB45309.toInt()
+        pin.isStraggler || member.isSweeper -> 0xFFB45309.toInt()
         member.isActingLeader && member.role != UserRole.TOUR_LEADER -> 0xFF7C3AED.toInt()
         member.isCoLeader -> 0xFF0F766E.toInt()
         pin.isSelected -> 0xFF1D4ED8.toInt()
@@ -551,6 +552,7 @@ private fun createMemberDrawable(
         pin.isSosBeacon ||
         pin.isOffRoute ||
         pin.isStraggler ||
+        member.isSweeper ||
         pin.isSelected ||
         (member.isActingLeader && member.role != UserRole.TOUR_LEADER) ||
         member.isCoLeader

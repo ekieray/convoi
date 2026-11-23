@@ -1,11 +1,18 @@
 package com.konvoiku.touring.viewmodel
 
+import android.Manifest
 import android.app.Activity
 import android.app.Application
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.AudioAttributes
+import android.media.MediaPlayer
+import android.media.MediaRecorder
 import android.net.Uri
+import android.os.Build
+import android.util.Base64
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
@@ -51,6 +58,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.io.File
+import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -72,6 +81,11 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
         .getSharedPreferences("konvoiku_profiles", Context.MODE_PRIVATE)
 
     private var voiceTimerJob: Job? = null
+    private var voiceStatusClearJob: Job? = null
+    private var voiceRecorder: MediaRecorder? = null
+    private var voiceOutputFile: File? = null
+    private var voiceRecordingStartMs: Long = 0L
+    private var voicePlayer: MediaPlayer? = null
     private var gpsJob: Job? = null
     private var presenceJob: Job? = null
     private var roomUnsubscribe: (() -> Unit)? = null
@@ -205,6 +219,10 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
         adminMonitorUnsubscribe?.invoke()
         presenceJob?.cancel()
         gpsJob?.cancel()
+        voiceTimerJob?.cancel()
+        voiceStatusClearJob?.cancel()
+        releaseVoiceRecorder(deleteFile = true)
+        stopVoicePlayback()
     }
 
     fun onLocationPermissionResult(granted: Boolean) {
@@ -1335,6 +1353,9 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
         roomUnsubscribe = null
         recordedTrackPoints.clear()
         lastComputedRouteSig = ""
+        voiceTimerJob?.cancel()
+        releaseVoiceRecorder(deleteFile = true)
+        stopVoicePlayback()
         stopAdminMonitoring()
         syncRepo.signOutAuth()
         clearActiveSession()
@@ -2318,14 +2339,115 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.update { it.copy(messages = it.messages + message) }
     }
 
+    private fun showVoiceStatus(message: String) {
+        _uiState.update { it.copy(voiceStatusMessage = message) }
+        voiceStatusClearJob?.cancel()
+        voiceStatusClearJob = viewModelScope.launch {
+            delay(4500L)
+            _uiState.update { cur ->
+                if (cur.voiceStatusMessage == message) cur.copy(voiceStatusMessage = null) else cur
+            }
+        }
+    }
+
+    private fun releaseVoiceRecorder(deleteFile: Boolean) {
+        val recorder = voiceRecorder
+        voiceRecorder = null
+        if (recorder != null) {
+            runCatching { recorder.stop() }
+            runCatching { recorder.reset() }
+            runCatching { recorder.release() }
+        }
+        if (deleteFile) {
+            voiceOutputFile?.let { runCatching { it.delete() } }
+            voiceOutputFile = null
+        }
+    }
+
+    private fun stopVoicePlayback() {
+        val player = voicePlayer
+        voicePlayer = null
+        if (player != null) {
+            runCatching {
+                if (player.isPlaying) player.stop()
+            }
+            runCatching { player.release() }
+        }
+        _uiState.update { it.copy(playingMessageId = null) }
+    }
+
     fun startVoiceRecording() {
         if (_uiState.value.isRecordingVoice) return
+        val appContext = getApplication<Application>().applicationContext
+        val hasPermission = ContextCompat.checkSelfPermission(
+            appContext,
+            Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!hasPermission) {
+            showVoiceStatus("Izin mikrofon diperlukan untuk mengirim pesan Walkie-Talkie.")
+            return
+        }
+
+        stopVoicePlayback()
+        releaseVoiceRecorder(deleteFile = true)
+        _uiState.update { it.copy(voiceStatusMessage = null) }
+
+        val folder = File(appContext.cacheDir, "voice_ptt").apply { mkdirs() }
+        val outFile = File(folder, "voice_rec_${UUID.randomUUID()}.m4a")
+        val recorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            MediaRecorder(appContext)
+        } else {
+            @Suppress("DEPRECATION")
+            MediaRecorder()
+        }
+
+        val started = runCatching {
+            recorder.setAudioSource(MediaRecorder.AudioSource.MIC)
+            recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            recorder.setAudioChannels(1)
+            recorder.setAudioSamplingRate(16_000)
+            recorder.setAudioEncodingBitRate(24_000)
+            recorder.setMaxDuration(30_000)
+            recorder.setMaxFileSize(220_000L)
+            recorder.setOutputFile(outFile.absolutePath)
+            recorder.setOnInfoListener { _, what, _ ->
+                if (what == MediaRecorder.MEDIA_RECORDER_INFO_MAX_DURATION_REACHED ||
+                    what == MediaRecorder.MEDIA_RECORDER_INFO_MAX_FILESIZE_REACHED
+                ) {
+                    viewModelScope.launch(Dispatchers.Main) {
+                        stopAndSendVoiceRecording()
+                    }
+                }
+            }
+            recorder.prepare()
+            recorder.start()
+        }
+
+        if (started.isFailure) {
+            runCatching { recorder.reset() }
+            runCatching { recorder.release() }
+            runCatching { outFile.delete() }
+            showVoiceStatus("Gagal mengaktifkan mikrofon perangkat.")
+            return
+        }
+
+        voiceRecorder = recorder
+        voiceOutputFile = outFile
+        voiceRecordingStartMs = System.currentTimeMillis()
         _uiState.update { it.copy(isRecordingVoice = true, recordingSeconds = 0) }
         voiceTimerJob?.cancel()
         voiceTimerJob = viewModelScope.launch {
             while (isActive) {
                 delay(1000L)
-                _uiState.update { it.copy(recordingSeconds = it.recordingSeconds + 1) }
+                val nextSec = ((System.currentTimeMillis() - voiceRecordingStartMs) / 1000L)
+                    .toInt()
+                    .coerceAtLeast(1)
+                _uiState.update { it.copy(recordingSeconds = nextSec) }
+                if (nextSec >= 28) {
+                    stopAndSendVoiceRecording()
+                    break
+                }
             }
         }
     }
@@ -2333,47 +2455,171 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
     fun stopAndSendVoiceRecording(filePath: String? = null) {
         if (!_uiState.value.isRecordingVoice) return
         voiceTimerJob?.cancel()
-        val duration = _uiState.value.recordingSeconds.coerceAtLeast(1)
-        val room = _uiState.value.activeRoom
-        val self = room?.members?.find { it.isCurrentUser }
-        val profile = _uiState.value.vehicleProfile
+        val elapsedSec = ((System.currentTimeMillis() - voiceRecordingStartMs) / 1000.0)
+            .roundToInt()
+            .coerceAtLeast(_uiState.value.recordingSeconds)
+            .coerceAtLeast(1)
 
-        val voiceMsg = RoomMessage(
-            id = "voice-${UUID.randomUUID()}",
-            senderId = self?.id ?: "self",
-            senderName = self?.fullName ?: "Anda",
-            senderVehicle = self?.vehicleDetail ?: "Kendaraan",
-            type = ChatMessageType.VOICE,
-            textContent = "Pesan Suara Walkie-Talkie (${duration} dtk)",
-            timestampLabel = currentClockLabel(),
-            voiceDurationSec = duration,
-            voiceFilePath = filePath,
-            isFromCurrentUser = true,
-            senderAvatarPreset = self?.avatarPreset ?: profile.avatarPreset,
-            senderAvatarPhotoUri = self?.avatarPhotoUri ?: profile.avatarPhotoUri
-        )
+        val recorder = voiceRecorder
+        voiceRecorder = null
+        val stopOk = if (recorder != null) {
+            val res = runCatching { recorder.stop() }
+            runCatching { recorder.reset() }
+            runCatching { recorder.release() }
+            res.isSuccess
+        } else {
+            !filePath.isNullOrBlank()
+        }
 
-        val uid = syncRepo.currentUid()
-        if (room != null && room.isSyncedRoom && uid != null) {
-            syncRepo.sendMessage(room.roomId, uid, voiceMsg)
-            _uiState.update { it.copy(isRecordingVoice = false, recordingSeconds = 0) }
+        val capturedFile = filePath?.let { File(it) } ?: voiceOutputFile
+        voiceOutputFile = null
+
+        _uiState.update { it.copy(isRecordingVoice = false, recordingSeconds = 0) }
+
+        if (!stopOk || capturedFile == null || !capturedFile.exists() || capturedFile.length() < 512L) {
+            capturedFile?.let { runCatching { it.delete() } }
+            showVoiceStatus("Rekaman terlalu singkat. Tahan tombol minimal 1 detik.")
             return
         }
 
-        _uiState.update {
-            it.copy(
-                isRecordingVoice = false,
-                recordingSeconds = 0,
-                messages = it.messages + voiceMsg
+        val room = _uiState.value.activeRoom
+        val self = room?.members?.find { it.isCurrentUser }
+        val profile = _uiState.value.vehicleProfile
+        val messageId = "voice-${UUID.randomUUID()}"
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val bytes = runCatching { capturedFile.readBytes() }.getOrNull()
+            if (bytes == null || bytes.size < 512) {
+                withContext(Dispatchers.Main) {
+                    showVoiceStatus("File audio rekaman tidak terbaca.")
+                }
+                return@launch
+            }
+            val b64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+            val dataUrl = "data:audio/mp4;base64,$b64"
+            if (dataUrl.length > 345_000) {
+                runCatching { capturedFile.delete() }
+                withContext(Dispatchers.Main) {
+                    showVoiceStatus("Rekaman terlalu panjang (maks 28 detik). Coba lebih singkat.")
+                }
+                return@launch
+            }
+
+            val voiceMsg = RoomMessage(
+                id = messageId,
+                senderId = self?.id ?: "self",
+                senderName = self?.fullName ?: profile.fullName.ifBlank { "Anda" },
+                senderVehicle = self?.vehicleDetail ?: profile.displayVehicleLabel,
+                type = ChatMessageType.VOICE,
+                textContent = "Pesan Suara PTT ($elapsedSec detik)",
+                timestampLabel = currentClockLabel(),
+                voiceDurationSec = elapsedSec,
+                voiceFilePath = capturedFile.absolutePath,
+                voiceAudioDataUrl = dataUrl,
+                isFromCurrentUser = true,
+                senderAvatarPreset = self?.avatarPreset ?: profile.avatarPreset,
+                senderAvatarPhotoUri = self?.avatarPhotoUri ?: profile.avatarPhotoUri
             )
+
+            withContext(Dispatchers.Main) {
+                val currentRoom = _uiState.value.activeRoom
+                val uid = syncRepo.currentUid()
+                if (currentRoom != null && currentRoom.isSyncedRoom && uid != null) {
+                    syncRepo.sendMessage(currentRoom.roomId, uid, voiceMsg)
+                } else {
+                    _uiState.update { it.copy(messages = it.messages + voiceMsg) }
+                }
+            }
         }
     }
 
     fun toggleVoicePlayback(messageId: String) {
-        _uiState.update { state ->
-            state.copy(
-                playingMessageId = if (state.playingMessageId == messageId) null else messageId
-            )
+        if (_uiState.value.playingMessageId == messageId) {
+            stopVoicePlayback()
+            return
+        }
+        val msg = _uiState.value.messages.firstOrNull { it.id == messageId } ?: return
+        stopVoicePlayback()
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val appContext = getApplication<Application>().applicationContext
+            val localFile = msg.voiceFilePath?.let { File(it) }?.takeIf { it.exists() && it.length() >= 256L }
+            val playableFile = localFile ?: run {
+                val dataUrl = msg.voiceAudioDataUrl ?: return@run null
+                val commaIdx = dataUrl.indexOf(',')
+                if (!dataUrl.startsWith("data:audio/") || commaIdx <= 0) return@run null
+                val header = dataUrl.substring(0, commaIdx).lowercase(Locale.ROOT)
+                val ext = when {
+                    header.contains("webm") -> "webm"
+                    header.contains("ogg") -> "ogg"
+                    header.contains("mpeg") || header.contains("mp3") -> "mp3"
+                    else -> "m4a"
+                }
+                val safeId = msg.id.replace(Regex("[^a-zA-Z0-9_-]"), "").take(48)
+                    .ifBlank { "clip" }
+                val folder = File(appContext.cacheDir, "voice_ptt").apply { mkdirs() }
+                val cached = File(folder, "voice_play_$safeId.$ext")
+                if (!cached.exists() || cached.length() < 256L) {
+                    val b64 = dataUrl.substring(commaIdx + 1)
+                    val decoded = runCatching { Base64.decode(b64, Base64.DEFAULT) }.getOrNull()
+                        ?: return@run null
+                    if (decoded.size < 256) return@run null
+                    runCatching {
+                        FileOutputStream(cached).use { it.write(decoded) }
+                    }.onFailure {
+                        return@run null
+                    }
+                }
+                cached
+            }
+
+            if (playableFile == null || !playableFile.exists()) {
+                withContext(Dispatchers.Main) {
+                    showVoiceStatus("Rekaman audio tidak tersedia untuk pesan suara ini.")
+                }
+                return@launch
+            }
+
+            withContext(Dispatchers.Main) {
+                val player = MediaPlayer().apply {
+                    setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .build()
+                    )
+                    setOnCompletionListener { mp ->
+                        runCatching { mp.release() }
+                        if (voicePlayer === mp) voicePlayer = null
+                        _uiState.update {
+                            if (it.playingMessageId == messageId) it.copy(playingMessageId = null) else it
+                        }
+                    }
+                    setOnErrorListener { mp, _, _ ->
+                        runCatching { mp.release() }
+                        if (voicePlayer === mp) voicePlayer = null
+                        _uiState.update {
+                            if (it.playingMessageId == messageId) it.copy(playingMessageId = null) else it
+                        }
+                        showVoiceStatus("Gagal memutar audio Walkie-Talkie di perangkat.")
+                        true
+                    }
+                }
+
+                val started = runCatching {
+                    player.setDataSource(playableFile.absolutePath)
+                    player.prepare()
+                    player.start()
+                }
+
+                if (started.isSuccess) {
+                    voicePlayer = player
+                    _uiState.update { it.copy(playingMessageId = messageId, voiceStatusMessage = null) }
+                } else {
+                    runCatching { player.release() }
+                    showVoiceStatus("Format audio tidak dapat diputar oleh perangkat.")
+                }
+            }
         }
     }
 
@@ -2422,7 +2668,10 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
             return
         }
         val updatedMembers = room.members.map { member ->
-            member.copy(isSweeper = member.id == memberId)
+            member.copy(
+                isSweeper = member.id == memberId,
+                isAutoSweeper = false
+            )
         }
         _uiState.update { it.copy(messages = it.messages + sysMsg) }
         recomputeAndCommitRoom(updatedMembers)
@@ -2881,14 +3130,31 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
 
         val sortedByRoute = enriched.sortedByDescending { it.routeDistanceMeters }
         val rankMap = sortedByRoute.mapIndexed { idx, m -> m.id to (idx + 1) }.toMap()
+        val hasManualSweeper = enriched.any { it.isSweeper && !it.isAutoSweeper }
+        val autoSweeperId = if (!hasManualSweeper && sortedByRoute.size >= 2) {
+            val nonLeaderRearmost = sortedByRoute.asReversed().firstOrNull {
+                it.id != resolvedLeaderId &&
+                    it.id != effectiveActingUid &&
+                    it.role != UserRole.TOUR_LEADER
+            }
+            (nonLeaderRearmost ?: sortedByRoute.last()).id
+        } else {
+            ""
+        }
+
         val rankedMembers = enriched.map {
+            val isManualSweeper = it.isSweeper && !it.isAutoSweeper
+            val isAutoSweeper = !hasManualSweeper && autoSweeperId.isNotBlank() && it.id == autoSweeperId
             it.copy(
                 convoyOrderRank = rankMap[it.id] ?: 1,
                 isCoLeader = effectiveCoLeaderUid.isNotBlank() && it.id == effectiveCoLeaderUid,
                 isActingLeader = effectiveActingUid.isNotBlank() && it.id == effectiveActingUid,
+                isSweeper = isManualSweeper || isAutoSweeper,
+                isAutoSweeper = isAutoSweeper,
                 distanceToLeaderMeters = coLeaderResult.distanceByMemberId[it.id]
             )
         }
+        val sortedRanked = rankedMembers.sortedByDescending { it.routeDistanceMeters }
 
         if (room.isSyncedRoom &&
             !coLeaderResult.coLeaderUid.isNullOrBlank() &&
@@ -2910,10 +3176,10 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
             toleranceMeters = route.offRouteToleranceMeters
         )
 
-        val stragglerAlert = if (sortedByRoute.size >= 2) {
-            val designatedSweeper = sortedByRoute.find { it.isSweeper && it.id != sortedByRoute.last().id }
-            val aheadVehicle = designatedSweeper ?: sortedByRoute[sortedByRoute.size - 2]
-            val trailingVehicle = sortedByRoute[sortedByRoute.size - 1]
+        val stragglerAlert = if (sortedRanked.size >= 2) {
+            val designatedSweeper = sortedRanked.find { it.isSweeper && it.id != sortedRanked.last().id }
+            val aheadVehicle = designatedSweeper ?: sortedRanked[sortedRanked.size - 2]
+            val trailingVehicle = sortedRanked[sortedRanked.size - 1]
             val gapMeters = (aheadVehicle.routeDistanceMeters - trailingVehicle.routeDistanceMeters)
                 .coerceAtLeast(0)
             StragglerAlertState(
@@ -3047,6 +3313,9 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
     fun finishAndSaveCurrentTrip(autoEndedByLeader: Boolean = false): TripHistoryRecord? {
         roomUnsubscribe?.invoke()
         roomUnsubscribe = null
+        voiceTimerJob?.cancel()
+        releaseVoiceRecorder(deleteFile = true)
+        stopVoicePlayback()
         val state = _uiState.value
         val room = state.activeRoom ?: return null
         val route = state.routeConfig

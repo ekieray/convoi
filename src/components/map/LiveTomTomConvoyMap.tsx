@@ -433,18 +433,24 @@ export function LiveTomTomConvoyMap({
         ? 'SOS · '
         : member.isActingLeader
           ? 'Plt.Leader · '
-          : member.isCoLeader
-            ? 'Co-Leader · '
-            : member.isSweeper
-              ? 'Sweeper · '
-              : '';
+          : member.isCoLeader && member.isSweeper
+            ? member.isAutoSweeper
+              ? 'Co-Ldr/Swp (Auto) · '
+              : 'Co-Ldr/Swp · '
+            : member.isCoLeader
+              ? 'Co-Leader · '
+              : member.isSweeper
+                ? member.isAutoSweeper
+                  ? 'Sweeper (Auto) · '
+                  : 'Sweeper · '
+                : '';
       const labelText = `${prefix}${member.fullName} · ${vehicleLabel}${member.isCurrentUser ? ' (Anda)' : ''}`;
 
       const pillBg = isSosBeacon
         ? '#991B1B'
         : isOffRoute
           ? '#DC2626'
-          : isStraggler
+          : isStraggler || member.isSweeper
             ? '#B45309'
             : member.isActingLeader
               ? '#0369A1'
@@ -459,6 +465,7 @@ export function LiveTomTomConvoyMap({
         isSosBeacon ||
         isOffRoute ||
         isStraggler ||
+        member.isSweeper ||
         member.isActingLeader ||
         member.isCoLeader ||
         isSelected
@@ -469,7 +476,7 @@ export function LiveTomTomConvoyMap({
       const pillBorder =
         isSosBeacon || isOffRoute
           ? '#7F1D1D'
-          : isStraggler
+          : isStraggler || member.isSweeper
             ? '#92400E'
             : member.isActingLeader
               ? '#075985'

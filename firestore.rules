@@ -155,6 +155,7 @@ service cloud.firestore {
         'destinationName',
         'destinationAddress',
         'encodedPolyline',
+        'participants',
         'createdAt'
       ]) &&
       data.id is string && data.id.size() >= 1 && data.id.size() <= 64 &&
@@ -172,6 +173,11 @@ service cloud.firestore {
       data.destinationName is string && data.destinationName.size() <= 120 &&
       data.destinationAddress is string && data.destinationAddress.size() <= 240 &&
       (!('encodedPolyline' in data) || (data.encodedPolyline is string && data.encodedPolyline.size() <= 16384)) &&
+      (!('participants' in data) || (
+        data.participants is list &&
+        data.participants.size() <= 40 &&
+        (data.participants.size() == 0 || data.participants[0] is map)
+      )) &&
       data.createdAt is timestamp;
     }
 
@@ -396,6 +402,7 @@ service cloud.firestore {
         'type',
         'textContent',
         'voiceDurationSec',
+        'voiceAudioDataUrl',
         'timestampLabel',
         'createdAt'
       ]) &&
@@ -408,6 +415,7 @@ service cloud.firestore {
       data.type in ['TEXT', 'VOICE', 'SOS_ALERT', 'SYSTEM'] &&
       data.textContent is string && data.textContent.size() >= 1 && data.textContent.size() <= 500 &&
       data.voiceDurationSec is number &&
+      (!('voiceAudioDataUrl' in data) || (data.voiceAudioDataUrl is string && data.voiceAudioDataUrl.size() <= 350000)) &&
       data.timestampLabel is string && data.timestampLabel.size() >= 1 && data.timestampLabel.size() <= 16 &&
       data.createdAt is timestamp;
     }

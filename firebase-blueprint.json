@@ -210,6 +210,7 @@
         "type": { "type": "string", "enum": ["TEXT", "VOICE", "SOS_ALERT", "SYSTEM"] },
         "textContent": { "type": "string", "minLength": 1, "maxLength": 500 },
         "voiceDurationSec": { "type": "number" },
+        "voiceAudioDataUrl": { "type": "string", "minLength": 0, "maxLength": 350000 },
         "timestampLabel": { "type": "string", "minLength": 1, "maxLength": 16 },
         "createdAt": { "type": "string", "format": "date-time" }
       },
@@ -247,6 +248,23 @@
         "destinationName": { "type": "string", "maxLength": 120 },
         "destinationAddress": { "type": "string", "maxLength": 240 },
         "encodedPolyline": { "type": "string", "maxLength": 16384 },
+        "participants": {
+          "type": "array",
+          "maxItems": 40,
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string", "maxLength": 128 },
+              "fullName": { "type": "string", "maxLength": 80 },
+              "vehicleType": { "type": "string", "enum": ["MOBIL", "MOTOR"] },
+              "vehicleDetail": { "type": "string", "maxLength": 80 },
+              "licensePlate": { "type": "string", "maxLength": 24 },
+              "role": { "type": "string", "enum": ["TOUR_LEADER", "MEMBER"] },
+              "isSweeper": { "type": "boolean" },
+              "avatarPreset": { "type": "string", "maxLength": 40 }
+            }
+          }
+        },
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": [

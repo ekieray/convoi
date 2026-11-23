@@ -84,6 +84,7 @@ interface LiveTrackingMapViewProps {
   isRecordingVoice: boolean;
   recordingSeconds: number;
   playingMessageId: string | null;
+  voiceStatusMessage?: string | null;
   isPickingDestinationOnMap: boolean;
   isPickingCheckpointOnMap: boolean;
   pendingCheckpointName: string;
@@ -322,6 +323,7 @@ export function LiveTrackingMapView({
   isRecordingVoice,
   recordingSeconds,
   playingMessageId,
+  voiceStatusMessage,
   isPickingDestinationOnMap,
   isPickingCheckpointOnMap,
   pendingCheckpointName,
@@ -385,6 +387,35 @@ export function LiveTrackingMapView({
   const [showSosConfirm, setShowSosConfirm] = useState(false);
   const [showFinishTripConfirm, setShowFinishTripConfirm] = useState(false);
   const [chatText, setChatText] = useState('');
+  const [dismissedSosKey, setDismissedSosKey] = useState('');
+  const [sosFlashSecondsLeft, setSosFlashSecondsLeft] = useState(10);
+
+  const currentSosKey = sosState.isActive
+    ? `${sosState.senderId}|${sosState.triggeredAtLabel}`
+    : '';
+  const showSosFlashOverlay =
+    Boolean(currentSosKey) && currentSosKey !== dismissedSosKey;
+
+  useEffect(() => {
+    if (!currentSosKey) {
+      setDismissedSosKey('');
+      setSosFlashSecondsLeft(10);
+      return;
+    }
+    if (currentSosKey === dismissedSosKey) return;
+    setSosFlashSecondsLeft(10);
+    const intervalId = window.setInterval(() => {
+      setSosFlashSecondsLeft((prev) => {
+        if (prev <= 1) {
+          window.clearInterval(intervalId);
+          setDismissedSosKey(currentSosKey);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => window.clearInterval(intervalId);
+  }, [currentSosKey, dismissedSosKey]);
 
   useEffect(() => {
     if (!showLeaderSettings) return;
@@ -501,6 +532,7 @@ export function LiveTrackingMapView({
     members.find((m) => m.isCoLeader) ||
     members.find((m) => m.id === activeRoom?.coLeaderUid) ||
     null;
+  const sweeperMember = members.find((m) => m.isSweeper) || null;
   const etaInfo = calculateDestinationEta(trackedMember, routeConfig);
 
   const activeSpeedValues = members
@@ -563,7 +595,7 @@ export function LiveTrackingMapView({
   const speedDeltaTenMin = convoyAvgSpeedKmh - firstTenMinSpeed;
 
   useEffect(() => {
-    const key = `${offRouteAlert.isOffRoute}-${stragglerAlert.isTriggered}-${sosState.isActive}`;
+    const key = `${offRouteAlert.isOffRoute}-${stragglerAlert.isTriggered}-${currentSosKey}`;
     if (
       routeConfig.soundAlertEnabled &&
       (offRouteAlert.isOffRoute || stragglerAlert.isTriggered || sosState.isActive) &&
@@ -576,6 +608,7 @@ export function LiveTrackingMapView({
     offRouteAlert.isOffRoute,
     stragglerAlert.isTriggered,
     sosState.isActive,
+    currentSosKey,
     routeConfig.soundAlertEnabled,
   ]);
 
@@ -737,6 +770,9 @@ export function LiveTrackingMapView({
               : coLeaderMember
                 ? ` · Co-Leader: ${coLeaderMember.fullName}`
                 : ''}
+            {sweeperMember
+              ? ` · Sweeper: ${sweeperMember.fullName}${sweeperMember.isAutoSweeper ? ' (Auto)' : ''}`
+              : ''}
           </span>
           {participantsExpanded ? (
             <ChevronUp className="w-4 h-4 shrink-0" />
@@ -759,9 +795,11 @@ export function LiveTrackingMapView({
                       ? 'bg-[#EFF6FF] dark:bg-[#1E3A8A]/60 border-[#1D4ED8]'
                       : member.isActingLeader
                         ? 'bg-[#E0F2FE] dark:bg-[#0C4A6E]/40 border-[#0284C7]'
-                        : member.isCoLeader
-                          ? 'bg-[#F5F3FF] dark:bg-[#2E1065]/40 border-[#7C3AED]'
-                          : 'bg-[#F8FAFC] dark:bg-[#0B1117] border-[#E2E8F0] dark:border-[#334155]'
+                        : member.isSweeper
+                          ? 'bg-[#FFFBEB] dark:bg-[#451A03]/40 border-[#D97706]'
+                          : member.isCoLeader
+                            ? 'bg-[#F5F3FF] dark:bg-[#2E1065]/40 border-[#7C3AED]'
+                            : 'bg-[#F8FAFC] dark:bg-[#0B1117] border-[#E2E8F0] dark:border-[#334155]'
                   }`}
                 >
                   <ConvoyAvatar
@@ -772,11 +810,13 @@ export function LiveTrackingMapView({
                     ringClass={
                       member.isActingLeader
                         ? 'ring-2 ring-[#0284C7]'
-                        : member.isCoLeader
-                          ? 'ring-2 ring-[#7C3AED]'
-                          : member.isCurrentUser
-                            ? 'ring-2 ring-[#EA580C]'
-                            : 'ring-2 ring-white dark:ring-[#1E293B]'
+                        : member.isSweeper
+                          ? 'ring-2 ring-[#D97706]'
+                          : member.isCoLeader
+                            ? 'ring-2 ring-[#7C3AED]'
+                            : member.isCurrentUser
+                              ? 'ring-2 ring-[#EA580C]'
+                              : 'ring-2 ring-white dark:ring-[#1E293B]'
                     }
                   />
                   <div className="min-w-0">
@@ -794,6 +834,11 @@ export function LiveTrackingMapView({
                           Co
                         </span>
                       )}
+                      {member.isSweeper && (
+                        <span className="px-1 py-0.2 rounded bg-[#B45309] text-white text-[8px] font-bold">
+                          {member.isAutoSweeper ? 'Swp·Auto' : 'Swp'}
+                        </span>
+                      )}
                     </div>
                     <p className="text-[10px] text-[#64748B] dark:text-[#94A3B8] flex items-center gap-1">
                       {member.vehicleType === 'MOBIL' ? (
@@ -802,11 +847,15 @@ export function LiveTrackingMapView({
                         <Bike className="w-3 h-3 shrink-0" />
                       )}
                       <span>
-                        {member.isCoLeader && typeof member.distanceToLeaderMeters === 'number'
-                          ? `${formatDistanceLabel(member.distanceToLeaderMeters)}`
-                          : member.vehicleType === 'MOBIL'
-                            ? 'Mobil'
-                            : 'Motor'}
+                        {member.isSweeper
+                          ? member.isAutoSweeper
+                            ? 'Sweeper (Auto)'
+                            : 'Sweeper'
+                          : member.isCoLeader && typeof member.distanceToLeaderMeters === 'number'
+                            ? `${formatDistanceLabel(member.distanceToLeaderMeters)}`
+                            : member.vehicleType === 'MOBIL'
+                              ? 'Mobil'
+                              : 'Motor'}
                       </span>
                     </p>
                   </div>
@@ -890,15 +939,19 @@ export function LiveTrackingMapView({
                       <p className="text-[11px] text-[#64748B] dark:text-[#94A3B8] truncate">
                         {member.isActingLeader
                           ? 'Plt. Leader (Failover)'
-                          : member.isCoLeader
-                            ? `Co-Leader (${formatDistanceLabel(member.distanceToLeaderMeters ?? 0)} dari Leader)`
-                            : member.isSweeper
-                              ? 'Sweeper'
-                              : member.role === 'TOUR_LEADER'
-                                ? activeRoom?.leaderTroubleActive
-                                  ? 'Leader (Trouble HP)'
-                                  : 'Leader'
-                                : 'Anggota'}{' '}
+                          : member.isCoLeader && member.isSweeper
+                            ? `Co-Leader & ${member.isAutoSweeper ? 'Sweeper (Auto)' : 'Sweeper'}`
+                            : member.isCoLeader
+                              ? `Co-Leader (${formatDistanceLabel(member.distanceToLeaderMeters ?? 0)} dari Leader)`
+                              : member.isSweeper
+                                ? member.isAutoSweeper
+                                  ? 'Sweeper (Auto · Paling Belakang)'
+                                  : 'Sweeper'
+                                : member.role === 'TOUR_LEADER'
+                                  ? activeRoom?.leaderTroubleActive
+                                    ? 'Leader (Trouble HP)'
+                                    : 'Leader'
+                                  : 'Anggota'}{' '}
                         · {member.vehicleType === 'MOBIL' ? 'Mobil' : 'Motor'} ·{' '}
                         {member.lastLocationText}
                       </p>
@@ -913,9 +966,11 @@ export function LiveTrackingMapView({
                         >
                           <Shield className="w-3 h-3" />
                           <span>
-                            {member.isSweeper
+                            {member.isSweeper && !member.isAutoSweeper
                               ? 'Sweeper Aktif'
-                              : 'Jadikan Sweeper'}
+                              : member.isAutoSweeper
+                                ? 'Tetapkan Sweeper'
+                                : 'Jadikan Sweeper'}
                           </span>
                         </button>
                       )}
@@ -960,32 +1015,6 @@ export function LiveTrackingMapView({
             </div>
           </div>
         )}
-        </div>
-      )}
-
-      {/* SOS Emergency Banner */}
-      {sosState.isActive && (
-        <div
-          role="alert"
-          className="shrink-0 bg-[#991B1B] text-white px-3.5 py-2 flex items-center gap-2.5"
-        >
-          <AlertTriangle className="w-5 h-5 shrink-0" />
-          <div className="min-w-0 flex-1">
-            <p className="text-xs font-bold truncate">
-              DARURAT SOS · {sosState.senderName} ({sosState.senderVehicle})
-            </p>
-            <p className="text-[11px] text-white/90 truncate font-mono">
-              {sosState.locationText} ({sosState.latitude.toFixed(4)},{' '}
-              {sosState.longitude.toFixed(4)}) · {sosState.triggeredAtLabel}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onResolveSos}
-            className="px-2.5 py-1 rounded-lg bg-white/20 hover:bg-white/30 text-[11px] font-semibold cursor-pointer shrink-0"
-          >
-            Selesai
-          </button>
         </div>
       )}
 
@@ -1464,6 +1493,16 @@ export function LiveTrackingMapView({
                 </div>
               ) : null}
 
+              {sweeperMember && (
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[#64748B] dark:text-[#94A3B8]">Sweeper</span>
+                  <span className="font-semibold text-[#B45309] dark:text-[#FBBF24] truncate max-w-[150px]">
+                    {sweeperMember.fullName}
+                    {sweeperMember.isAutoSweeper ? ' (Auto)' : ''}
+                  </span>
+                </div>
+              )}
+
               {activeRoom && (
                 <button
                   type="button"
@@ -1525,13 +1564,19 @@ export function LiveTrackingMapView({
                   const selected = member.id === focusedMember?.id;
                   const roleLabel = member.isActingLeader
                     ? 'Plt. Leader'
-                    : member.isCoLeader
-                      ? 'Co-Leader'
-                      : member.isSweeper
-                        ? 'Sweeper'
-                        : member.role === 'TOUR_LEADER'
-                          ? 'Leader'
-                          : 'Anggota';
+                    : member.isCoLeader && member.isSweeper
+                      ? member.isAutoSweeper
+                        ? 'Co-Leader & Sweeper (Auto)'
+                        : 'Co-Leader & Sweeper'
+                      : member.isCoLeader
+                        ? 'Co-Leader'
+                        : member.isSweeper
+                          ? member.isAutoSweeper
+                            ? 'Sweeper (Auto · Belakang)'
+                            : 'Sweeper'
+                          : member.role === 'TOUR_LEADER'
+                            ? 'Leader'
+                            : 'Anggota';
                   return (
                     <div
                       key={member.id}
@@ -1580,7 +1625,11 @@ export function LiveTrackingMapView({
                               }}
                               className="text-[9px] font-semibold text-[#1D4ED8] dark:text-[#60A5FA] hover:underline cursor-pointer"
                             >
-                              {member.isSweeper ? 'Sweeper Aktif' : 'Jadikan Sweeper'}
+                              {member.isSweeper && !member.isAutoSweeper
+                                ? 'Sweeper Aktif'
+                                : member.isAutoSweeper
+                                  ? 'Tetapkan Sweeper'
+                                  : 'Jadikan Sweeper'}
                             </button>
                           )}
                       </div>
@@ -1695,7 +1744,13 @@ export function LiveTrackingMapView({
             <span>Chat ({messages.length})</span>
           </button>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-col items-end gap-1.5">
+            {!showChatSheet && voiceStatusMessage && (
+              <div className="max-w-[230px] px-2.5 py-1.5 rounded-xl bg-[#FEF2F2] dark:bg-[#450A0A] border border-[#FECACA] dark:border-[#991B1B] text-[#B91C1C] dark:text-[#FCA5A5] text-[10px] font-medium shadow-md">
+                {voiceStatusMessage}
+              </div>
+            )}
+            <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={() => {
@@ -1733,6 +1788,7 @@ export function LiveTrackingMapView({
               <AlertTriangle className="w-4 h-4 shrink-0" />
               <span>SOS</span>
             </button>
+          </div>
           </div>
         </div>
       </div>
@@ -1930,7 +1986,7 @@ export function LiveTrackingMapView({
                   return (
                     <div
                       key={msg.id}
-                      className="rounded-2xl bg-[#FEF2F2] dark:bg-[#450A0A]/50 border border-[#DC2626] p-3 flex items-center gap-2.5"
+                      className="rounded-2xl bg-[#FEF2F2] dark:bg-[#450A0A]/50 border border-[#DC2626] p-3 flex items-start gap-2.5"
                     >
                       <ConvoyAvatar
                         preset={msgPreset}
@@ -1939,13 +1995,25 @@ export function LiveTrackingMapView({
                         sizeClass="w-8 h-8"
                         ringClass="ring-2 ring-[#DC2626]"
                       />
-                      <div className="min-w-0 flex-1">
+                      <div className="min-w-0 flex-1 space-y-1">
                         <p className="text-[11px] font-bold text-[#991B1B] dark:text-[#FCA5A5]">
-                          DARURAT SOS · {msg.senderName} · {msg.timestampLabel}
+                          DARURAT SOS · {msg.senderName}
+                          {msg.senderVehicle ? ` (${msg.senderVehicle})` : ''} ·{' '}
+                          {msg.timestampLabel}
                         </p>
-                        <p className="text-xs text-[#7F1D1D] dark:text-[#FECACA] mt-0.5">
+                        <p className="text-xs text-[#7F1D1D] dark:text-[#FECACA]">
                           {msg.textContent}
                         </p>
+                        {sosState.isActive && (
+                          <button
+                            type="button"
+                            onClick={onResolveSos}
+                            className="mt-1 inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#DC2626] hover:bg-[#B91C1C] text-white text-[10px] font-semibold cursor-pointer"
+                          >
+                            <Check className="w-3 h-3" />
+                            <span>Tandai SOS Selesai</span>
+                          </button>
+                        )}
                       </div>
                     </div>
                   );
@@ -2064,6 +2132,12 @@ export function LiveTrackingMapView({
 
             {/* Large Interactive Waveform PTT Button + Text Composer */}
             <div className="shrink-0 p-3 border-t border-[#E2E8F0] dark:border-[#334155] bg-white dark:bg-[#141C24] space-y-2.5">
+              {voiceStatusMessage && (
+                <div className="rounded-xl bg-[#FEF2F2] dark:bg-[#450A0A]/80 border border-[#FECACA] dark:border-[#991B1B] px-3 py-2 text-[11px] font-medium text-[#B91C1C] dark:text-[#FCA5A5] flex items-center gap-2">
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                  <span>{voiceStatusMessage}</span>
+                </div>
+              )}
               <button
                 type="button"
                 onClick={() => {
@@ -2548,6 +2622,105 @@ export function LiveTrackingMapView({
             >
               Terapkan ke Room
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* 10-Second Full-Screen Flashing Red Overlay & Large SOS Notification Directly on Navigation Screen */}
+      {showSosFlashOverlay && sosState.isActive && (
+        <div
+          role="alertdialog"
+          aria-live="assertive"
+          aria-label="Notifikasi Darurat SOS"
+          className="absolute inset-0 z-40 pointer-events-none"
+        >
+          {/* Flashing Red Screen Tint + Thick Perimeter Glow */}
+          <div className="absolute inset-0 bg-[#DC2626]/70 ring-[8px] ring-inset ring-[#EF4444] shadow-[inset_0_0_96px_rgba(185,28,28,0.95)] animate-sos-screen-flash" />
+
+          {/* Large Prominent Red SOS Card */}
+          <div className="relative z-10 h-full w-full flex items-center justify-center p-4">
+            <div className="pointer-events-auto w-full max-w-[380px] rounded-[24px] bg-gradient-to-b from-[#DC2626] to-[#991B1B] text-white border-2 border-[#FCA5A5] shadow-2xl p-4 sm:p-5 space-y-3.5">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-12 h-12 rounded-2xl bg-white/20 flex items-center justify-center shrink-0">
+                    <AlertTriangle className="w-7 h-7 text-white" />
+                  </div>
+                  <div className="min-w-0">
+                    <h3 className="text-lg font-extrabold tracking-tight leading-tight">
+                      SINYAL DARURAT SOS
+                    </h3>
+                    <p className="text-xs text-[#FEE2E2] font-mono tabular-nums mt-0.5">
+                      Hilang otomatis dalam {sosFlashSecondsLeft} dtk
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setDismissedSosKey(currentSosKey)}
+                  aria-label="Tutup Notifikasi SOS"
+                  className="min-w-[40px] min-h-[40px] rounded-xl bg-white/15 hover:bg-white/25 flex items-center justify-center cursor-pointer shrink-0 transition-colors"
+                >
+                  <X className="w-5 h-5 text-white" />
+                </button>
+              </div>
+
+              <div className="rounded-2xl bg-black/25 border border-white/20 px-3.5 py-3 space-y-1">
+                <p className="text-[10px] font-bold tracking-wider uppercase text-[#FECACA]">
+                  Pengirim Sinyal SOS
+                </p>
+                <p className="text-base sm:text-lg font-extrabold text-white leading-snug break-words">
+                  {sosState.senderName || 'Anggota Konvoi'}
+                </p>
+                <p className="text-xs text-[#FEE2E2]">
+                  {sosState.senderVehicle || 'Kendaraan Konvoi'} · Pukul{' '}
+                  {sosState.triggeredAtLabel || '-'}
+                </p>
+                <p className="text-xs font-mono text-white/95 pt-1 break-words">
+                  {sosState.locationText || 'Lokasi Live'} (
+                  {sosState.latitude.toFixed(4)}, {sosState.longitude.toFixed(4)})
+                </p>
+              </div>
+
+              <p className="text-[11px] text-[#FEE2E2] text-center">
+                Identitas pengirim SOS tetap tercatat di kolom chat konvoi.
+              </p>
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (sosState.senderId) {
+                      onSelectMember(sosState.senderId);
+                    }
+                    setDismissedSosKey(currentSosKey);
+                  }}
+                  className="min-h-[44px] px-3 rounded-xl bg-white text-[#991B1B] hover:bg-[#FEF2F2] text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+                >
+                  <LocateFixed className="w-4 h-4 shrink-0" />
+                  <span>Lokasi Pengirim</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDismissedSosKey(currentSosKey);
+                    onResolveSos();
+                  }}
+                  className="min-h-[44px] px-3 rounded-xl bg-[#7F1D1D] hover:bg-[#450A0A] border border-white/30 text-white text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+                >
+                  <Check className="w-4 h-4 shrink-0" />
+                  <span>Selesai SOS</span>
+                </button>
+              </div>
+
+              <div className="h-1.5 w-full rounded-full bg-white/25 overflow-hidden">
+                <div
+                  className="h-full w-full bg-white origin-left transition-transform duration-1000 ease-linear"
+                  style={{
+                    transform: `scaleX(${Math.max(0, Math.min(1, sosFlashSecondsLeft / 10))})`,
+                  }}
+                />
+              </div>
+            </div>
           </div>
         </div>
       )}

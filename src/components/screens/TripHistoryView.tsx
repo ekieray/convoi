@@ -209,22 +209,32 @@ export function TripHistoryView({
                   </div>
 
                   {/* Participants Avatar Strip */}
-                  <div className="flex items-center gap-2.5">
-                    <div className="flex items-center -space-x-2 shrink-0">
-                      {trip.participants.slice(0, 4).map((p) => (
-                        <ConvoyAvatar
-                          key={p.id}
-                          preset={p.avatarPreset}
-                          photoUrl={p.avatarPhotoUrl}
-                          name={p.fullName}
-                          sizeClass="w-6 h-6"
-                          ringClass="ring-2 ring-white dark:ring-[#141C24]"
-                        />
-                      ))}
-                    </div>
-                    <p className="text-[11px] text-[#64748B] dark:text-[#94A3B8] truncate">
-                      {trip.participants.length} Peserta:{' '}
-                      {trip.participants.map((p) => p.fullName).join(', ')}
+                  <div className="flex items-start gap-2.5">
+                    {trip.participants.length > 0 && (
+                      <div className="flex items-center -space-x-2 shrink-0 mt-0.5">
+                        {trip.participants.slice(0, 4).map((p) => (
+                          <ConvoyAvatar
+                            key={p.id}
+                            preset={p.avatarPreset}
+                            photoUrl={p.avatarPhotoUrl}
+                            name={p.fullName}
+                            sizeClass="w-6 h-6"
+                            ringClass="ring-2 ring-white dark:ring-[#141C24]"
+                          />
+                        ))}
+                      </div>
+                    )}
+                    <p className="text-[11px] text-[#64748B] dark:text-[#94A3B8] leading-snug line-clamp-3">
+                      {trip.participants.length > 0 ? (
+                        <>
+                          <span className="font-semibold text-[#334155] dark:text-[#CBD5E1]">
+                            {trip.participants.length} Anggota Ikut:
+                          </span>{' '}
+                          {trip.participants.map((p) => p.fullName).join(', ')}
+                        </>
+                      ) : (
+                        'Peserta konvoi belum tercatat'
+                      )}
                     </p>
                   </div>
                 </button>

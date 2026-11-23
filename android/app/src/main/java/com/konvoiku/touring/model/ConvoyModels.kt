@@ -73,6 +73,7 @@ data class RoomMessage(
     val timestampLabel: String,
     val voiceDurationSec: Int = 0,
     val voiceFilePath: String? = null,
+    val voiceAudioDataUrl: String? = null,
     val isFromCurrentUser: Boolean = false,
     val senderAvatarPreset: AvatarPreset = AvatarPreset.HELMET_TOURING,
     val senderAvatarPhotoUri: String? = null
@@ -232,6 +233,7 @@ data class ConvoyMember(
     val joinedAtLabel: String,
     val isCurrentUser: Boolean = false,
     val isSweeper: Boolean = false,
+    val isAutoSweeper: Boolean = false,
     val isCoLeader: Boolean = false,
     val isActingLeader: Boolean = false,
     val distanceToLeaderMeters: Int? = null,
@@ -588,6 +590,7 @@ data class ConvoyUiState(
     val isRecordingVoice: Boolean = false,
     val recordingSeconds: Int = 0,
     val playingMessageId: String? = null,
+    val voiceStatusMessage: String? = null,
     val isPickingDestinationOnMap: Boolean = false,
     val isPickingCheckpointOnMap: Boolean = false,
     val pendingCheckpointName: String = "",

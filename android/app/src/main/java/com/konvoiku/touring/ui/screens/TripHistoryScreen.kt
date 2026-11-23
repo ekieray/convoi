@@ -360,27 +360,35 @@ private fun TripHistoryCard(
             // Participants Row
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
+                verticalAlignment = Alignment.Top,
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Box(modifier = Modifier.width((24 + (trip.participants.take(4).size - 1) * 18).dp)) {
-                    trip.participants.take(4).forEachIndexed { idx, participant ->
-                        Box(modifier = Modifier.offset(x = (idx * 18).dp)) {
-                            ConvoyAvatar(
-                                preset = participant.avatarPreset,
-                                photoUri = participant.avatarPhotoUri,
-                                displayName = participant.fullName,
-                                size = 26.dp,
-                                borderColor = MaterialTheme.colorScheme.surface
-                            )
+                if (trip.participants.isNotEmpty()) {
+                    val stackCount = trip.participants.take(4).size.coerceAtLeast(1)
+                    Box(modifier = Modifier.width((26 + (stackCount - 1) * 18).dp)) {
+                        trip.participants.take(4).forEachIndexed { idx, participant ->
+                            Box(modifier = Modifier.offset(x = (idx * 18).dp)) {
+                                ConvoyAvatar(
+                                    preset = participant.avatarPreset,
+                                    photoUri = participant.avatarPhotoUri,
+                                    displayName = participant.fullName,
+                                    size = 26.dp,
+                                    borderColor = MaterialTheme.colorScheme.surface
+                                )
+                            }
                         }
                     }
                 }
                 Text(
-                    text = "${trip.participants.size} Peserta: ${trip.participants.joinToString(", ") { it.fullName }}",
+                    text = if (trip.participants.isNotEmpty()) {
+                        "${trip.participants.size} Anggota Ikut: ${trip.participants.joinToString(", ") { it.fullName }}"
+                    } else {
+                        "Peserta konvoi belum tercatat"
+                    },
                     fontSize = 12.sp,
+                    lineHeight = 16.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
+                    maxLines = 3,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )

@@ -704,6 +704,11 @@ export function subscribeToSyncedRoom(
               textContent: String(d.textContent || ''),
               timestampLabel: String(d.timestampLabel || toClockLabel(d.createdAt)),
               voiceDurationSec: Number(d.voiceDurationSec || 0) || undefined,
+              voiceAudioUrl:
+                typeof d.voiceAudioDataUrl === 'string' &&
+                d.voiceAudioDataUrl.startsWith('data:audio/')
+                  ? d.voiceAudioDataUrl
+                  : undefined,
               isFromCurrentUser: String(d.senderUid || '') === currentUid,
               senderAvatarPreset: (d.senderAvatarPreset || 'HELMET_TOURING') as AvatarPreset,
             } satisfies RoomMessage,
@@ -952,12 +957,19 @@ export async function sendRoomMessage(
     type: ChatMessageType;
     textContent: string;
     voiceDurationSec?: number;
+    voiceAudioDataUrl?: string;
   }
 ): Promise<void> {
   const safeId = msg.id.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64) || `msg-${Date.now()}`;
   const path = `rooms/${roomId}/messages/${safeId}`;
   const now = new Date();
   const timestampLabel = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  const safeVoiceAudio =
+    typeof msg.voiceAudioDataUrl === 'string' &&
+    msg.voiceAudioDataUrl.startsWith('data:audio/') &&
+    msg.voiceAudioDataUrl.length <= 345000
+      ? msg.voiceAudioDataUrl
+      : undefined;
   try {
     await setDoc(doc(db, 'rooms', roomId, 'messages', safeId), {
       id: safeId,
@@ -969,6 +981,7 @@ export async function sendRoomMessage(
       type: msg.type,
       textContent: (msg.textContent.trim() || '-').slice(0, 500),
       voiceDurationSec: Math.max(0, Math.min(600, Math.round(msg.voiceDurationSec ?? 0))),
+      ...(safeVoiceAudio ? { voiceAudioDataUrl: safeVoiceAudio } : {}),
       timestampLabel,
       createdAt: serverTimestamp(),
     });
@@ -1056,6 +1069,16 @@ export async function saveTripRecordToFirestore(
     .slice(0, 140)
     .map((pt) => ({ lat: pt.latitude, lng: pt.longitude }));
   const encodedPolyline = geoPoints.length >= 2 ? encodePolyline(geoPoints).slice(0, 16384) : '';
+  const compactParticipants = record.participants.slice(0, 40).map((p) => ({
+    id: String(p.id || '').slice(0, 128),
+    fullName: (String(p.fullName || 'Rider').trim() || 'Rider').slice(0, 80),
+    vehicleType: p.vehicleType === 'MOTOR' ? 'MOTOR' : 'MOBIL',
+    vehicleDetail: String(p.vehicleDetail || '').slice(0, 80),
+    licensePlate: String(p.licensePlate || '').slice(0, 24),
+    role: p.role === 'TOUR_LEADER' ? 'TOUR_LEADER' : 'MEMBER',
+    isSweeper: Boolean(p.isSweeper),
+    avatarPreset: String(p.avatarPreset || 'HELMET_TOURING').slice(0, 40),
+  }));
   try {
     await setDoc(doc(db, 'users', uid, 'trips', safeId), {
       id: safeId,
@@ -1073,6 +1096,7 @@ export async function saveTripRecordToFirestore(
       destinationName: record.destinationName.slice(0, 120),
       destinationAddress: record.destinationAddress.slice(0, 240),
       encodedPolyline,
+      participants: compactParticipants,
       createdAt: serverTimestamp(),
     });
   } catch (error) {
@@ -1097,6 +1121,20 @@ export async function loadUserTripsFromFirestore(
         const decodedPoints = encoded ? decodePolyline(encoded) : [];
         const restoredWaypoints: RoutePoint[] =
           decodedPoints.length >= 2 ? downsampleRoutePoints(decodedPoints, 120) : [];
+        const rawParticipants = Array.isArray(d.participants) ? d.participants : [];
+        const restoredParticipants = rawParticipants
+          .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
+          .slice(0, 40)
+          .map((item, idx) => ({
+            id: String(item.id || `p-${idx}`),
+            fullName: String(item.fullName || 'Rider'),
+            vehicleType: (item.vehicleType === 'MOTOR' ? 'MOTOR' : 'MOBIL') as VehicleType,
+            vehicleDetail: String(item.vehicleDetail || ''),
+            licensePlate: String(item.licensePlate || ''),
+            role: (item.role === 'TOUR_LEADER' ? 'TOUR_LEADER' : 'MEMBER') as UserRole,
+            isSweeper: Boolean(item.isSweeper),
+            avatarPreset: (item.avatarPreset || 'HELMET_TOURING') as AvatarPreset,
+          }));
         return {
           sortMs: toMillis(d.createdAt),
           record: {
@@ -1115,7 +1153,7 @@ export async function loadUserTripsFromFirestore(
             destinationAddress: String(d.destinationAddress || ''),
             waypoints: restoredWaypoints,
             visitedCheckpoints: [],
-            participants: [],
+            participants: restoredParticipants,
           } satisfies TripHistoryRecord,
         };
       })

@@ -397,6 +397,7 @@ fun ConvoyNavGraph(
                 isRecordingVoice = uiState.isRecordingVoice,
                 recordingSeconds = uiState.recordingSeconds,
                 playingMessageId = uiState.playingMessageId,
+                voiceStatusMessage = uiState.voiceStatusMessage,
                 isPickingDestinationOnMap = uiState.isPickingDestinationOnMap,
                 isPickingCheckpointOnMap = uiState.isPickingCheckpointOnMap,
                 pendingCheckpointName = uiState.pendingCheckpointName,
@@ -471,6 +472,9 @@ fun ConvoyNavGraph(
                 ?: uiState.tripHistory.firstOrNull()
             TripDetailScreen(
                 trip = selectedTrip,
+                currentUserName = uiState.vehicleProfile.fullName.ifBlank { uiState.authUserName },
+                currentUserAvatarPreset = uiState.vehicleProfile.avatarPreset,
+                currentUserAvatarPhotoUri = uiState.vehicleProfile.avatarPhotoUri,
                 autoFinishNotice = uiState.autoFinishedTripNotice,
                 onDismissAutoFinishNotice = viewModel::clearAutoFinishNotice,
                 onBack = {

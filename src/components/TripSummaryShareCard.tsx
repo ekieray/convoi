@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Coffee, Navigation } from 'lucide-react';
 import { getTomTomTileUrl } from '../services/tomtomMapService';
-import { TripCardTheme, TripHistoryRecord } from '../types/convoy';
+import { AvatarPreset, TripCardTheme, TripHistoryRecord } from '../types/convoy';
 import { projectTripMapViewport } from '../utils/geo';
 import { ConvoyAvatar } from './ConvoyAvatar';
 
@@ -10,6 +10,9 @@ interface TripSummaryShareCardProps {
   theme: TripCardTheme;
   customPhotoUrl?: string;
   defaultScenicPhotoUrl: string;
+  currentUserName?: string;
+  currentUserAvatarPreset?: AvatarPreset;
+  currentUserAvatarPhotoUrl?: string;
 }
 
 export function TripSummaryShareCard({
@@ -17,6 +20,9 @@ export function TripSummaryShareCard({
   theme,
   customPhotoUrl,
   defaultScenicPhotoUrl,
+  currentUserName,
+  currentUserAvatarPreset,
+  currentUserAvatarPhotoUrl,
 }: TripSummaryShareCardProps) {
   const [imgError, setImgError] = useState(false);
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
@@ -53,6 +59,33 @@ export function TripSummaryShareCard({
   const leader =
     trip.participants.find((p) => p.role === 'TOUR_LEADER') ??
     trip.participants[0];
+  const trimmedLoginName = currentUserName?.trim();
+  const matchedSelf = trimmedLoginName
+    ? trip.participants.find(
+        (p) => p.fullName.trim().toLowerCase() === trimmedLoginName.toLowerCase()
+      )
+    : undefined;
+  const headerDisplayName = trimmedLoginName || leader?.fullName || 'Rider KonvoiKu';
+  const headerAvatarPreset =
+    currentUserAvatarPreset ??
+    matchedSelf?.avatarPreset ??
+    leader?.avatarPreset ??
+    'HELMET_TOURING';
+  const headerAvatarPhotoUrl =
+    currentUserAvatarPhotoUrl ??
+    matchedSelf?.avatarPhotoUrl ??
+    (trimmedLoginName ? undefined : leader?.avatarPhotoUrl);
+  const headerRoleLabel =
+    trip.userRole === 'TOUR_LEADER'
+      ? 'Tour Leader'
+      : matchedSelf?.isSweeper
+        ? 'Sweeper'
+        : 'Anggota Konvoi';
+  const participantNames = trip.participants
+    .map((p) => p.fullName.trim())
+    .filter(Boolean);
+  const participantDisplayList =
+    participantNames.length > 0 ? participantNames.join(', ') : headerDisplayName;
 
   const projection = projectTripMapViewport(
     trip.waypoints,
@@ -252,31 +285,29 @@ export function TripSummaryShareCard({
             </div>
           </div>
 
-          {leader && (
-            <div className="flex items-center gap-2 min-w-0">
-              <div className="text-right min-w-0">
-                <p
-                  className={`text-[11px] font-semibold truncate max-w-[100px] ${primaryText}`}
-                >
-                  {leader.fullName}
-                </p>
-                <p
-                  className={`text-[10px] font-medium ${
-                    isLight ? 'text-[#1D4ED8]' : 'text-[#FDBA74]'
-                  }`}
-                >
-                  Tour Leader
-                </p>
-              </div>
-              <ConvoyAvatar
-                preset={leader.avatarPreset}
-                photoUrl={leader.avatarPhotoUrl}
-                name={leader.fullName}
-                sizeClass="w-8 h-8"
-                ringClass="ring-2 ring-[#EA580C]"
-              />
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="text-right min-w-0">
+              <p
+                className={`text-[11px] font-semibold truncate max-w-[125px] ${primaryText}`}
+              >
+                {headerDisplayName}
+              </p>
+              <p
+                className={`text-[10px] font-medium ${
+                  isLight ? 'text-[#1D4ED8]' : 'text-[#FDBA74]'
+                }`}
+              >
+                {headerRoleLabel}
+              </p>
             </div>
-          )}
+            <ConvoyAvatar
+              preset={headerAvatarPreset}
+              photoUrl={headerAvatarPhotoUrl}
+              name={headerDisplayName}
+              sizeClass="w-8 h-8"
+              ringClass="ring-2 ring-[#EA580C]"
+            />
+          </div>
         </div>
 
         {/* Title & Date Metadata */}
@@ -294,7 +325,7 @@ export function TripSummaryShareCard({
         {/* Center Real-Shape Polyline Path */}
         <div
           ref={mapContainerRef}
-          className={`relative flex-1 my-2 min-h-[135px] overflow-hidden ${
+          className={`relative flex-1 my-1.5 min-h-[115px] overflow-hidden ${
             theme === 'SATELLITE'
               ? 'rounded-2xl border border-white/15 bg-black/25'
               : ''
@@ -445,12 +476,14 @@ export function TripSummaryShareCard({
           </div>
 
           <div
-            className={`pt-2 border-t text-[10px] truncate ${
+            className={`pt-2 border-t text-[10px] leading-snug line-clamp-3 ${
               isLight ? 'border-[#CBD5E1]' : 'border-white/20'
             } ${secondaryText}`}
           >
-            {trip.participants.length} Peserta ·{' '}
-            {trip.participants.map((p) => p.fullName).join(', ')}
+            <span className="font-semibold">
+              {Math.max(1, participantNames.length)} Anggota Ikut:
+            </span>{' '}
+            {participantDisplayList}
           </div>
         </div>
       </div>

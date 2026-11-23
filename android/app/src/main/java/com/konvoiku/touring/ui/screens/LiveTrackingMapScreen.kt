@@ -3,6 +3,7 @@ package com.konvoiku.touring.ui.screens
 import android.Manifest
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.media.AudioManager
 import android.media.ToneGenerator
 import android.net.Uri
@@ -10,6 +11,7 @@ import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -23,6 +25,7 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -192,6 +195,7 @@ fun LiveTrackingMapScreen(
     isRecordingVoice: Boolean,
     recordingSeconds: Int,
     playingMessageId: String?,
+    voiceStatusMessage: String? = null,
     isPickingDestinationOnMap: Boolean,
     isPickingCheckpointOnMap: Boolean,
     pendingCheckpointName: String,
@@ -252,6 +256,29 @@ fun LiveTrackingMapScreen(
     var showSosConfirmDialog by remember { mutableStateOf(false) }
     var showFinishTripDialog by remember { mutableStateOf(false) }
     var chatInputText by remember { mutableStateOf("") }
+    var dismissedSosKey by remember(activeRoom?.roomId) { mutableStateOf("") }
+    var sosFlashSecondsLeft by remember(activeRoom?.roomId) { mutableStateOf(10) }
+
+    val currentSosKey = remember(sosState.isActive, sosState.senderId, sosState.triggeredAtLabel) {
+        if (sosState.isActive) "${sosState.senderId}|${sosState.triggeredAtLabel}" else ""
+    }
+    val showSosFlashOverlay = currentSosKey.isNotBlank() && currentSosKey != dismissedSosKey
+
+    LaunchedEffect(currentSosKey, dismissedSosKey) {
+        if (currentSosKey.isBlank()) {
+            dismissedSosKey = ""
+            sosFlashSecondsLeft = 10
+            return@LaunchedEffect
+        }
+        if (currentSosKey == dismissedSosKey) return@LaunchedEffect
+        sosFlashSecondsLeft = 10
+        for (sec in 10 downTo 1) {
+            sosFlashSecondsLeft = sec
+            delay(1000L)
+        }
+        dismissedSosKey = currentSosKey
+        sosFlashSecondsLeft = 0
+    }
 
     val touchSideDrawer: () -> Unit = { sideInfoTouchTick += 1 }
     val openSideDrawer: () -> Unit = {
@@ -311,6 +338,24 @@ fun LiveTrackingMapScreen(
         }
         hasRequestedPermissionOnce = true
         onLocationPermissionResult(granted)
+    }
+
+    val recordAudioPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { _ ->
+        onStartVoiceRecord()
+    }
+
+    val startVoiceWithPermission: () -> Unit = {
+        val granted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+        if (granted) {
+            onStartVoiceRecord()
+        } else {
+            recordAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
     }
 
     DisposableEffect(lifecycleOwner, gpsStatus) {
@@ -481,7 +526,7 @@ fun LiveTrackingMapScreen(
         }
     }
 
-    LaunchedEffect(stragglerAlert.isTriggered, offRouteAlert.isOffRoute, sosState.isActive, routeConfig.soundAlertEnabled) {
+    LaunchedEffect(stragglerAlert.isTriggered, offRouteAlert.isOffRoute, sosState.isActive, currentSosKey, routeConfig.soundAlertEnabled) {
         if (routeConfig.soundAlertEnabled && (stragglerAlert.isTriggered || offRouteAlert.isOffRoute || sosState.isActive)) {
             runCatching {
                 val tone = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 90)
@@ -490,7 +535,8 @@ fun LiveTrackingMapScreen(
         }
     }
 
-    Scaffold(
+    Box(modifier = Modifier.fillMaxSize()) {
+        Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
@@ -637,10 +683,17 @@ fun LiveTrackingMapScreen(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
+                            val sweeperMember = members.firstOrNull { it.isSweeper }
+                            val sweeperText = sweeperMember?.let {
+                                " · Sweeper: ${it.fullName}${if (it.isAutoSweeper) " (Auto)" else ""}"
+                            }.orEmpty()
                             Text(
-                                text = "Peserta Konvoi (${members.size}) · Ketuk untuk detail",
+                                text = "Peserta (${members.size})$sweeperText",
                                 style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.primary
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
                             )
                             Icon(
                                 imageVector = if (isParticipantsExpanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
@@ -732,38 +785,6 @@ fun LiveTrackingMapScreen(
             }
 
             // Safety Alert Banners
-            if (sosState.isActive) {
-                Surface(
-                    color = Color(0xFF991B1B),
-                    contentColor = Color.White,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Icon(Icons.Rounded.Sos, contentDescription = "Darurat SOS", modifier = Modifier.size(22.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "DARURAT SOS · ${sosState.senderName} (${sosState.senderVehicle})",
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = "${sosState.locationText} (${String.format(Locale.US, "%.4f, %.4f", sosState.latitude, sosState.longitude)}) · ${sosState.triggeredAtLabel}",
-                                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 11.sp)
-                            )
-                        }
-                        TextButton(onClick = onResolveSos) {
-                            Text("Selesai", color = Color.White, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                }
-            }
-
             if (offRouteAlert.isOffRoute) {
                 Surface(
                     color = Color(0xFFDC2626),
@@ -1437,6 +1458,25 @@ fun LiveTrackingMapScreen(
                         }
                     }
 
+                    if (!voiceStatusMessage.isNullOrBlank()) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = Color(0xFFFEF2F2),
+                            border = BorderStroke(1.dp, Color(0xFFFECACA)),
+                            shadowElevation = 4.dp,
+                            modifier = Modifier.widthIn(max = 240.dp)
+                        ) {
+                            Text(
+                                text = voiceStatusMessage,
+                                fontSize = 11.sp,
+                                lineHeight = 14.sp,
+                                color = Color(0xFFB91C1C),
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                            )
+                        }
+                    }
+
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically
@@ -1447,7 +1487,7 @@ fun LiveTrackingMapScreen(
                                     onStopVoiceRecord()
                                     showChatSheet = true
                                 } else {
-                                    onStartVoiceRecord()
+                                    startVoiceWithPermission()
                                 }
                             },
                             shape = RoundedCornerShape(14.dp),
@@ -1771,6 +1811,7 @@ fun LiveTrackingMapScreen(
                                             color = MaterialTheme.colorScheme.primary
                                         )
                                     }
+                                    val sideSweeperMember = members.firstOrNull { it.isSweeper }
                                     if (actingLeaderMember != null && activeRoom?.leaderTroubleActive == true) {
                                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                             Text("Plt. Leader", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1780,6 +1821,17 @@ fun LiveTrackingMapScreen(
                                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                             Text("Co-Leader", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                             Text(coLeaderMember.fullName, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                                        }
+                                    }
+                                    if (sideSweeperMember != null) {
+                                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                            Text("Sweeper", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            Text(
+                                                text = "${sideSweeperMember.fullName}${if (sideSweeperMember.isAutoSweeper) " (Auto)" else ""}",
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = Color(0xFFB45309)
+                                            )
                                         }
                                     }
                                     if (activeRoom != null) {
@@ -1836,8 +1888,9 @@ fun LiveTrackingMapScreen(
                                         val isSel = member.id == focusedMember?.id
                                         val roleLabel = when {
                                             member.isActingLeader && member.role != UserRole.TOUR_LEADER -> "Plt. Leader"
+                                            member.isCoLeader && member.isSweeper -> if (member.isAutoSweeper) "Co-Leader & Sweeper (Auto)" else "Co-Leader & Sweeper"
                                             member.isCoLeader -> "Co-Leader"
-                                            member.isSweeper -> "Sweeper"
+                                            member.isSweeper -> if (member.isAutoSweeper) "Sweeper (Auto · Belakang)" else "Sweeper"
                                             member.role == UserRole.TOUR_LEADER -> "Leader"
                                             else -> "Anggota"
                                         }
@@ -1881,13 +1934,17 @@ fun LiveTrackingMapScreen(
                                                     Text(
                                                         text = "$roleLabel$distText · ${member.conditionStatus.label}",
                                                         fontSize = 10.sp,
-                                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                        color = if (member.isSweeper) Color(0xFFB45309) else MaterialTheme.colorScheme.onSurfaceVariant,
                                                         maxLines = 1,
                                                         overflow = TextOverflow.Ellipsis
                                                     )
                                                     if (isEffectiveLeader && member.role != UserRole.TOUR_LEADER && !member.isActingLeader) {
                                                         Text(
-                                                            text = if (member.isSweeper) "Sweeper Aktif" else "Jadikan Sweeper",
+                                                            text = when {
+                                                                member.isSweeper && !member.isAutoSweeper -> "Sweeper Aktif"
+                                                                member.isAutoSweeper -> "Tetapkan Sweeper"
+                                                                else -> "Jadikan Sweeper"
+                                                            },
                                                             fontSize = 10.sp,
                                                             fontWeight = FontWeight.SemiBold,
                                                             color = MaterialTheme.colorScheme.primary,
@@ -2001,6 +2058,207 @@ fun LiveTrackingMapScreen(
                 )
             }
         }
+        }
+
+        // 10-Second Full-Screen Flashing Red Screen & Large SOS Alert Directly on Navigation Screen
+        if (showSosFlashOverlay && sosState.isActive) {
+            val flashTransition = rememberInfiniteTransition(label = "sosScreenFlash")
+            val flashAlpha by flashTransition.animateFloat(
+                initialValue = 0.12f,
+                targetValue = 0.46f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(durationMillis = 360),
+                    repeatMode = RepeatMode.Reverse
+                ),
+                label = "sosFlashAlpha"
+            )
+            val borderAlpha = (flashAlpha * 2f).coerceIn(0.45f, 1f)
+
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0xFFDC2626).copy(alpha = flashAlpha))
+                    .border(8.dp, Color(0xFFEF4444).copy(alpha = borderAlpha))
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(24.dp),
+                    color = Color(0xFFB91C1C),
+                    contentColor = Color.White,
+                    border = BorderStroke(2.dp, Color(0xFFFCA5A5)),
+                    shadowElevation = 20.dp,
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(horizontal = 20.dp)
+                        .fillMaxWidth()
+                        .widthIn(max = 400.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                color = Color.White.copy(alpha = 0.2f),
+                                modifier = Modifier.size(48.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Warning,
+                                        contentDescription = "Darurat SOS",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(28.dp)
+                                    )
+                                }
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "SINYAL DARURAT SOS",
+                                    fontSize = 18.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = Color.White
+                                )
+                                Text(
+                                    text = "Hilang otomatis dalam $sosFlashSecondsLeft dtk",
+                                    fontSize = 12.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = Color(0xFFFEE2E2)
+                                )
+                            }
+                            IconButton(
+                                onClick = { dismissedSosKey = currentSosKey },
+                                modifier = Modifier.size(40.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Close,
+                                    contentDescription = "Tutup Notifikasi SOS",
+                                    tint = Color.White
+                                )
+                            }
+                        }
+
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = Color.Black.copy(alpha = 0.28f),
+                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.22f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(14.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text(
+                                    text = "PENGIRIM SINYAL SOS",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFFFECACA)
+                                )
+                                Text(
+                                    text = sosState.senderName.ifBlank { "Anggota Konvoi" },
+                                    fontSize = 18.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = Color.White
+                                )
+                                Text(
+                                    text = "${sosState.senderVehicle.ifBlank { "Kendaraan Konvoi" }} · Pukul ${sosState.triggeredAtLabel.ifBlank { "-" }}",
+                                    fontSize = 12.sp,
+                                    color = Color(0xFFFEE2E2)
+                                )
+                                Text(
+                                    text = "${sosState.locationText.ifBlank { "Lokasi Live" }} (${String.format(Locale.US, "%.4f, %.4f", sosState.latitude, sosState.longitude)})",
+                                    fontSize = 12.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = Color.White
+                                )
+                            }
+                        }
+
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                text = "Identitas pengirim SOS tetap tercatat di kolom chat konvoi.",
+                                fontSize = 11.sp,
+                                color = Color(0xFFFEE2E2)
+                            )
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Button(
+                                onClick = {
+                                    if (sosState.senderId.isNotBlank()) {
+                                        onSelectMember(sosState.senderId)
+                                        isAutoFollowing = true
+                                    }
+                                    dismissedSosKey = currentSosKey
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color.White,
+                                    contentColor = Color(0xFF991B1B)
+                                ),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(44.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.MyLocation,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Lokasi", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    dismissedSosKey = currentSosKey
+                                    onResolveSos()
+                                },
+                                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.55f)),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    containerColor = Color(0xFF7F1D1D),
+                                    contentColor = Color.White
+                                ),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(44.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.CheckCircle,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Selesai SOS", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(6.dp)
+                                .background(Color.White.copy(alpha = 0.25f), RoundedCornerShape(99.dp))
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth((sosFlashSecondsLeft / 10f).coerceIn(0f, 1f))
+                                    .fillMaxHeight()
+                                    .background(Color.White, RoundedCornerShape(99.dp))
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // Modern Messenger Chat & Large Waveform PTT Bottom Sheet
@@ -2053,7 +2311,9 @@ fun LiveTrackingMapScreen(
                             avatarPreset = matchedMember?.avatarPreset ?: msg.senderAvatarPreset,
                             avatarPhotoUri = matchedMember?.avatarPhotoUri ?: msg.senderAvatarPhotoUri,
                             isPlaying = playingMessageId == msg.id,
-                            onTogglePlay = { onToggleVoicePlay(msg.id) }
+                            onTogglePlay = { onToggleVoicePlay(msg.id) },
+                            sosActive = sosState.isActive,
+                            onResolveSos = onResolveSos
                         )
                     }
                 }
@@ -2069,11 +2329,40 @@ fun LiveTrackingMapScreen(
                         .padding(horizontal = 16.dp, vertical = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
+                    if (!voiceStatusMessage.isNullOrBlank()) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = Color(0xFFFEF2F2),
+                            border = BorderStroke(1.dp, Color(0xFFFECACA)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Warning,
+                                    contentDescription = null,
+                                    tint = Color(0xFFDC2626),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = voiceStatusMessage,
+                                    fontSize = 11.sp,
+                                    lineHeight = 15.sp,
+                                    color = Color(0xFFB91C1C),
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                        }
+                    }
+
                     InteractiveWaveformPttButton(
                         isRecording = isRecordingVoice,
                         recordingSeconds = recordingSeconds,
                         onToggleRecord = {
-                            if (isRecordingVoice) onStopVoiceRecord() else onStartVoiceRecord()
+                            if (isRecordingVoice) onStopVoiceRecord() else startVoiceWithPermission()
                         }
                     )
 
@@ -2476,10 +2765,18 @@ private fun TopParticipantChip(
     Surface(
         onClick = onClick,
         shape = RoundedCornerShape(14.dp),
-        color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.background,
+        color = when {
+            isSelected -> MaterialTheme.colorScheme.primaryContainer
+            member.isSweeper -> Color(0xFFFFFBEB)
+            else -> MaterialTheme.colorScheme.background
+        },
         border = BorderStroke(
             width = 1.dp,
-            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+            color = when {
+                isSelected -> MaterialTheme.colorScheme.primary
+                member.isSweeper -> Color(0xFFD97706)
+                else -> MaterialTheme.colorScheme.outline
+            }
         )
     ) {
         Row(
@@ -2492,12 +2789,18 @@ private fun TopParticipantChip(
                 photoUri = member.avatarPhotoUri,
                 displayName = member.fullName,
                 size = 30.dp,
-                borderColor = if (member.isCurrentUser) MaterialTheme.colorScheme.secondary else Color.White
+                borderColor = when {
+                    member.isSweeper -> Color(0xFFD97706)
+                    member.isCurrentUser -> MaterialTheme.colorScheme.secondary
+                    else -> Color.White
+                }
             )
             Column {
                 val roleBadge = when {
                     member.isActingLeader && member.role != UserRole.TOUR_LEADER -> "Plt.Ldr"
+                    member.isCoLeader && member.isSweeper -> if (member.isAutoSweeper) "Co/Swp*" else "Co/Swp"
                     member.isCoLeader -> "Co-Ldr"
+                    member.isSweeper -> if (member.isAutoSweeper) "Swp·Auto" else "Swp"
                     member.role == UserRole.TOUR_LEADER -> "Leader"
                     else -> null
                 }
@@ -2517,6 +2820,7 @@ private fun TopParticipantChip(
                             shape = RoundedCornerShape(6.dp),
                             color = when {
                                 member.isActingLeader && member.role != UserRole.TOUR_LEADER -> Color(0xFFEDE9FE)
+                                member.isSweeper -> Color(0xFFFEF3C7)
                                 member.isCoLeader -> Color(0xFFCCFBF1)
                                 else -> Color(0xFFDBEAFE)
                             }
@@ -2527,6 +2831,7 @@ private fun TopParticipantChip(
                                 fontWeight = FontWeight.Bold,
                                 color = when {
                                     member.isActingLeader && member.role != UserRole.TOUR_LEADER -> Color(0xFF6D28D9)
+                                    member.isSweeper -> Color(0xFFB45309)
                                     member.isCoLeader -> Color(0xFF0F766E)
                                     else -> Color(0xFF1D4ED8)
                                 },
@@ -2804,15 +3109,16 @@ private fun ParticipantExpandedRow(
                 )
                 val roleLabel = when {
                     member.isActingLeader && member.role != UserRole.TOUR_LEADER -> "Plt. Leader (Co-Leader)"
+                    member.isCoLeader && member.isSweeper -> if (member.isAutoSweeper) "Co-Leader & Sweeper (Auto)" else "Co-Leader & Sweeper"
                     member.isCoLeader -> "Co-Leader Terdekat"
-                    member.isSweeper -> "Sweeper"
+                    member.isSweeper -> if (member.isAutoSweeper) "Sweeper (Auto · Paling Belakang)" else "Sweeper"
                     else -> member.role.label
                 }
                 val distLabel = member.distanceToLeaderMeters?.let { " · ${formatDistanceLabel(it)} dr Leader" }.orEmpty()
                 Text(
                     text = "$roleLabel$distLabel · ${member.lastLocationText}",
                     fontSize = 11.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = if (member.isSweeper) Color(0xFFB45309) else MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -2824,7 +3130,14 @@ private fun ParticipantExpandedRow(
                     ) {
                         Icon(Icons.Rounded.Shield, contentDescription = null, modifier = Modifier.size(12.dp))
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text(if (member.isSweeper) "Sweeper Aktif" else "Jadikan Sweeper", fontSize = 11.sp)
+                        Text(
+                            text = when {
+                                member.isSweeper && !member.isAutoSweeper -> "Sweeper Aktif"
+                                member.isAutoSweeper -> "Tetapkan Sweeper"
+                                else -> "Jadikan Sweeper"
+                            },
+                            fontSize = 11.sp
+                        )
                     }
                 }
             }
@@ -2932,7 +3245,9 @@ private fun MessengerChatBubble(
     avatarPreset: com.konvoiku.touring.model.AvatarPreset,
     avatarPhotoUri: String?,
     isPlaying: Boolean,
-    onTogglePlay: () -> Unit
+    onTogglePlay: () -> Unit,
+    sosActive: Boolean = false,
+    onResolveSos: () -> Unit = {}
 ) {
     when (message.type) {
         ChatMessageType.SYSTEM -> {
@@ -2954,7 +3269,7 @@ private fun MessengerChatBubble(
             ) {
                 Row(
                     modifier = Modifier.padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+                    verticalAlignment = Alignment.Top,
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     ConvoyAvatar(
@@ -2964,9 +3279,13 @@ private fun MessengerChatBubble(
                         size = 34.dp,
                         borderColor = Color(0xFFDC2626)
                     )
-                    Column(modifier = Modifier.weight(1f)) {
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        val vehicleLabel = if (message.senderVehicle.isNotBlank()) " (${message.senderVehicle})" else ""
                         Text(
-                            text = "DARURAT SOS · ${message.senderName} (${message.timestampLabel})",
+                            text = "DARURAT SOS · ${message.senderName}$vehicleLabel · ${message.timestampLabel}",
                             style = MaterialTheme.typography.labelLarge,
                             color = Color(0xFF991B1B)
                         )
@@ -2975,6 +3294,20 @@ private fun MessengerChatBubble(
                             style = MaterialTheme.typography.bodyMedium,
                             color = Color(0xFF7F1D1D)
                         )
+                        if (sosActive) {
+                            Button(
+                                onClick = onResolveSos,
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFFDC2626),
+                                    contentColor = Color.White
+                                ),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.height(30.dp)
+                            ) {
+                                Text("Tandai SOS Selesai", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
                     }
                 }
             }

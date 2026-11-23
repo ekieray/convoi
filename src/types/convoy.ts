@@ -170,6 +170,7 @@ export interface ConvoyMember {
   joinedAtLabel: string;
   isCurrentUser: boolean;
   isSweeper: boolean;
+  isAutoSweeper?: boolean;
   avatarPreset: AvatarPreset;
   avatarPhotoUrl?: string;
   conditionStatus: MemberConditionStatus;

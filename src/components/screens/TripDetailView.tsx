@@ -19,7 +19,11 @@ import {
 } from 'lucide-react';
 import scenicTourPhoto from '../../assets/images/touring_route_backdrop_1794562249497.jpg';
 import { getTomTomTileUrl } from '../../services/tomtomMapService';
-import { TripCardTheme, TripHistoryRecord } from '../../types/convoy';
+import {
+  AvatarPreset,
+  TripCardTheme,
+  TripHistoryRecord,
+} from '../../types/convoy';
 import { projectTripMapViewport } from '../../utils/geo';
 import { renderTripCardPngBlob } from '../../utils/tripCardRenderer';
 import {
@@ -33,6 +37,9 @@ import { TripSummaryShareCard } from '../TripSummaryShareCard';
 
 interface TripDetailViewProps {
   trip: TripHistoryRecord | null;
+  currentUserName?: string;
+  currentUserAvatarPreset?: AvatarPreset;
+  currentUserAvatarPhotoUrl?: string;
   autoFinishNotice?: string | null;
   onDismissAutoFinishNotice?: () => void;
   onBack: () => void;
@@ -47,6 +54,9 @@ const CARD_THEME_OPTIONS: Array<{ id: TripCardTheme; label: string }> = [
 
 export function TripDetailView({
   trip,
+  currentUserName,
+  currentUserAvatarPreset,
+  currentUserAvatarPhotoUrl,
   autoFinishNotice,
   onDismissAutoFinishNotice,
   onBack,
@@ -166,6 +176,9 @@ export function TripDetailView({
       theme: cardTheme,
       customPhotoUrl,
       defaultScenicPhotoUrl: scenicTourPhoto,
+      currentUserName,
+      currentUserAvatarPreset,
+      currentUserAvatarPhotoUrl,
     });
   };
 
@@ -313,6 +326,9 @@ export function TripDetailView({
             theme={cardTheme}
             customPhotoUrl={customPhotoUrl}
             defaultScenicPhotoUrl={scenicTourPhoto}
+            currentUserName={currentUserName}
+            currentUserAvatarPreset={currentUserAvatarPreset}
+            currentUserAvatarPhotoUrl={currentUserAvatarPhotoUrl}
           />
 
           {/* Theme Customization Selector */}
@@ -704,43 +720,49 @@ export function TripDetailView({
           <h3 className="text-sm font-bold">
             Peserta Konvoi ({trip.participants.length})
           </h3>
-          <div className="space-y-2">
-            {trip.participants.map((p) => (
-              <div
-                key={p.id}
-                className="rounded-2xl bg-white dark:bg-[#141C24] border border-[#E2E8F0] dark:border-[#334155] p-3 flex items-center gap-3"
-              >
-                <ConvoyAvatar
-                  preset={p.avatarPreset}
-                  photoUrl={p.avatarPhotoUrl}
-                  name={p.fullName}
-                  sizeClass="w-9 h-9"
-                  ringClass={
-                    p.role === 'TOUR_LEADER'
-                      ? 'ring-2 ring-[#1D4ED8]'
-                      : 'ring-1 ring-[#CBD5E1] dark:ring-[#334155]'
-                  }
-                />
-                <div className="min-w-0 flex-1">
-                  <p className="text-xs font-semibold truncate">{p.fullName}</p>
-                  <p className="text-[11px] text-[#64748B] dark:text-[#94A3B8] truncate">
-                    {p.isSweeper
-                      ? 'Sweeper'
-                      : p.role === 'TOUR_LEADER'
-                        ? 'Tour Leader'
-                        : 'Anggota'}{' '}
-                    · {p.vehicleDetail} ·{' '}
-                    <span className="font-mono">{p.licensePlate}</span>
-                  </p>
+          {trip.participants.length === 0 ? (
+            <p className="text-xs text-[#64748B] dark:text-[#94A3B8]">
+              Daftar anggota peserta tidak tercatat pada riwayat ini.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {trip.participants.map((p) => (
+                <div
+                  key={p.id}
+                  className="rounded-2xl bg-white dark:bg-[#141C24] border border-[#E2E8F0] dark:border-[#334155] p-3 flex items-center gap-3"
+                >
+                  <ConvoyAvatar
+                    preset={p.avatarPreset}
+                    photoUrl={p.avatarPhotoUrl}
+                    name={p.fullName}
+                    sizeClass="w-9 h-9"
+                    ringClass={
+                      p.role === 'TOUR_LEADER'
+                        ? 'ring-2 ring-[#1D4ED8]'
+                        : 'ring-1 ring-[#CBD5E1] dark:ring-[#334155]'
+                    }
+                  />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-semibold truncate">{p.fullName}</p>
+                    <p className="text-[11px] text-[#64748B] dark:text-[#94A3B8] truncate">
+                      {p.isSweeper
+                        ? 'Sweeper'
+                        : p.role === 'TOUR_LEADER'
+                          ? 'Tour Leader'
+                          : 'Anggota'}{' '}
+                      · {p.vehicleDetail} ·{' '}
+                      <span className="font-mono">{p.licensePlate}</span>
+                    </p>
+                  </div>
+                  {p.vehicleType === 'MOBIL' ? (
+                    <Car className="w-4 h-4 text-[#64748B] shrink-0" />
+                  ) : (
+                    <Bike className="w-4 h-4 text-[#64748B] shrink-0" />
+                  )}
                 </div>
-                {p.vehicleType === 'MOBIL' ? (
-                  <Car className="w-4 h-4 text-[#64748B] shrink-0" />
-                ) : (
-                  <Bike className="w-4 h-4 text-[#64748B] shrink-0" />
-                )}
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
