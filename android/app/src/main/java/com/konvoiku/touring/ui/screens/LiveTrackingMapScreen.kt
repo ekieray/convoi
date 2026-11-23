@@ -2118,7 +2118,13 @@ fun LiveTrackingMapScreen(
             icon = { Icon(Icons.Rounded.Flag, contentDescription = null, tint = Color(0xFF16A34A), modifier = Modifier.size(30.dp)) },
             title = { Text("Akhiri & Simpan Perjalanan?", fontWeight = FontWeight.Bold) },
             text = {
-                Text("Rekam jejak rute menuju ${routeConfig.destinationName} dan daftar peserta akan disimpan ke Riwayat Tour untuk ekspor GPX.")
+                Text(
+                    if (isEffectiveLeader && activeRoom?.isSyncedRoom == true) {
+                        "Sesi konvoi akan langsung berakhir untuk Anda dan seluruh anggota room. Rekam jejak rute menuju ${routeConfig.destinationName} dan daftar peserta akan disimpan ke Riwayat Tour untuk ekspor GPX."
+                    } else {
+                        "Rekam jejak rute menuju ${routeConfig.destinationName} dan daftar peserta akan disimpan ke Riwayat Tour untuk ekspor GPX."
+                    }
+                )
             },
             confirmButton = {
                 Button(

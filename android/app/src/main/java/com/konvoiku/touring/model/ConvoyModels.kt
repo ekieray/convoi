@@ -627,5 +627,7 @@ data class ConvoyUiState(
     val roomSetupError: String? = null,
     val isCreatingRoom: Boolean = false,
     val isJoiningRoom: Boolean = false,
+    val pendingAutoFinishTripId: String? = null,
+    val autoFinishedTripNotice: String? = null,
     val activeWebBaseUrl: String = "https://ais-pre-mbwxrxf647cphhl5i4ggug-588877716211.asia-southeast1.run.app"
 )

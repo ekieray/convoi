@@ -13,6 +13,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.konvoiku.touring.model.UserRole
 import com.konvoiku.touring.ui.screens.AboutAppScreen
@@ -49,6 +50,18 @@ fun ConvoyNavGraph(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val appContext = LocalContext.current
+    val currentBackStackEntry by navController.currentBackStackEntryAsState()
+    val currentNavRoute = currentBackStackEntry?.destination?.route
+
+    LaunchedEffect(uiState.pendingAutoFinishTripId, currentNavRoute) {
+        val pendingTripId = uiState.pendingAutoFinishTripId ?: return@LaunchedEffect
+        viewModel.consumePendingAutoFinishNavigation()
+        if (currentNavRoute == ConvoyRoute.LiveMap.route && pendingTripId.isNotBlank()) {
+            navController.navigate(ConvoyRoute.TripDetail.route) {
+                popUpTo(ConvoyRoute.RoleSelection.route)
+            }
+        }
+    }
 
     LaunchedEffect(uiState.isLoggedIn, uiState.pendingInviteRoomId) {
         if (uiState.isLoggedIn && uiState.pendingInviteRoomId != null) {
@@ -458,7 +471,12 @@ fun ConvoyNavGraph(
                 ?: uiState.tripHistory.firstOrNull()
             TripDetailScreen(
                 trip = selectedTrip,
-                onBack = { navController.popBackStack() }
+                autoFinishNotice = uiState.autoFinishedTripNotice,
+                onDismissAutoFinishNotice = viewModel::clearAutoFinishNotice,
+                onBack = {
+                    viewModel.clearAutoFinishNotice()
+                    navController.popBackStack()
+                }
             )
         }
 

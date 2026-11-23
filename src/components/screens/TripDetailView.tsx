@@ -33,6 +33,8 @@ import { TripSummaryShareCard } from '../TripSummaryShareCard';
 
 interface TripDetailViewProps {
   trip: TripHistoryRecord | null;
+  autoFinishNotice?: string | null;
+  onDismissAutoFinishNotice?: () => void;
   onBack: () => void;
 }
 
@@ -43,7 +45,12 @@ const CARD_THEME_OPTIONS: Array<{ id: TripCardTheme; label: string }> = [
   { id: 'CUSTOM_PHOTO', label: 'Foto Galeri' },
 ];
 
-export function TripDetailView({ trip, onBack }: TripDetailViewProps) {
+export function TripDetailView({
+  trip,
+  autoFinishNotice,
+  onDismissAutoFinishNotice,
+  onBack,
+}: TripDetailViewProps) {
   const [showGpxPreview, setShowGpxPreview] = useState(false);
   const [feedbackBanner, setFeedbackBanner] = useState<string | null>(null);
   const [sharePreviewText, setSharePreviewText] = useState<string | null>(null);
@@ -275,6 +282,23 @@ export function TripDetailView({ trip, onBack }: TripDetailViewProps) {
 
       {/* Body */}
       <div className="flex-1 px-4 py-4 space-y-4">
+        {autoFinishNotice && (
+          <div className="rounded-[16px] bg-[#ECFDF5] dark:bg-[#064E3B]/60 border border-[#A7F3D0] dark:border-[#047857] px-3.5 py-2.5 flex items-center gap-2.5 text-[#065F46] dark:text-[#A7F3D0]">
+            <Flag className="w-4 h-4 shrink-0 text-[#15803D] dark:text-[#4ADE80]" />
+            <span className="text-[11px] font-medium flex-1 leading-relaxed">
+              {autoFinishNotice}
+            </span>
+            {onDismissAutoFinishNotice && (
+              <button
+                type="button"
+                onClick={onDismissAutoFinishNotice}
+                className="text-[11px] font-semibold text-[#047857] dark:text-[#6EE7B7] cursor-pointer shrink-0"
+              >
+                Tutup
+              </button>
+            )}
+          </div>
+        )}
         {/* 0. Strava-Style Trip Summary Card & Social Share Studio */}
         <div className="rounded-[20px] bg-white dark:bg-[#141C24] border border-[#E2E8F0] dark:border-[#334155] p-4 space-y-3.5">
           <div>

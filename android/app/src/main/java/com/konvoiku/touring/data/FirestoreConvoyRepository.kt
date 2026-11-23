@@ -55,6 +55,7 @@ data class SyncedRoomHeader(
     val actingLeaderUid: String = "",
     val leaderTroubleActive: Boolean = false,
     val leaderTroubleReason: String = "",
+    val status: String = "ACTIVE",
     val routeConfig: ConvoyRouteConfig,
     val sosState: SosEmergencyState
 )
@@ -736,6 +737,9 @@ class FirestoreConvoyRepository {
             if (!snap.exists()) {
                 throw IllegalArgumentException("Room $cleanRoomId tidak ditemukan di server.")
             }
+            if (snap.getString("status") == "FINISHED") {
+                throw IllegalStateException("Konvoi pada Room $cleanRoomId sudah berakhir.")
+            }
             val leaderUid = snap.getString("leaderUid").orEmpty()
             val role = if (leaderUid == uid) UserRole.TOUR_LEADER else UserRole.MEMBER
             val memberRef = db.collection("rooms").document(cleanRoomId)
@@ -878,6 +882,7 @@ class FirestoreConvoyRepository {
                         actingLeaderUid = snap.getString("actingLeaderUid")?.ifBlank { leaderUid } ?: leaderUid,
                         leaderTroubleActive = snap.getBoolean("leaderTroubleActive") ?: false,
                         leaderTroubleReason = snap.getString("leaderTroubleReason") ?: "",
+                        status = if (snap.getString("status") == "FINISHED") "FINISHED" else "ACTIVE",
                         routeConfig = cfg,
                         sosState = sos
                     )
@@ -1165,7 +1170,7 @@ class FirestoreConvoyRepository {
             val snap = roomRef.get().await()
             val isEffective = snap.exists() &&
                 (snap.getString("leaderUid") == uid || snap.getString("actingLeaderUid") == uid)
-            if (isEffective) {
+            if (isEffective && snap.getString("status") != "FINISHED") {
                 roomRef.update(
                     mapOf(
                         "status" to "FINISHED",

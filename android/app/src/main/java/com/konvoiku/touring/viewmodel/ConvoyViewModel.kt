@@ -1620,6 +1620,12 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
             roomId = roomId,
             currentUid = uid,
             onRoomHeader = { header ->
+                if (header.status == "FINISHED") {
+                    if (_uiState.value.activeRoom?.roomId == header.roomId) {
+                        finishAndSaveCurrentTrip(autoEndedByLeader = true)
+                    }
+                    return@subscribeToRoom
+                }
                 _uiState.update { state ->
                     val mergedConfig = header.routeConfig.copy(checkpoints = state.routeConfig.checkpoints)
                     val curRoom = state.activeRoom
@@ -3028,7 +3034,17 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.update { it.copy(selectedTripId = tripId) }
     }
 
-    fun finishAndSaveCurrentTrip(): TripHistoryRecord? {
+    fun consumePendingAutoFinishNavigation(): String? {
+        val pending = _uiState.value.pendingAutoFinishTripId ?: return null
+        _uiState.update { it.copy(pendingAutoFinishTripId = null) }
+        return pending
+    }
+
+    fun clearAutoFinishNotice() {
+        _uiState.update { it.copy(autoFinishedTripNotice = null) }
+    }
+
+    fun finishAndSaveCurrentTrip(autoEndedByLeader: Boolean = false): TripHistoryRecord? {
         roomUnsubscribe?.invoke()
         roomUnsubscribe = null
         val state = _uiState.value
@@ -3132,7 +3148,14 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
                 activeRoom = null,
                 sosState = SosEmergencyState(),
                 isOffRouteSimActive = false,
-                isStragglerSimActive = false
+                isStragglerSimActive = false,
+                isLeaderTroubleSimActive = false,
+                pendingAutoFinishTripId = if (autoEndedByLeader) record.id else null,
+                autoFinishedTripNotice = if (autoEndedByLeader) {
+                    "Tour Leader telah mengakhiri konvoi. Perjalanan Anda otomatis selesai & tersimpan ke riwayat."
+                } else {
+                    null
+                }
             )
         }
         if (syncRepo.isAvailable()) {
@@ -3140,7 +3163,7 @@ class ConvoyViewModel(application: Application) : AndroidViewModel(application) 
                 val uid = syncRepo.currentUid()
                 if (uid != null) {
                     val effective = room.leaderUid == uid || room.actingLeaderUid == uid
-                    if (room.isSyncedRoom && effective) {
+                    if (!autoEndedByLeader && room.isSyncedRoom && effective) {
                         syncRepo.finishRoomIfLeader(room.roomId, uid)
                     }
                     syncRepo.saveTripRecord(uid, record)

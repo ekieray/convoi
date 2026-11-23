@@ -114,6 +114,8 @@ import kotlin.math.roundToInt
 @Composable
 fun TripDetailScreen(
     trip: TripHistoryRecord?,
+    autoFinishNotice: String? = null,
+    onDismissAutoFinishNotice: () -> Unit = {},
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
@@ -243,9 +245,49 @@ fun TripDetailScreen(
                 .padding(horizontal = 20.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            if (!autoFinishNotice.isNullOrBlank()) {
+                item {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Surface(
+                        color = Color(0xFFECFDF5),
+                        shape = RoundedCornerShape(16.dp),
+                        border = BorderStroke(1.dp, Color(0xFFA7F3D0)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Flag,
+                                contentDescription = null,
+                                tint = Color(0xFF15803D),
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Text(
+                                text = autoFinishNotice,
+                                fontSize = 12.sp,
+                                lineHeight = 16.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = Color(0xFF065F46),
+                                modifier = Modifier.weight(1f)
+                            )
+                            TextButton(onClick = onDismissAutoFinishNotice) {
+                                Text("Tutup", fontSize = 11.sp, color = Color(0xFF047857))
+                            }
+                        }
+                    }
+                }
+            }
+
             // 0. Strava-Style Trip Summary Card Generator & Social Share
             item {
-                Spacer(modifier = Modifier.height(6.dp))
+                if (autoFinishNotice.isNullOrBlank()) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                }
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(22.dp),

@@ -766,6 +766,7 @@ export default function App() {
     DEFAULT_TRIP_HISTORY[0]?.id ?? null
   );
   const [lastCompletedTrip, setLastCompletedTrip] = useState<TripHistoryRecord | null>(null);
+  const [autoFinishNotice, setAutoFinishNotice] = useState<string | null>(null);
   const [syncWithPreview, setSyncWithPreview] = useState(true);
   const [mobileWorkspaceTab, setMobileWorkspaceTab] = useState<'preview' | 'code'>('preview');
 
@@ -784,6 +785,7 @@ export default function App() {
   activeRoomRef.current = activeRoom;
   const authUserRef = useRef<User | null>(authUser);
   authUserRef.current = authUser;
+  const handleFinishAndSaveTripRef = useRef<(opts?: { autoEndedByLeader?: boolean }) => void>(() => {});
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', darkMode);
@@ -1232,6 +1234,12 @@ export default function App() {
     const unsub = subscribeToSyncedRoom(activeRoom.roomId, {
       onRoomUpdate: (snapshot) => {
         if (!snapshot) return;
+        if (snapshot.room.status === 'FINISHED') {
+          if (activeRoomRef.current?.roomId === snapshot.room.roomId) {
+            handleFinishAndSaveTripRef.current({ autoEndedByLeader: true });
+          }
+          return;
+        }
         const mergedConfig: ConvoyRouteConfig = {
           ...snapshot.routeConfig,
           checkpoints: latestCheckpoints,
@@ -3267,13 +3275,22 @@ export default function App() {
     commitRoomMembers(updatedMembers, routeConfigRef.current, updatedRoom);
   };
 
-  const handleFinishAndSaveTrip = () => {
-    if (!activeRoom) {
+  const handleFinishAndSaveTrip = (options?: { autoEndedByLeader?: boolean }) => {
+    const autoEndedByLeader = Boolean(
+      options &&
+        typeof options === 'object' &&
+        'autoEndedByLeader' in options &&
+        options.autoEndedByLeader === true
+    );
+    const room = activeRoomRef.current ?? activeRoom;
+    const cfg = routeConfigRef.current;
+    const user = authUserRef.current;
+    if (!room) {
       navigateTo('trip_history', 1);
       return;
     }
 
-    const activeSpeeds = activeRoom.members
+    const activeSpeeds = room.members
       .map((m) => m.mapPosition.speedKmh)
       .filter((spd) => spd > 0);
     const avgSpeed =
@@ -3288,11 +3305,11 @@ export default function App() {
 
     const finalWaypoints: RoutePoint[] = hasRealRecordedGpsTrack
       ? downsampleRoutePoints(downsampleTrackPoints(rawTrack, 15, 120), 120)
-      : routeConfig.waypoints;
+      : cfg.waypoints;
 
     const realDistanceMeters = hasRealRecordedGpsTrack
       ? rawTrackMeters
-      : routeConfig.totalRouteMeters;
+      : cfg.totalRouteMeters;
 
     const distanceKm = Math.max(
       0.1,
@@ -3312,8 +3329,8 @@ export default function App() {
 
     const newRecord: TripHistoryRecord = {
       id: `trip-${Date.now()}`,
-      roomId: activeRoom.roomId,
-      tourTitle: activeRoom.roomTitle,
+      roomId: room.roomId,
+      tourTitle: room.roomTitle,
       dateLabel,
       timeRangeLabel: `Selesai ${currentClock()}`,
       durationLabel,
@@ -3322,10 +3339,10 @@ export default function App() {
       avgSpeedKmh: avgSpeed,
       maxSpeedKmh: maxSpeed,
       userRole: selectedRole,
-      destinationName: routeConfig.destinationName,
-      destinationAddress: routeConfig.destinationAddress,
+      destinationName: cfg.destinationName,
+      destinationAddress: cfg.destinationAddress,
       waypoints: finalWaypoints,
-      visitedCheckpoints: routeConfig.checkpoints.map((cp, idx) => ({
+      visitedCheckpoints: cfg.checkpoints.map((cp, idx) => ({
         id: cp.id,
         name: cp.name,
         arrivedAtLabel: `Check #${idx + 1}`,
@@ -3334,7 +3351,7 @@ export default function App() {
         latitude: cp.latitude,
         longitude: cp.longitude,
       })),
-      participants: activeRoom.members.map((m) => ({
+      participants: room.members.map((m) => ({
         id: m.id,
         fullName: m.fullName,
         vehicleType: m.vehicleType,
@@ -3347,19 +3364,25 @@ export default function App() {
       })),
     };
 
-    if (activeRoom.isSyncedRoom && authUser) {
-      if (isRoomEffectiveLeader(activeRoom, authUser.uid)) {
-        finishSyncedRoom(activeRoom.roomId).catch(() => {});
+    if (room.isSyncedRoom && user) {
+      if (!autoEndedByLeader && isRoomEffectiveLeader(room, user.uid)) {
+        finishSyncedRoom(room.roomId).catch(() => {});
       }
-      saveTripRecordToFirestore(authUser.uid, newRecord).catch((err) =>
+      saveTripRecordToFirestore(user.uid, newRecord).catch((err) =>
         console.warn('Gagal menyimpan riwayat ke Firestore:', err)
       );
     }
 
     recordedTrackRef.current = [];
+    activeRoomRef.current = null;
     setTripHistory((prev) => [newRecord, ...prev]);
     setSelectedTripId(newRecord.id);
     setLastCompletedTrip(newRecord);
+    setAutoFinishNotice(
+      autoEndedByLeader
+        ? 'Tour Leader telah mengakhiri konvoi. Perjalanan Anda otomatis selesai & tersimpan ke riwayat.'
+        : null
+    );
     setActiveRoom(null);
     setIsOffRouteSimActive(false);
     setIsStragglerSimActive(false);
@@ -3376,6 +3399,7 @@ export default function App() {
     });
     navigateTo('trip_detail', 1);
   };
+  handleFinishAndSaveTripRef.current = handleFinishAndSaveTrip;
 
   const handleRepeatTour = async (trip: TripHistoryRecord) => {
     const restoredWaypoints =
@@ -4083,7 +4107,12 @@ export default function App() {
                           tripHistory[0] ??
                           null
                         }
-                        onBack={() => navigateTo('trip_history', -1)}
+                        autoFinishNotice={autoFinishNotice}
+                        onDismissAutoFinishNotice={() => setAutoFinishNotice(null)}
+                        onBack={() => {
+                          setAutoFinishNotice(null);
+                          navigateTo('trip_history', -1);
+                        }}
                       />
                     )}
 
