@@ -35,9 +35,9 @@ export function TripHistoryView({
   const totalDistanceKm = trips.reduce((acc, t) => acc + t.distanceKm, 0);
 
   return (
-    <div className="flex flex-col min-h-full bg-[#F8FAFC] dark:bg-[#0B1117] text-[#0F172A] dark:text-[#F1F5F9]">
+    <div className="flex flex-col min-h-full bg-transparent text-[#0F172A] dark:text-[#F1F5F9]">
       {/* Top App Bar */}
-      <div className="sticky top-0 z-10 flex items-center gap-1.5 px-3 py-2.5 bg-white dark:bg-[#141C24] border-b border-[#E2E8F0] dark:border-[#334155]">
+      <div className="sticky top-0 z-10 flex items-center gap-1.5 px-3 py-2.5 bg-white/90 dark:bg-[#141C24]/90 backdrop-blur-md border-b border-[#E2E8F0] dark:border-[#334155]">
         <button
           type="button"
           onClick={onBack}

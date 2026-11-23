@@ -106,7 +106,7 @@ fun RoleSelectionScreen(
     val activeMemberCount = activeRoom?.members?.size ?: lastCompletedTrip?.participants?.size?.coerceAtLeast(1) ?: 0
 
     Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
+        containerColor = Color.Transparent,
         topBar = {
             TopAppBar(
                 title = {

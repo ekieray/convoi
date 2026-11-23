@@ -3752,53 +3752,17 @@ export default function App() {
         </div>
       )}
 
-      {/* Subtle Touring Atmosphere Desktop & Mobile Backdrop */}
+      {/* Persistent Convoy Illustration Backdrop (Web Desktop & Mobile) */}
       <div
         aria-hidden="true"
         className="pointer-events-none fixed inset-0 overflow-hidden select-none z-0"
       >
-        <div
-          className="absolute inset-0 dark:hidden"
-          style={{
-            background:
-              'radial-gradient(ellipse 80% 45% at 85% 8%, rgba(29,78,216,0.06), transparent 65%), radial-gradient(ellipse 65% 40% at 15% 92%, rgba(234,88,12,0.06), transparent 65%)',
-          }}
+        <img
+          src="/assets/aistudio/Gemini_Generated_Image_7r91zx7r91zx7r91_a120e4a5.jpe"
+          alt=""
+          className="w-full h-full object-cover object-center opacity-50 dark:opacity-25 scale-105"
         />
-        <div
-          className="hidden dark:block absolute inset-0"
-          style={{
-            background:
-              'radial-gradient(ellipse 80% 50% at 85% 6%, rgba(30,58,138,0.22), transparent 65%), radial-gradient(ellipse 70% 45% at 15% 95%, rgba(154,52,18,0.16), transparent 65%)',
-          }}
-        />
-        <svg
-          className="absolute inset-0 w-full h-full opacity-[0.045] dark:opacity-[0.075]"
-          viewBox="0 0 1440 900"
-          preserveAspectRatio="none"
-        >
-          {[0, 1, 2, 3, 4].map((idx) => {
-            const offset = idx * 64;
-            return (
-              <path
-                key={`ws-contour-${idx}`}
-                d={`M -80 ${180 + offset} C 360 ${60 + offset}, 920 ${360 + offset}, 1520 ${160 + offset}`}
-                fill="none"
-                stroke="currentColor"
-                className="text-[#1E3A8A] dark:text-[#93C5FD]"
-                strokeWidth="1.2"
-              />
-            );
-          })}
-          <path
-            d="M -60 790 C 380 650, 940 850, 1520 670"
-            fill="none"
-            stroke="currentColor"
-            className="text-[#EA580C] dark:text-[#FB923C]"
-            strokeWidth="2"
-            strokeDasharray="12 10"
-            strokeLinecap="round"
-          />
-        </svg>
+        <div className="absolute inset-0 bg-[#FFFDF8]/55 dark:bg-[#0A0F16]/78 backdrop-blur-[1px]" />
       </div>
 
       {/* Top Bar Contract: 3 zones */}
@@ -3962,16 +3926,30 @@ export default function App() {
               </div>
 
               {/* Compose NavHost Animated Viewport */}
-              <div className="relative h-[680px] overflow-y-auto overflow-x-hidden">
-                <AnimatePresence mode="wait" initial={false}>
-                  <motion.div
-                    key={currentRoute}
-                    initial={{ opacity: 0, x: navDirection * 28 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, x: navDirection * -28 }}
-                    transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
-                    className="min-h-full flex flex-col"
-                  >
+              <div className="relative h-[680px] overflow-hidden">
+                {/* Fixed Convoy App Background */}
+                <div
+                  aria-hidden="true"
+                  className="pointer-events-none absolute inset-0 z-0 select-none"
+                >
+                  <img
+                    src="/assets/aistudio/Gemini_Generated_Image_7r91zx7r91zx7r91_a120e4a5.jpe"
+                    alt=""
+                    className="w-full h-full object-cover object-center"
+                  />
+                  <div className="absolute inset-0 bg-[#FFFDF8]/38 dark:bg-[#0A0F16]/82 transition-colors" />
+                </div>
+
+                <div className="relative z-10 h-full overflow-y-auto overflow-x-hidden">
+                  <AnimatePresence mode="wait" initial={false}>
+                    <motion.div
+                      key={currentRoute}
+                      initial={{ opacity: 0, x: navDirection * 28 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      exit={{ opacity: 0, x: navDirection * -28 }}
+                      transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+                      className="min-h-full flex flex-col"
+                    >
                     {currentRoute === 'login' && (
                       <LoginView
                         authUserEmail={authUser?.email ?? (localUserEmail || null)}
@@ -4284,6 +4262,7 @@ export default function App() {
                     )}
                   </motion.div>
                 </AnimatePresence>
+                </div>
               </div>
 
               {/* Android Gesture Navigation Pill */}

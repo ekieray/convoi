@@ -88,7 +88,7 @@ fun TripHistoryScreen(
     val totalDistanceKm = remember(trips) { trips.sumOf { it.distanceKm } }
 
     Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
+        containerColor = Color.Transparent,
         topBar = {
             TopAppBar(
                 title = {

@@ -43,6 +43,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -67,7 +68,7 @@ fun JoinTourScreen(
     val clipboardManager = LocalClipboardManager.current
 
     Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
+        containerColor = Color.Transparent,
         topBar = {
             TopAppBar(
                 title = {
@@ -98,66 +99,80 @@ fun JoinTourScreen(
                 .padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {
-            Text(
-                text = "Masukkan Room ID atau tempel link undangan yang dibagikan oleh Tour Leader.",
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            // Input kolom Room ID / Link
-            OutlinedTextField(
-                value = joinInput,
-                onValueChange = onInputChange,
-                label = { Text("Room ID atau Link Undangan") },
-                placeholder = { Text("KNV-8492 atau https://konvoiku.id/join/KNV-8492") },
-                leadingIcon = {
-                    Icon(Icons.Rounded.Link, contentDescription = null)
-                },
-                trailingIcon = {
-                    IconButton(
-                        onClick = {
-                            val clip = clipboardManager.getText()?.text
-                            if (!clip.isNullOrBlank()) {
-                                onInputChange(clip)
-                            }
-                        }
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.ContentPaste,
-                            contentDescription = "Tempel dari Clipboard"
-                        )
-                    }
-                },
-                isError = joinError != null,
-                supportingText = if (joinError != null) {
-                    { Text(joinError) }
-                } else if (extractedRoomId.length >= 4) {
-                    { Text("Terdeteksi Room ID: $extractedRoomId") }
-                } else null,
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                keyboardActions = KeyboardActions(onDone = { onJoinSubmit() }),
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            // Quick demo sample helper
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f)
+                ),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
             ) {
-                Text(
-                    text = "Contoh cepat:",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                TextButton(
-                    onClick = { onInputChange("https://konvoiku.id/join/KNV-8492") }
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
                     Text(
-                        text = "KNV-8492",
-                        fontFamily = FontFamily.Monospace
+                        text = "Masukkan Room ID atau tempel link undangan yang dibagikan oleh Tour Leader.",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+
+                    // Input kolom Room ID / Link
+                    OutlinedTextField(
+                        value = joinInput,
+                        onValueChange = onInputChange,
+                        label = { Text("Room ID atau Link Undangan") },
+                        placeholder = { Text("KNV-8492 atau https://konvoiku.id/join/KNV-8492") },
+                        leadingIcon = {
+                            Icon(Icons.Rounded.Link, contentDescription = null)
+                        },
+                        trailingIcon = {
+                            IconButton(
+                                onClick = {
+                                    val clip = clipboardManager.getText()?.text
+                                    if (!clip.isNullOrBlank()) {
+                                        onInputChange(clip)
+                                    }
+                                }
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.ContentPaste,
+                                    contentDescription = "Tempel dari Clipboard"
+                                )
+                            }
+                        },
+                        isError = joinError != null,
+                        supportingText = if (joinError != null) {
+                            { Text(joinError) }
+                        } else if (extractedRoomId.length >= 4) {
+                            { Text("Terdeteksi Room ID: $extractedRoomId") }
+                        } else null,
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(onDone = { onJoinSubmit() }),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    // Quick demo sample helper
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "Contoh cepat:",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        TextButton(
+                            onClick = { onInputChange("https://konvoiku.id/join/KNV-8492") }
+                        ) {
+                            Text(
+                                text = "KNV-8492",
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                    }
                 }
             }
 

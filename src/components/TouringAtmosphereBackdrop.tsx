@@ -13,19 +13,19 @@ export function TouringCanvasBackdrop() {
       aria-hidden="true"
       className="pointer-events-none absolute inset-0 overflow-hidden select-none"
     >
-      {/* Subtle Light / Dark Atmospheric Gradient Wash */}
+      {/* Subtle Light / Dark Translucent Atmospheric Wash */}
       <div
         className="absolute inset-0 dark:hidden"
         style={{
           background:
-            'linear-gradient(180deg, #F1F5FA 0%, #F8FAFC 55%, #FDF7F2 100%)',
+            'linear-gradient(180deg, rgba(255,253,248,0.18) 0%, rgba(255,253,248,0.08) 55%, rgba(253,247,242,0.16) 100%)',
         }}
       />
       <div
         className="hidden dark:block absolute inset-0"
         style={{
           background:
-            'linear-gradient(180deg, #0A0F16 0%, #0E1624 55%, #12141D 100%)',
+            'linear-gradient(180deg, rgba(10,15,22,0.42) 0%, rgba(14,22,36,0.32) 55%, rgba(18,20,29,0.45) 100%)',
         }}
       />
 

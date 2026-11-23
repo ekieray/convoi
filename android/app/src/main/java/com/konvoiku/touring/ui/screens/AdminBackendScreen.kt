@@ -214,7 +214,7 @@ fun AdminBackendScreen(
     }
 
     Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
+        containerColor = Color.Transparent,
         topBar = {
             TopAppBar(
                 navigationIcon = {

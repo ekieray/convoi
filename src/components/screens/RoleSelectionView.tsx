@@ -87,9 +87,9 @@ export function RoleSelectionView({
     .join(' · ');
 
   return (
-    <div className="relative flex flex-col min-h-full bg-[#F4F6FA] dark:bg-[#0A0F16] text-[#0F172A] dark:text-[#F1F5F9]">
+    <div className="relative flex flex-col min-h-full bg-transparent text-[#0F172A] dark:text-[#F1F5F9]">
       {/* Clean Material 3 Top App Bar */}
-      <div className="sticky top-0 z-20 flex items-center justify-between gap-2 px-4 py-3 bg-white dark:bg-[#131B26] border-b border-[#E2E8F0] dark:border-[#2D3A4F]">
+      <div className="sticky top-0 z-20 flex items-center justify-between gap-2 px-4 py-3 bg-white/90 dark:bg-[#131B26]/90 backdrop-blur-md border-b border-[#E2E8F0] dark:border-[#2D3A4F]">
         <div className="flex items-center gap-2.5">
           <div className="w-8 h-8 rounded-[10px] bg-[#1D4ED8] flex items-center justify-center text-white shrink-0">
             <Navigation className="w-4 h-4" />

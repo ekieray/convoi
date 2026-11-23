@@ -70,10 +70,10 @@ export function VehicleProfileView({
   return (
     <form
       onSubmit={handleSubmit}
-      className="flex flex-col min-h-full bg-[#F8FAFC] dark:bg-[#0F1419] text-[#111827] dark:text-[#F1F5F9]"
+      className="flex flex-col min-h-full bg-transparent text-[#111827] dark:text-[#F1F5F9]"
     >
       {/* Material 3 Top App Bar */}
-      <div className="sticky top-0 z-10 flex items-center gap-2 px-3 py-2.5 bg-white dark:bg-[#141C24] border-b border-[#E2E8F0] dark:border-[#334155]">
+      <div className="sticky top-0 z-10 flex items-center gap-2 px-3 py-2.5 bg-white/90 dark:bg-[#141C24]/90 backdrop-blur-md border-b border-[#E2E8F0] dark:border-[#334155]">
         <button
           type="button"
           onClick={onBack}
@@ -102,9 +102,11 @@ export function VehicleProfileView({
 
       {/* Form Body */}
       <div className="flex-1 px-5 py-5 space-y-4">
-        <p className="text-sm text-[#475569] dark:text-[#CBD5E1] leading-relaxed">
-          Lengkapi foto profil/avatar dan identitas kendaraan agar Anda mudah dikenali di peta, daftar peserta, dan chat konvoi.
-        </p>
+        <div className="rounded-[16px] bg-white/90 dark:bg-[#141C24]/90 backdrop-blur-xs border border-[#E2E8F0] dark:border-[#334155] px-3.5 py-2.5">
+          <p className="text-xs sm:text-sm text-[#475569] dark:text-[#CBD5E1] leading-relaxed">
+            Lengkapi foto profil/avatar dan identitas kendaraan agar Anda mudah dikenali di peta, daftar peserta, dan chat konvoi.
+          </p>
+        </div>
 
         {/* Foto Profil & Pilihan Avatar Bawaan */}
         <div className="rounded-[18px] bg-white dark:bg-[#141C24] border border-[#E2E8F0] dark:border-[#334155] p-4 space-y-3.5">

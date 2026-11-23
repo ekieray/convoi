@@ -61,6 +61,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -108,7 +109,7 @@ fun VehicleProfileScreen(
     val contactError = showValidationErrors && profile.emergencyContact.trim().length < 8
 
     Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
+        containerColor = Color.Transparent,
         topBar = {
             TopAppBar(
                 title = {
@@ -198,11 +199,19 @@ fun VehicleProfileScreen(
                 .padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(18.dp)
         ) {
-            Text(
-                text = "Lengkapi foto profil/avatar dan identitas kendaraan agar Anda mudah dikenali di peta, daftar peserta, dan chat konvoi.",
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Surface(
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+                shape = RoundedCornerShape(16.dp),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = "Lengkapi foto profil/avatar dan identitas kendaraan agar Anda mudah dikenali di peta, daftar peserta, dan chat konvoi.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)
+                )
+            }
 
             // 0. Foto Profil & Pilihan Avatar Bawaan
             Card(

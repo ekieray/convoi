@@ -136,10 +136,10 @@ export function CustomizeProfileView({
   return (
     <form
       onSubmit={handleSubmit}
-      className="flex flex-col min-h-full bg-[#F4F6FA] dark:bg-[#0A0F16] text-[#0F172A] dark:text-[#F1F5F9]"
+      className="flex flex-col min-h-full bg-transparent text-[#0F172A] dark:text-[#F1F5F9]"
     >
       {/* Top App Bar */}
-      <div className="sticky top-0 z-20 flex items-center gap-2 px-3 py-2.5 bg-white dark:bg-[#131B26] border-b border-[#E2E8F0] dark:border-[#2D3A4F]">
+      <div className="sticky top-0 z-20 flex items-center gap-2 px-3 py-2.5 bg-white/90 dark:bg-[#131B26]/90 backdrop-blur-md border-b border-[#E2E8F0] dark:border-[#2D3A4F]">
         <button
           type="button"
           onClick={onBack}

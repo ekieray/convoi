@@ -4,17 +4,27 @@ import androidx.compose.animation.AnimatedContentTransitionScope
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.konvoiku.touring.R
 import com.konvoiku.touring.model.UserRole
 import com.konvoiku.touring.ui.screens.AboutAppScreen
 import com.konvoiku.touring.ui.screens.AdminBackendScreen
@@ -72,9 +82,28 @@ fun ConvoyNavGraph(
         }
     }
 
-    NavHost(
-        navController = navController,
-        startDestination = if (uiState.isLoggedIn) ConvoyRoute.RoleSelection.route else ConvoyRoute.Login.route,
+    Box(modifier = Modifier.fillMaxSize()) {
+        Image(
+            painter = painterResource(id = R.drawable.app_convoy_background),
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize()
+        )
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    if (isSystemInDarkTheme()) {
+                        Color(0xFF0A0F16).copy(alpha = 0.80f)
+                    } else {
+                        Color(0xFFFFFDF8).copy(alpha = 0.42f)
+                    }
+                )
+        )
+
+        NavHost(
+            navController = navController,
+            startDestination = if (uiState.isLoggedIn) ConvoyRoute.RoleSelection.route else ConvoyRoute.Login.route,
         enterTransition = {
             slideIntoContainer(
                 towards = AnimatedContentTransitionScope.SlideDirection.Left,
@@ -488,6 +517,7 @@ fun ConvoyNavGraph(
             AboutAppScreen(
                 onBack = { navController.popBackStack() }
             )
+        }
         }
     }
 }

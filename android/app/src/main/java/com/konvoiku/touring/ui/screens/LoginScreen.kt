@@ -147,7 +147,7 @@ fun LoginScreen(
     val combinedError = localError ?: authError
 
     Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
+        containerColor = Color.Transparent,
         topBar = {
             TopAppBar(
                 title = {

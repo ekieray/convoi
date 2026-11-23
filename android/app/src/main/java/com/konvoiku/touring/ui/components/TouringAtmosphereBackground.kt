@@ -46,9 +46,9 @@ fun TouringDashboardCanvasBackdrop(
                     .background(
                         Brush.verticalGradient(
                             colors = listOf(
-                                Color(0xFF0A0F16),
-                                Color(0xFF0E1624),
-                                Color(0xFF0A0F16)
+                                Color(0xFF0A0F16).copy(alpha = 0.36f),
+                                Color(0xFF0E1624).copy(alpha = 0.28f),
+                                Color(0xFF0A0F16).copy(alpha = 0.40f)
                             )
                         )
                     )
@@ -60,9 +60,9 @@ fun TouringDashboardCanvasBackdrop(
                     .background(
                         Brush.verticalGradient(
                             colors = listOf(
-                                Color(0xFFF3F6FA),
-                                Color(0xFFF8FAFC),
-                                Color(0xFFFDF8F4)
+                                Color(0xFFFFFDF8).copy(alpha = 0.16f),
+                                Color(0xFFFFFDF8).copy(alpha = 0.08f),
+                                Color(0xFFFDF7F2).copy(alpha = 0.18f)
                             )
                         )
                     )

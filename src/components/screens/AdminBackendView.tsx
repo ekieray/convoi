@@ -217,9 +217,9 @@ export function AdminBackendView({
   };
 
   return (
-    <div className="flex flex-col min-h-full bg-[#F4F6FA] dark:bg-[#0A0F16] text-[#0F172A] dark:text-[#F1F5F9]">
+    <div className="flex flex-col min-h-full bg-transparent text-[#0F172A] dark:text-[#F1F5F9]">
       {/* Sticky Top App Bar */}
-      <div className="sticky top-0 z-20 flex items-center justify-between gap-2 px-4 py-3 bg-white dark:bg-[#131B26] border-b border-[#E2E8F0] dark:border-[#2D3A4F]">
+      <div className="sticky top-0 z-20 flex items-center justify-between gap-2 px-4 py-3 bg-white/90 dark:bg-[#131B26]/90 backdrop-blur-md border-b border-[#E2E8F0] dark:border-[#2D3A4F]">
         <div className="flex items-center gap-2 min-w-0">
           <button
             type="button"
